@@ -84,11 +84,13 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     }
 
     // 第二遍：摆子 + 落子
+    // 摆子只在还没有任何 B/W 之前允许（根节点拆成多个节点也兼容）
+    let mut saw_move = false;
     for (node_idx, props) in nodes.iter().enumerate() {
         for (ident, values) in props {
             match ident.as_str() {
                 "AB" | "AW" => {
-                    if node_idx > 0 {
+                    if saw_move {
                         // 中途摆子会改变此前棋步的合法性，不能当成开局摆子提前应用
                         return Err(format!(
                             "不支持中途摆子：第 {} 个节点的 {ident}",
@@ -107,6 +109,7 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     }
                 }
                 "B" | "W" => {
+                    saw_move = true;
                     move_nodes += 1;
                     let color = if ident == "B" {
                         Color::Black
@@ -627,6 +630,11 @@ mod tests {
     /// 文件里的 B/W 是事实：有开局摆子也不能把第一手吞掉。
     #[test]
     fn declared_colors_are_preserved_with_setup() {
+        // 根节点被拆成两个节点、摆子仍在前：允许
+        let g = parse("(;SZ[9];AB[ee];B[dd])").unwrap();
+        assert_eq!(g.setup.len(), 1);
+        assert_eq!(g.moves.len(), 1);
+
         // 让子棋：AW 摆白子，黑先
         let g = parse("(;SZ[9]AW[dd];B[cc];W[gg])").unwrap();
         assert_eq!(g.moves.len(), 2, "AW + 黑先不能丢第一手");

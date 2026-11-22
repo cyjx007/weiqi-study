@@ -94,6 +94,8 @@ pub struct App {
     failed_pos: Option<usize>,
     /// 拟人网选点的随机种子；测试可以固定它
     ai_seed: u64,
+    /// 是否人机对局（start_play 开始，读 SGF 时清掉）
+    vs_ai: bool,
     /// 棋局/引擎设置版本；旧的分析结果回来时按这个丢弃
     generation: u64,
     /// 引擎推荐变化的临时预览（不动主线）
@@ -142,6 +144,7 @@ impl App {
             evals: HashMap::new(),
             failed_pos: None,
             ai_seed: seed(),
+            vs_ai: false,
             generation: 0,
             preview: None,
         }
@@ -261,6 +264,7 @@ impl App {
         self.last_comment = None;
         self.failed_pos = None;
         self.ai_enabled = true;
+        self.vs_ai = true;
         self.human = Color::Black;
         self.cursor = Point::new(self.size / 2, self.size / 2);
         if let Err(e) = self.rebuild() {
@@ -327,6 +331,7 @@ impl App {
         self.failed_pos = None;
         self.cursor = Point::new(size / 2, size / 2);
         self.game = game;
+        self.vs_ai = false;
         self.current_file = new_file;
         Ok(())
     }
@@ -431,7 +436,10 @@ impl App {
         self.review = None;
         self.last_comment = None;
         self.status = if self.human_enabled {
-            i18n::fill(st.human_on, self.human_profile())
+            i18n::fill(
+                st.human_on,
+                i18n::rank_label(self.human_profile(), self.lang),
+            )
         } else {
             st.human_off.to_string()
         };
@@ -463,7 +471,10 @@ impl App {
             self.evals.clear();
             self.failed_pos = None;
         }
-        self.status = i18n::fill(st.human_rank_set, self.human_profile());
+        self.status = i18n::fill(
+            st.human_rank_set,
+            i18n::rank_label(self.human_profile(), self.lang),
+        );
     }
 
     /// 当前选中的棋谱（棋谱列表里光标所指）。
@@ -867,11 +878,7 @@ impl App {
                                             &after,
                                             color,
                                             mv,
-                                            if self.human_enabled {
-                                                Some(self.human)
-                                            } else {
-                                                None
-                                            },
+                                            if self.vs_ai { Some(self.human) } else { None },
                                         )
                                     });
                                 self.last_comment = comment;
