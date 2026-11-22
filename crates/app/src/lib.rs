@@ -451,7 +451,13 @@ impl App {
                                     .position_at(pos as u16 - 1)
                                     .map(|pos_before| {
                                         review::quick_comment(
-                                            pos_before, &before, &after, color, mv, size,
+                                            !self.lang.is_zh(),
+                                            pos_before,
+                                            &before,
+                                            &after,
+                                            color,
+                                            mv,
+                                            size,
                                         )
                                     });
                                 self.last_comment = comment;

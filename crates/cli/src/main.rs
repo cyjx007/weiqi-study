@@ -92,7 +92,13 @@ fn run() -> Result<(), String> {
     })?;
     eprintln!("\r  完成，用时 {:.1}s", started.elapsed().as_secs_f32());
 
-    let r = review::build(&game, &evals, min_loss);
+    let english = match std::env::var("WEIQI_LANG") {
+        Ok(v) => v.to_ascii_lowercase().starts_with("en"),
+        Err(_) => !std::env::var("LANG")
+            .map(|l| l.to_ascii_lowercase().starts_with("zh"))
+            .unwrap_or(false),
+    };
+    let r = review::build(english, &game, &evals, min_loss);
     print!("{}", r.render(min_loss, show_all));
     Ok(())
 }
@@ -115,6 +121,7 @@ fn print_help() {
 环境变量：
   KATAGO_BIN      默认 ~/go-study/katago/bin/katago
   KATAGO_MODEL    默认 Steam 游戏 NinOneQi 里的 b18c384nbt 网络
-  KATAGO_CFG      默认 ~/go-study/analysis.cfg"
+  KATAGO_CFG      默认 ~/go-study/analysis.cfg
+  WEIQI_LANG      输出语言 zh|en（默认跟随 LANG）"
     );
 }

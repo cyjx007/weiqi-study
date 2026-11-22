@@ -525,10 +525,11 @@ fn spawn_review(ui: &mut Ui) {
         }
     };
     let cfg = ui.app.config.engine.clone();
+    let english = !ui.app.lang.is_zh();
     let tx = ui.tx.clone();
     std::thread::spawn(move || {
         let result = engine::analyze_game(&cfg, &game, |_, _| {})
-            .map(|evals| review::build(&game, &evals, 5.0));
+            .map(|evals| review::build(english, &game, &evals, 5.0));
         let _ = tx.send(AppEvent::Review(result));
     });
 }

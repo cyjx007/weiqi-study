@@ -34,6 +34,7 @@ pub struct PhaseStat {
 
 #[derive(Clone, Debug)]
 pub struct Review {
+    pub english: bool,
     pub size: u8,
     pub header: String,
     pub deltas: Vec<MoveDelta>,
@@ -69,190 +70,9 @@ fn move_text(mv: Move, size: u8) -> String {
     }
 }
 
-fn verdict(loss: f32) -> &'static str {
-    if loss >= 15.0 {
-        "这手是明显失误。"
-    } else if loss >= 8.0 {
-        "这手亏了不少。"
-    } else if loss >= 5.0 {
-        "这手有点缓。"
-    } else if loss >= 2.0 {
-        "小问题。"
-    } else if loss <= -4.0 {
-        "这手不错。"
-    } else {
-        ""
-    }
-}
-
-pub fn build(game: &Game, evals: &[TurnEval], threshold: f32) -> Review {
-    let size = game.size();
-    let n = game.moves().len();
-    let mut deltas = Vec::with_capacity(n);
-
-    for i in 1..=n {
-        let before = &evals[i - 1];
-        let after = &evals[i];
-        let color = game.color_of_move(i as u16);
-        let wr_before = winrate_for(color, before.winrate_black);
-        let wr_after = winrate_for(color, after.winrate_black);
-        let best = before.candidates.first().map(|c| {
-            (
-                c.mv,
-                winrate_for(color, c.winrate_black),
-            )
-        });
-        deltas.push(MoveDelta {
-            turn: i as u16,
-            color,
-            mv: game.moves()[i - 1],
-            winrate_before: wr_before,
-            winrate_after: wr_after,
-            loss: wr_before - wr_after,
-            score_before: score_for(color, before.score_black),
-            score_after: score_for(color, after.score_black),
-            best,
-            best_pv: before
-                .candidates
-                .first()
-                .map(|c| c.pv.clone())
-                .unwrap_or_default(),
-        });
-    }
-
-    let threshold = threshold.max(0.0);
-    let mut blunders: Vec<usize> = (0..deltas.len())
-        .filter(|&i| deltas[i].loss >= threshold)
-        .collect();
-    blunders.sort_by(|&a, &b| deltas[b].loss.partial_cmp(&deltas[a].loss).unwrap());
-
-    // 阶段划分：按盘面大小缩放（19 路：布局 1–50、中盘 51–150、官子 151+）
-    let scale = (size as f32 / 19.0).powi(2);
-    let t1 = (50.0 * scale).round().max(6.0) as u16;
-    let t2 = (150.0 * scale).round().max(20.0) as u16;
-    let bounds = [("布局", 1u16, t1), ("中盘", t1 + 1, t2), ("官子", t2 + 1, n as u16)];
-    let mut phases = Vec::new();
-    for (label, from, to) in bounds {
-        let slice: Vec<&MoveDelta> = deltas
-            .iter()
-            .filter(|d| d.turn >= from && d.turn <= to)
-            .collect();
-        if slice.is_empty() {
-            continue;
-        }
-        let avg = slice.iter().map(|d| d.loss).sum::<f32>() / slice.len() as f32;
-        let worst = slice
-            .iter()
-            .max_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap())
-            .unwrap();
-        phases.push(PhaseStat {
-            label,
-            from,
-            to,
-            moves: slice.len() as u16,
-            avg_loss: avg,
-            worst_loss: worst.loss,
-            worst_turn: worst.turn,
-        });
-    }
-
-    let header = format!(
-        "{} 路 · 贴目 {:.1} · 共 {} 手",
-        size,
-        game.komi(),
-        n
-    );
-
-    let mut summary = Vec::new();
-    if n > 0 {
-        let avg = deltas.iter().map(|d| d.loss).sum::<f32>() / n as f32;
-        summary.push(format!("整体：平均每手损失 {avg:.1} 个百分点。"));
-        for p in &phases {
-            summary.push(format!(
-                "{}（第 {}–{} 手）：平均 {:.1}，最差 {:+.1}（第 {} 手）",
-                p.label, p.from, p.to, p.avg_loss, -p.worst_loss, p.worst_turn
-            ));
-        }
-        if let Some(&worst) = blunders.first() {
-            let d = &deltas[worst];
-            summary.push(format!(
-                "最大失误：第 {} 手 {} {}（{:+.1}）",
-                d.turn,
-                d.color.name_zh(),
-                move_text(d.mv, size),
-                -d.loss
-            ));
-        }
-        if let Some(best) = deltas
-            .iter()
-            .min_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap())
-        {
-            if best.loss < -2.0 && n >= 10 {
-                summary.push(format!(
-                    "下得最好的一手：第 {} 手 {} {}（{:+.1}）",
-                    best.turn,
-                    best.color.name_zh(),
-                    move_text(best.mv, size),
-                    -best.loss
-                ));
-            }
-        }
-    }
-
-    let mut details = Vec::new();
-    for &i in blunders.iter().take(5) {
-        let d = &deltas[i];
-        let mut s = format!(
-            "第 {} 手 {} {}：胜率 {:.1}% → {:.1}%（{:+.1}）。{}",
-            d.turn,
-            d.color.name_zh(),
-            move_text(d.mv, size),
-            d.winrate_before,
-            d.winrate_after,
-            -d.loss,
-            verdict(d.loss)
-        );
-        if let Some((best_mv, best_wr)) = d.best {
-            if best_mv != d.mv {
-                s.push_str(&format!(
-                    "\n    当时该下 {}（{:.1}%）",
-                    move_text(best_mv, size),
-                    best_wr
-                ));
-                if !d.best_pv.is_empty() {
-                    let pv: Vec<String> = d
-                        .best_pv
-                        .iter()
-                        .take(6)
-                        .map(|m| move_text(*m, size))
-                        .collect();
-                    s.push_str(&format!("，之后大致 {}", pv.join(" ")));
-                }
-                s.push('。');
-            }
-        }
-        s.push_str(&format!(
-            "\n    目差 {:+.1} → {:+.1}。",
-            d.score_before, d.score_after
-        ));
-        details.push(s);
-    }
-
-    Review {
-        size,
-        header,
-        deltas,
-        phases,
-        blunders,
-        summary,
-        details,
-    }
-}
-
 /// 一手棋的战术特征（全部由棋盘本身算出来，不靠猜）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MoveFacts {
-    /// 离最近边的路数：1 = 一路
     pub line: u8,
     pub contact: bool,
     pub captures: u16,
@@ -308,7 +128,39 @@ pub fn move_facts(before: &goban::Position, mv: Move) -> Option<MoveFacts> {
     })
 }
 
-fn line_name(line: u8) -> &'static str {
+fn verdict_zh(loss: f32) -> &'static str {
+    if loss >= 15.0 {
+        "，这手是明显失误。"
+    } else if loss >= 8.0 {
+        "，这手亏了不少。"
+    } else if loss >= 5.0 {
+        "，这手有点缓。"
+    } else if loss >= 2.0 {
+        "，小问题。"
+    } else if loss <= -4.0 {
+        "，这手不错。"
+    } else {
+        "。"
+    }
+}
+
+fn verdict_en(loss: f32) -> &'static str {
+    if loss >= 15.0 {
+        " — a clear blunder."
+    } else if loss >= 8.0 {
+        " — a big loss."
+    } else if loss >= 5.0 {
+        " — a slack move."
+    } else if loss >= 2.0 {
+        " — a minor slip."
+    } else if loss <= -4.0 {
+        " — a good move."
+    } else {
+        "."
+    }
+}
+
+fn line_name_zh(line: u8) -> &'static str {
     match line {
         1 => "一路",
         2 => "二路",
@@ -318,139 +170,275 @@ fn line_name(line: u8) -> &'static str {
     }
 }
 
-fn facts_text(f: &MoveFacts) -> String {
-    let mut parts = vec![line_name(f.line).to_string()];
+fn line_name_en(line: u8) -> &'static str {
+    match line {
+        1 => "1st line",
+        2 => "2nd line",
+        3 => "3rd line",
+        4 => "4th line",
+        _ => "the centre",
+    }
+}
+
+fn facts_text(english: bool, f: &MoveFacts) -> String {
+    let mut parts = if english {
+        vec![line_name_en(f.line).to_string()]
+    } else {
+        vec![line_name_zh(f.line).to_string()]
+    };
     if f.captures > 0 {
-        parts.push(format!("提掉 {} 子", f.captures));
+        parts.push(if english {
+            format!("captured {} stone(s)", f.captures)
+        } else {
+            format!("提掉 {} 子", f.captures)
+        });
     }
     if f.atari && f.captures == 0 {
-        parts.push("打吃对方".to_string());
+        parts.push(if english { "atari on the opponent".into() } else { "打吃对方".into() });
     }
     if f.connects {
-        parts.push("和自己的棋连上".to_string());
+        parts.push(if english { "connected to your stones".into() } else { "和自己的棋连上".into() });
     }
     if f.contact {
-        parts.push("贴着对方下（接触战）".to_string());
+        parts.push(if english { "contact play against the opponent".into() } else { "贴着对方下（接触战）".into() });
     }
     if f.self_atari {
-        parts.push("自己只剩一口气".to_string());
+        parts.push(if english { "your group is left with one liberty".into() } else { "自己只剩一口气".into() });
     }
     if parts.len() == 1 && f.line >= 5 {
-        parts.push("远离边角，偏向中腹".to_string());
+        parts.push(if english { "away from the edges".into() } else { "远离边角，偏向中腹".into() });
     }
-    parts.join("，")
+    parts.join(if english { ", " } else { "，" })
 }
 
-fn score_phrase(mover: Color, score: f32, winrate: f32) -> String {
-    let who = if mover == Color::Black { "你（黑）" } else { "你（白）" };
-    if score.abs() < 0.5 {
-        format!("{who}和对方差不多（{:+.1} 目），胜率 {winrate:.1}%", score)
-    } else if score > 0.0 {
-        format!(
-            "{who}领先 {:.1} 目，胜率 {winrate:.1}%（优势主要来自目数）",
-            score
-        )
-    } else {
-        format!(
-            "{who}落后 {:.1} 目，胜率 {winrate:.1}%",
-            -score
-        )
+fn zone_en(p: Point, size: u8) -> &'static str {
+    match zone_name(p, size) {
+        "角" => "corner",
+        "边" => "side",
+        _ => "centre",
     }
 }
 
-/// 一手棋的即时点评：局面 + 这手的特点 + 引擎预演的后果 + 推荐。
-pub fn quick_comment(
-    before: &Position,
-    before_eval: &TurnEval,
-    after_eval: &TurnEval,
-    mover: Color,
-    mv: Move,
-    size: u8,
-) -> String {
-    let wr_before = winrate_for(mover, before_eval.winrate_black);
-    let wr_after = winrate_for(mover, after_eval.winrate_black);
-    let loss = wr_before - wr_after;
-    let score_before = score_for(mover, before_eval.score_black);
-
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "局面：{}。",
-        score_phrase(mover, score_before, wr_before)
-    ));
-
-    let zone = match mv {
-        Move::Play(p) => format!("（{}）", zone_name(p, size)),
-        Move::Pass => String::new(),
-    };
-    let verdict = if loss >= 15.0 {
-        "，这手是明显失误"
-    } else if loss >= 8.0 {
-        "，这手亏了不少"
-    } else if loss >= 5.0 {
-        "，这手有点缓"
+fn score_phrase(english: bool, mover: Color, score: f32, winrate: f32) -> String {
+    let who = if english {
+        if mover == Color::Black { "you (Black)" } else { "you (White)" }
+    } else if mover == Color::Black {
+        "你（黑）"
     } else {
-        ""
+        "你（白）"
     };
-    lines.push(format!(
-        "{}{}：胜率 {:.1}% → {:.1}%（{:+.1}）{}。",
-        move_text(mv, size),
-        zone,
-        wr_before,
-        wr_after,
-        -loss,
-        verdict
-    ));
-
-    if let Some(f) = move_facts(before, mv) {
-        lines.push(format!("特点：{}。", facts_text(&f)));
-    }
-
-    // 这手之后，对手会怎么走 —— 直接取自引擎的变化图
-    if let Some(pv) = after_eval.candidates.first().map(|c| &c.pv) {
-        if !pv.is_empty() {
-            let pv: Vec<String> = pv.iter().take(4).map(|m| move_text(*m, size)).collect();
-            lines.push(format!("后果：之后大致 {}。", pv.join(" ")));
-        }
-    }
-
-    if let Some(best) = before_eval.candidates.first() {
-        if best.mv != mv {
-            let best_wr = winrate_for(mover, best.winrate_black);
-            let mut s = format!(
-                "推荐 {}（{}，{:.1}%，比实战高 {:.1} 点）",
-                move_text(best.mv, size),
-                match best.mv {
-                    Move::Play(p) => zone_name(p, size),
-                    Move::Pass => "停一手",
-                },
-                best_wr,
-                best_wr - wr_after
-            );
-            if !best.pv.is_empty() {
-                let pv: Vec<String> = best.pv.iter().take(4).map(|m| move_text(*m, size)).collect();
-                s.push_str(&format!("：之后大致 {}。", pv.join(" ")));
-            } else {
-                s.push('。');
-            }
-            lines.push(s);
+    if english {
+        if score.abs() < 0.5 {
+            format!("{who} are roughly level ({score:+.1}); win rate {winrate:.1}%")
+        } else if score > 0.0 {
+            format!("{who} are ahead by {score:.1} points; win rate {winrate:.1}% (the edge comes from the score)")
         } else {
-            lines.push("这手和引擎推荐一致。".to_string());
+            format!("{who} are behind by {:.1} points; win rate {winrate:.1}%", -score)
+        }
+    } else if score.abs() < 0.5 {
+        format!("{who}和对方差不多（{score:+.1} 目），胜率 {winrate:.1}%")
+    } else if score > 0.0 {
+        format!("{who}领先 {score:.1} 目，胜率 {winrate:.1}%（优势主要来自目数）")
+    } else {
+        format!("{who}落后 {:.1} 目，胜率 {winrate:.1}%", -score)
+    }
+}
+
+pub fn build(english: bool, game: &Game, evals: &[TurnEval], threshold: f32) -> Review {
+    let size = game.size();
+    let n = game.moves().len();
+    let mut deltas = Vec::with_capacity(n);
+
+    for i in 1..=n {
+        let before = &evals[i - 1];
+        let after = &evals[i];
+        let color = game.color_of_move(i as u16);
+        let wr_before = winrate_for(color, before.winrate_black);
+        let wr_after = winrate_for(color, after.winrate_black);
+        let best = before
+            .candidates
+            .first()
+            .map(|c| (c.mv, winrate_for(color, c.winrate_black)));
+        deltas.push(MoveDelta {
+            turn: i as u16,
+            color,
+            mv: game.moves()[i - 1],
+            winrate_before: wr_before,
+            winrate_after: wr_after,
+            loss: wr_before - wr_after,
+            score_before: score_for(color, before.score_black),
+            score_after: score_for(color, after.score_black),
+            best,
+            best_pv: before
+                .candidates
+                .first()
+                .map(|c| c.pv.clone())
+                .unwrap_or_default(),
+        });
+    }
+
+    let threshold = threshold.max(0.0);
+    let mut blunders: Vec<usize> = (0..deltas.len())
+        .filter(|&i| deltas[i].loss >= threshold)
+        .collect();
+    blunders.sort_by(|&a, &b| deltas[b].loss.partial_cmp(&deltas[a].loss).unwrap());
+
+    // 阶段划分：按盘面大小缩放（19 路：布局 1–50、中盘 51–150、官子 151+）
+    let scale = (size as f32 / 19.0).powi(2);
+    let t1 = (50.0 * scale).round().max(6.0) as u16;
+    let t2 = (150.0 * scale).round().max(20.0) as u16;
+    let bounds = [
+        (if english { "Opening" } else { "布局" }, 1u16, t1),
+        (if english { "Middlegame" } else { "中盘" }, t1 + 1, t2),
+        (if english { "Endgame" } else { "官子" }, t2 + 1, n as u16),
+    ];
+    let mut phases = Vec::new();
+    for (label, from, to) in bounds {
+        let slice: Vec<&MoveDelta> = deltas
+            .iter()
+            .filter(|d| d.turn >= from && d.turn <= to)
+            .collect();
+        if slice.is_empty() {
+            continue;
+        }
+        let avg = slice.iter().map(|d| d.loss).sum::<f32>() / slice.len() as f32;
+        let worst = slice
+            .iter()
+            .max_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap())
+            .unwrap();
+        phases.push(PhaseStat {
+            label,
+            from,
+            to,
+            moves: slice.len() as u16,
+            avg_loss: avg,
+            worst_loss: worst.loss,
+            worst_turn: worst.turn,
+        });
+    }
+
+    let header = if english {
+        format!("{size}×{size} · komi {:.1} · {n} moves", game.komi())
+    } else {
+        format!("{size} 路 · 贴目 {:.1} · 共 {n} 手", game.komi())
+    };
+
+    let mut summary = Vec::new();
+    if n > 0 {
+        let avg = deltas.iter().map(|d| d.loss).sum::<f32>() / n as f32;
+        if english {
+            summary.push(format!("Overall: average loss {avg:.1} points per move."));
+            for p in &phases {
+                summary.push(format!(
+                    "{} (moves {}–{}): average {:.1}, worst {:+.1} (move {})",
+                    p.label, p.from, p.to, p.avg_loss, -p.worst_loss, p.worst_turn
+                ));
+            }
+        } else {
+            summary.push(format!("整体：平均每手损失 {avg:.1} 个百分点。"));
+            for p in &phases {
+                summary.push(format!(
+                    "{}（第 {}–{} 手）：平均 {:.1}，最差 {:+.1}（第 {} 手）",
+                    p.label, p.from, p.to, p.avg_loss, -p.worst_loss, p.worst_turn
+                ));
+            }
+        }
+        if let Some(&worst) = blunders.first() {
+            let d = &deltas[worst];
+            let col = if english {
+                if d.color == Color::Black { "Black" } else { "White" }
+            } else {
+                d.color.name_zh()
+            };
+            summary.push(if english {
+                format!("Biggest blunder: move {} {} {} ({:+.1})", d.turn, col, move_text(d.mv, size), -d.loss)
+            } else {
+                format!("最大失误：第 {} 手 {} {}（{:+.1}）", d.turn, col, move_text(d.mv, size), -d.loss)
+            });
+        }
+        if let Some(best) = deltas.iter().min_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap()) {
+            if best.loss < -2.0 && n >= 10 {
+                let col = if english {
+                    if best.color == Color::Black { "Black" } else { "White" }
+                } else {
+                    best.color.name_zh()
+                };
+                summary.push(if english {
+                    format!("Best move: move {} {} {} ({:+.1})", best.turn, col, move_text(best.mv, size), -best.loss)
+                } else {
+                    format!("下得最好的一手：第 {} 手 {} {}（{:+.1}）", best.turn, col, move_text(best.mv, size), -best.loss)
+                });
+            }
         }
     }
 
-    lines.join("
-")
-}
+    let mut details = Vec::new();
+    for &i in blunders.iter().take(5) {
+        let d = &deltas[i];
+        let col = if english {
+            if d.color == Color::Black { "Black" } else { "White" }
+        } else {
+            d.color.name_zh()
+        };
+        let mut s = if english {
+            format!(
+                "Move {} {} {}: win rate {:.1}% → {:.1}% ({:+.1}){}",
+                d.turn,
+                col,
+                move_text(d.mv, size),
+                d.winrate_before,
+                d.winrate_after,
+                -d.loss,
+                verdict_en(d.loss)
+            )
+        } else {
+            format!(
+                "第 {} 手 {} {}：胜率 {:.1}% → {:.1}%（{:+.1}）{}",
+                d.turn,
+                col,
+                move_text(d.mv, size),
+                d.winrate_before,
+                d.winrate_after,
+                -d.loss,
+                verdict_zh(d.loss)
+            )
+        };
+        if let Some((best_mv, best_wr)) = d.best {
+            if best_mv != d.mv {
+                s.push_str(&if english {
+                    format!("\n    Better: {} ({:.1}%)", move_text(best_mv, size), best_wr)
+                } else {
+                    format!("\n    当时该下 {}（{:.1}%）", move_text(best_mv, size), best_wr)
+                });
+                if !d.best_pv.is_empty() {
+                    let pv: Vec<String> = d.best_pv.iter().take(6).map(|m| move_text(*m, size)).collect();
+                    s.push_str(&if english {
+                        format!(", then {}.", pv.join(" "))
+                    } else {
+                        format!("，之后大致 {}。", pv.join(" "))
+                    });
+                } else {
+                    s.push(if english { '.' } else { '。' });
+                }
+            }
+        }
+        s.push_str(&if english {
+            format!("\n    Score lead {:+.1} → {:+.1}.", d.score_before, d.score_after)
+        } else {
+            format!("\n    目差 {:+.1} → {:+.1}。", d.score_before, d.score_after)
+        });
+        details.push(s);
+    }
 
-fn zone_name(p: Point, size: u8) -> &'static str {
-    let dx = p.x.min(size.saturating_sub(1).saturating_sub(p.x));
-    let dy = p.y.min(size.saturating_sub(1).saturating_sub(p.y));
-    if dx <= 3 && dy <= 3 {
-        "角"
-    } else if dx <= 3 || dy <= 3 {
-        "边"
-    } else {
-        "中腹"
+    Review {
+        english,
+        size,
+        header,
+        deltas,
+        phases,
+        blunders,
+        summary,
+        details,
     }
 }
 
@@ -459,16 +447,25 @@ impl Review {
     pub fn render(&self, min_loss: f32, show_all: bool) -> String {
         let mut out = String::new();
         out.push_str(&format!("{}\n", self.header));
-        out.push_str("\n手数  执  落点   胜率变化                    目差变化\n");
+        if self.english {
+            out.push_str("\nMove  Col  Point  Win rate                    Score\n");
+        } else {
+            out.push_str("\n手数  执  落点   胜率变化                    目差变化\n");
+        }
         out.push_str("─────────────────────────────────────────────────────────────\n");
         for d in &self.deltas {
             if !show_all && d.loss < min_loss {
                 continue;
             }
+            let col = if self.english {
+                if d.color == Color::Black { "B" } else { "W" }
+            } else {
+                d.color.name_zh()
+            };
             out.push_str(&format!(
                 "{:>4}  {}  {:<4}  {:5.1}% → {:5.1}%  ({:+.1})   {:+.1} → {:+.1}\n",
                 d.turn,
-                d.color.name_zh(),
+                col,
                 self.coord(d),
                 d.winrate_before,
                 d.winrate_after,
@@ -483,7 +480,7 @@ impl Review {
             out.push('\n');
         }
         if !self.details.is_empty() {
-            out.push_str("\n──── 失误详情 ────\n");
+            out.push_str(if self.english { "\n──── Details ────\n" } else { "\n──── 失误详情 ────\n" });
             for d in &self.details {
                 out.push_str(d);
                 out.push('\n');
@@ -493,12 +490,159 @@ impl Review {
     }
 
     fn coord(&self, d: &MoveDelta) -> String {
-        // 盘面大小在 header 里，这里用坐标长度推断：GTP 坐标不含盘面信息，
-        // 直接按 Move 的 Point 还原（19 路默认，9/13 路也能正确显示列字母）。
         match d.mv {
-            Move::Pass => "停".to_string(),
+            Move::Pass => "pass".to_string(),
             Move::Play(p) => gtp_coord(p, self.size),
         }
+    }
+}
+
+/// 一手棋的即时点评：局面 + 这手的特点 + 引擎预演的后果 + 推荐。
+pub fn quick_comment(
+    english: bool,
+    before: &Position,
+    before_eval: &TurnEval,
+    after_eval: &TurnEval,
+    mover: Color,
+    mv: Move,
+    size: u8,
+) -> String {
+    let wr_before = winrate_for(mover, before_eval.winrate_black);
+    let wr_after = winrate_for(mover, after_eval.winrate_black);
+    let loss = wr_before - wr_after;
+    let score_before = score_for(mover, before_eval.score_black);
+    let opp = mover.opposite();
+
+    let mut lines = Vec::new();
+    lines.push(if english {
+        format!("Position: {}.", score_phrase(true, mover, score_before, wr_before))
+    } else {
+        format!("局面：{}。", score_phrase(false, mover, score_before, wr_before))
+    });
+
+    let zone = match mv {
+        Move::Play(p) => {
+            if english {
+                format!("（{}）", zone_en(p, size))
+            } else {
+                format!("（{}）", zone_name(p, size))
+            }
+        }
+        Move::Pass => String::new(),
+    };
+    lines.push(if english {
+        format!(
+            "{}{}: win rate {:.1}% → {:.1}% ({:+.1}){}",
+            move_text(mv, size),
+            zone,
+            wr_before,
+            wr_after,
+            -loss,
+            verdict_en(loss)
+        )
+    } else {
+        format!(
+            "{}{}：胜率 {:.1}% → {:.1}%（{:+.1}）{}",
+            move_text(mv, size),
+            zone,
+            wr_before,
+            wr_after,
+            -loss,
+            verdict_zh(loss)
+        )
+    });
+
+    if let Some(f) = move_facts(before, mv) {
+        lines.push(if english {
+            format!("Shape: {}.", facts_text(true, &f))
+        } else {
+            format!("特点：{}。", facts_text(false, &f))
+        });
+    }
+
+    if let Some(pv) = after_eval.candidates.first().map(|c| &c.pv) {
+        if !pv.is_empty() {
+            let pv: Vec<String> = pv.iter().take(4).map(|m| move_text(*m, size)).collect();
+            lines.push(if english {
+                format!(
+                    "Follow-up: {} will likely play {}.",
+                    if opp == Color::Black { "Black" } else { "White" },
+                    pv.join(" ")
+                )
+            } else {
+                format!(
+                    "后果：之后{}大致 {}。",
+                    if opp == Color::Black { "黑棋" } else { "白棋" },
+                    pv.join(" ")
+                )
+            });
+        }
+    }
+
+    if let Some(best) = before_eval.candidates.first() {
+        if best.mv != mv {
+            let best_wr = winrate_for(mover, best.winrate_black);
+            let best_zone = match best.mv {
+                Move::Play(p) => {
+                    if english {
+                        zone_en(p, size)
+                    } else {
+                        zone_name(p, size)
+                    }
+                }
+                Move::Pass => {
+                    if english {
+                        "pass"
+                    } else {
+                        "停一手"
+                    }
+                }
+            };
+            let mut line = if english {
+                format!(
+                    "Better: {} ({}, {:.1}%, {:+.1} points better)",
+                    move_text(best.mv, size),
+                    best_zone,
+                    best_wr,
+                    -loss
+                )
+            } else {
+                format!(
+                    "推荐 {}（{}，{:.1}%，比实战高 {:.1} 点）",
+                    move_text(best.mv, size),
+                    best_zone,
+                    best_wr,
+                    -loss
+                )
+            };
+            if !best.pv.is_empty() {
+                let pv: Vec<String> = best.pv.iter().take(4).map(|m| move_text(*m, size)).collect();
+                line.push_str(&if english {
+                    format!(": then {}.", pv.join(" "))
+                } else {
+                    format!("：之后大致 {}。", pv.join(" "))
+                });
+            } else {
+                line.push(if english { '.' } else { '。' });
+            }
+            lines.push(line);
+        } else {
+            lines.push(if english { "This is the engine's top move.".into() } else { "这手和引擎推荐一致。".into() });
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn zone_name(p: Point, size: u8) -> &'static str {
+    let dx = p.x.min(size.saturating_sub(1).saturating_sub(p.x));
+    let dy = p.y.min(size.saturating_sub(1).saturating_sub(p.y));
+    if dx <= 3 && dy <= 3 {
+        "角"
+    } else if dx <= 3 || dy <= 3 {
+        "边"
+    } else {
+        "中腹"
     }
 }
 
@@ -544,10 +688,33 @@ mod tests {
         pos.to_move = Color::Black;
         let before = fake_eval(0, Color::Black, 0.55);
         let after = fake_eval(1, Color::White, 0.60);
-        let text = quick_comment(&pos, &before, &after, Color::Black, Move::Play(Point::new(0, 1)), 9);
+        let text = quick_comment(false, &pos, &before, &after, Color::Black, Move::Play(Point::new(0, 1)), 9);
         assert!(text.contains("局面："));
         assert!(text.contains("特点："));
         assert!(text.contains("推荐") || text.contains("一致"));
+    }
+
+    #[test]
+    fn english_templates_use_english_terms() {
+        let mut pos = Position::new(9);
+        pos.board.set(Point::new(1, 0), Some(Color::Black));
+        pos.board.set(Point::new(0, 0), Some(Color::White));
+        pos.to_move = Color::Black;
+        let before = fake_eval(0, Color::Black, 0.55);
+        let after = fake_eval(1, Color::White, 0.60);
+        let text = quick_comment(
+            true,
+            &pos,
+            &before,
+            &after,
+            Color::Black,
+            Move::Play(Point::new(0, 1)),
+            9,
+        );
+        assert!(text.contains("Position:"));
+        assert!(text.contains("win rate"));
+        assert!(text.contains("Shape:"));
+        assert!(!text.contains("胜率"));
     }
 
     #[test]
@@ -561,7 +728,7 @@ mod tests {
             fake_eval(1, Color::White, 0.40),
             fake_eval(2, Color::Black, 0.40),
         ];
-        let r = build(&game, &evals, 5.0);
+        let r = build(false, &game, &evals, 5.0);
         // 黑方胜率 60% -> 40%，亏 20 个点
         assert!((r.deltas[0].loss - 20.0).abs() < 0.01);
         // 白方视角：60% -> 60%，没亏没赚
@@ -576,7 +743,7 @@ mod tests {
             fake_eval(0, Color::Black, 0.5),
             fake_eval(1, Color::White, 0.5),
         ];
-        let r = build(&game, &evals, 5.0);
+        let r = build(false, &game, &evals, 5.0);
         assert_eq!(r.render(5.0, true), r.render(5.0, true));
     }
 }

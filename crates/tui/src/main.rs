@@ -210,10 +210,11 @@ fn spawn_review(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
         }
     };
     let cfg = app.config.engine.clone();
+    let english = !app.lang.is_zh();
     let tx = tx.clone();
     std::thread::spawn(move || {
         let result = engine::analyze_game(&cfg, &game, |_, _| {})
-            .map(|evals| review::build(&game, &evals, 5.0));
+            .map(|evals| review::build(english, &game, &evals, 5.0));
         let _ = tx.send(AppEvent::Review(result));
     });
 }
