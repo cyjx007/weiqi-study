@@ -444,7 +444,9 @@ impl AnalysisSession {
             .map(|(c, p)| json!([c.sgf_char().to_string(), gtp_coord(*p, size)]))
             .collect();
 
+        let mut expected_ids = std::collections::HashSet::new();
         for (n, chunk) in turns.chunks(cfg.chunk.max(1)).enumerate() {
+            expected_ids.insert(format!("q{base}-{n}"));
             let mut query = json!({
                 "id": format!("q{base}-{n}"),
                 "initialStones": setup_json,
@@ -471,8 +473,10 @@ impl AnalysisSession {
             .map_err(|e| format!("刷新 query 失败: {e}"))?;
 
         let total = turns.len();
+        let expected_turns: std::collections::HashSet<u16> = turns.iter().copied().collect();
+        let mut seen: std::collections::HashSet<u16> = std::collections::HashSet::new();
         let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
-        while evals.len() < total {
+        while seen.len() < total {
             let line = match self.rx.recv_timeout(std::time::Duration::from_secs(90)) {
                 Ok(line) => line,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -490,11 +494,26 @@ impl AnalysisSession {
             if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
                 return Err(format!("KataGo 报错: {err}"));
             }
-            let Some(turn) = value.get("turnNumber").and_then(|x| x.as_u64()) else {
-                continue;
-            };
-            evals.push(eval_from_json(&value, game, turn as u16)?);
-            progress(evals.len(), total);
+            let id = value
+                .get("id")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| format!("响应缺少 id: {line}"))?;
+            if !expected_ids.contains(id) {
+                return Err(format!("响应 id 不属于本次请求: {id}"));
+            }
+            let turn = value
+                .get("turnNumber")
+                .and_then(|x| x.as_u64())
+                .ok_or_else(|| format!("响应缺少 turnNumber: {line}"))?
+                as u16;
+            if !expected_turns.contains(&turn) {
+                return Err(format!("响应 turnNumber 越界: {turn}"));
+            }
+            if !seen.insert(turn) {
+                return Err(format!("响应 turnNumber 重复: {turn}"));
+            }
+            evals.push(eval_from_json(&value, game, turn)?);
+            progress(seen.len(), total);
         }
         evals.sort_by_key(|e| e.turn);
         Ok(evals)
@@ -520,11 +539,17 @@ fn katago_rules(ko: KoRule) -> &'static str {
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
     let to_move = game.to_move_at(turn);
     let root = v.get("rootInfo").ok_or("结果缺少 rootInfo")?;
-    let wr = root.get("winrate").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
+    let wr = root
+        .get("winrate")
+        .and_then(|x| x.as_f64())
+        .ok_or("rootInfo 缺少 winrate")? as f32;
+    if !(0.0..=1.0).contains(&wr) {
+        return Err(format!("rootInfo.winrate 越界: {wr}"));
+    }
     let score = root
         .get("scoreLead")
         .and_then(|x| x.as_f64())
-        .unwrap_or(0.0) as f32;
+        .ok_or("rootInfo 缺少 scoreLead")? as f32;
     let (winrate_black, score_black) = if to_move == Color::Black {
         (wr, score)
     } else {
@@ -659,6 +684,50 @@ mod tests {
     }
 
     #[test]
+    fn response_with_wrong_id_is_an_error() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  echo '{"id":"wrong","turnNumber":0,"rootInfo":{"winrate":0.5,"scoreLead":0.0}}'
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(err.contains("不属于本次请求"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn response_with_out_of_range_turn_is_an_error() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":99,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(err.contains("越界"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_root_info_is_an_error() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":0}"
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(err.contains("rootInfo"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn katago_rules_follow_ko_rule() {
         assert_eq!(katago_rules(KoRule::Simple), "japanese");
         assert_eq!(katago_rules(KoRule::PositionalSuperko), "chinese");
@@ -672,13 +741,14 @@ mod tests {
             r#"#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
-    *'"rules":"japanese"'*) echo '{"id":"x","turnNumber":0,"rootInfo":{"winrate":0.5,"scoreLead":0.0},"moveInfos":[]}' ;;
+    *'"rules":"japanese"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}" ;;
     *) echo '{"error":"wrong rules"}' ;;
   esac
 done"#,
         );
-        let mut game = Game::with_rule(9, 7.5, KoRule::Simple);
-        game.play(Move::Play(Point::new(2, 2))).unwrap();
+        let game = Game::with_rule(9, 7.5, KoRule::Simple);
         engine.analyze_position(&game).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -731,7 +801,9 @@ done"#,
             r#"#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
-    *analyzeTurns*) echo '{"id":"x","turnNumber":0,"rootInfo":{"winrate":0.5,"scoreLead":0.0},"moveInfos":[{"move":"D4","winrate":0.5,"scoreLead":0.0,"pv":["D4","E5"],"visits":1}]}' ;;
+    *analyzeTurns*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[{\"move\":\"D4\",\"winrate\":0.5,\"scoreLead\":0.0,\"pv\":[\"D4\",\"E5\"],\"visits\":1}]}" ;;
   esac
 done
 "#,

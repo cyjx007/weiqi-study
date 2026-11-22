@@ -43,13 +43,16 @@ impl GameStore {
     }
 
     /// 生成一个新的棋谱路径（不创建文件）。
+    ///
+    /// 文件名带纳秒 + pid：两个进程同一秒创建也不会撞名（原来只精确到秒）。
     pub fn create(&self) -> Result<PathBuf, String> {
-        let now = unix_now();
+        let stamp = unix_nanos();
+        let pid = std::process::id();
         for i in 0..1000u32 {
             let name = if i == 0 {
-                format!("game-{now}.sgf")
+                format!("game-{stamp}-{pid}.sgf")
             } else {
-                format!("game-{now}-{i}.sgf")
+                format!("game-{stamp}-{pid}-{i}.sgf")
             };
             let path = self.dir.join(name);
             if !path.exists() {
@@ -157,7 +160,15 @@ impl GameStore {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("game.sgf");
-        let target = trash.join(format!("{name}.{}", unix_now()));
+        // 纳秒 + pid，避免同一秒删除同名棋谱时互相覆盖
+        let stamp = unix_nanos();
+        let pid = std::process::id();
+        let mut target = trash.join(format!("{name}.{stamp}-{pid}"));
+        let mut i = 1u32;
+        while target.exists() {
+            target = trash.join(format!("{name}.{stamp}-{pid}-{i}"));
+            i += 1;
+        }
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
         Ok(target)
@@ -191,6 +202,14 @@ fn data_home() -> PathBuf {
         })
 }
 
+fn unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+#[allow(dead_code)]
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -268,6 +287,22 @@ mod tests {
         std::fs::write(&other, "x").unwrap();
         assert!(store.rename(&other, "opening study").is_err(), "同名应拒绝");
 
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn trash_twice_does_not_overwrite() {
+        let store = temp_store();
+        let p1 = store.dir().join("same.sgf");
+        std::fs::write(&p1, "(;SZ[9])").unwrap();
+        let t1 = store.trash(&p1).unwrap();
+
+        let p2 = store.dir().join("same.sgf");
+        std::fs::write(&p2, "(;SZ[9])").unwrap();
+        let t2 = store.trash(&p2).unwrap();
+
+        assert_ne!(t1, t2, "同名棋谱连续删除不能落到同一个目标");
+        assert!(t1.exists() && t2.exists());
         let _ = std::fs::remove_dir_all(store.dir());
     }
 

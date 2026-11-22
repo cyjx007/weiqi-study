@@ -58,11 +58,15 @@ impl Panels {
         let moves = label("");
         let cand = label("");
         cand.set_wrap(true);
+        cand.set_max_width_chars(30);
         let comment = label("");
         comment.set_wrap(true);
+        comment.set_max_width_chars(30);
         comment.set_valign(gtk::Align::Start);
         let status = label("");
         status.add_css_class("dim-label");
+        status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        status.set_max_width_chars(24);
         status.set_wrap(true);
 
         let games = gtk::DropDown::from_strings(&["—"]);
@@ -79,7 +83,8 @@ impl Panels {
         let delete_btn = gtk::Button::with_label("");
 
         let side = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        side.set_size_request(340, -1);
+        side.set_size_request(360, -1);
+        side.set_hexpand(false);
         side.set_margin_top(14);
         side.set_margin_bottom(14);
         side.set_margin_start(14);
@@ -139,6 +144,7 @@ impl Panels {
         human_list.set_selection_mode(gtk::SelectionMode::None);
         human_list.add_css_class("boxed-list");
         let human_switch = adw::SwitchRow::new();
+        human_switch.set_subtitle_lines(2);
         human_list.append(&human_switch);
 
         let rank_model = gtk::StringList::new(&[]);
