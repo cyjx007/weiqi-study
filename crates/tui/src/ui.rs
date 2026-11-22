@@ -41,7 +41,8 @@ pub fn draw(
     let docked = content.width >= 78;
     let side_w = 38.min(content.width.saturating_sub(44));
     if docked {
-        let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(side_w)]).split(content);
+        let cols =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(side_w)]).split(content);
         draw_board(frame, app, cols[0], image);
         let mode = image.as_ref().map(|i| i.protocol_name()).unwrap_or("text");
         draw_side(frame, app, cols[1], mode);
@@ -126,8 +127,7 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
     let n = app.size as u16;
     let Some((spacing, row_step)) = choose_scale(inner.width, inner.height, n) else {
         frame.render_widget(
-            Paragraph::new("window too small / 窗口太小")
-                .style(Style::default().fg(C::Gray)),
+            Paragraph::new("window too small / 窗口太小").style(Style::default().fg(C::Gray)),
             inner,
         );
         return;
@@ -153,7 +153,12 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
     let pad = (spacing.saturating_sub(1)) / 2;
     for j in 0..n {
         let letter = GTP_COLS[j as usize] as char;
-        buf.set_string(grid_x + j * spacing + pad, y0, letter.to_string(), wood.fg(LINE));
+        buf.set_string(
+            grid_x + j * spacing + pad,
+            y0,
+            letter.to_string(),
+            wood.fg(LINE),
+        );
         buf.set_string(
             grid_x + j * spacing + pad,
             y0 + 1 + n * row_step,
@@ -245,8 +250,16 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
 
     let wr = app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.winrate)))
-        .gauge_style(Style::default().fg(C::Rgb(235, 235, 235)).bg(C::Rgb(45, 45, 45)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.winrate)),
+        )
+        .gauge_style(
+            Style::default()
+                .fg(C::Rgb(235, 235, 235))
+                .bg(C::Rgb(45, 45, 45)),
+        )
         .ratio(wr.clamp(0.0, 1.0) as f64)
         .label(format!("{:.1}%", wr * 100.0));
     frame.render_widget(gauge, chunks[0]);
@@ -261,14 +274,22 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
     };
     let info = Paragraph::new(vec![
         Line::from(format!("{}   - {score:+.1}", s.score)),
-        Line::from(format!("{}   {} / {}", s.moves, app.display_pos(), app.total_moves())),
+        Line::from(format!(
+            "{}   {} / {}",
+            s.moves,
+            app.display_pos(),
+            app.total_moves()
+        )),
         Line::from(format!(
             "{}   {}({})",
             s.turn,
             color_name(app.display_to_move(), app.lang),
             who
         )),
-        Line::from(format!("{}   {} visits", s.strength, app.config.engine.visits)),
+        Line::from(format!(
+            "{}   {} visits",
+            s.strength, app.config.engine.visits
+        )),
         Line::from(format!(
             "{}   {}",
             s.human_net,
@@ -280,7 +301,11 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
         )),
         Line::from(format!("{}   {board_mode}", s.board_mode)),
     ])
-    .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.position)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", s.position)),
+    );
     frame.render_widget(info, chunks[1]);
 
     let mut lines = Vec::new();
@@ -314,7 +339,11 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
         }
     }
     let cand = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.predict)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.predict)),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(cand, chunks[2]);
 
@@ -351,13 +380,21 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
         text.push_str(s.fallback_comment);
     }
     let c = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.commentary)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.commentary)),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(c, chunks[3]);
 
     let status = Paragraph::new(app.status.as_str())
         .style(Style::default().fg(C::Gray))
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.status)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.status)),
+        );
     frame.render_widget(status, chunks[4]);
 }
 
@@ -392,8 +429,11 @@ fn draw_games(frame: &mut Frame, app: &App, area: Rect) {
         s.games_hint,
         Style::default().fg(C::Gray),
     )));
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.games)));
+    let p = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} ", s.games)),
+    );
     frame.render_widget(p, rect);
 }
 
@@ -416,7 +456,11 @@ fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, overlay: &Overlay) {
         Line::from(Span::styled(hint, Style::default().fg(C::Gray))),
     ];
     let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.games)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.games)),
+        )
         .wrap(Wrap { trim: true });
     frame.render_widget(p, rect);
 }
@@ -436,7 +480,11 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
     let p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.help)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", s.help)),
+        )
         .style(Style::default().bg(C::Black).fg(C::Gray));
     frame.render_widget(p, rect);
 }

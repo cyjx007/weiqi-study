@@ -1,6 +1,6 @@
 //! TUI 图片棋盘：把局面画成 RGBA 位图，再交给 ratatui-image 输出。
 //!
-//! 图片由固定 720×720 画布生成，终端负责缩放到棋盘区域；
+//! 图片按棋盘区域的实际像素尺寸生成并居中，避免缩放造成线条粗细不均；
 //! 坐标文字用 `font8x8` 点阵字体，避免依赖系统字体。
 
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -17,8 +17,8 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 
-const CANVAS: f64 = 720.0;
-const MARGIN: f64 = 64.0;
+const MIN_SIDE: u32 = 240;
+const MAX_SIDE: u32 = 900;
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 
 const WOOD: [u8; 3] = [214, 176, 124];
@@ -53,6 +53,8 @@ pub struct ImageBoard {
     picker: Picker,
     protocol: Option<StatefulProtocol>,
     fingerprint: Option<u64>,
+    /// 当前源图的像素边长；区域变化时按新尺寸重画，避免缩放
+    side: u32,
     protocol_name: &'static str,
 }
 
@@ -96,9 +98,9 @@ impl ImageBoard {
         }
         if picker.protocol_type() == ProtocolType::Halfblocks {
             return match mode {
-                Mode::Image => Err(
-                    "终端只支持 halfblocks；图片模式需要 kitty / sixel / iTerm2".to_string(),
-                ),
+                Mode::Image => {
+                    Err("终端只支持 halfblocks；图片模式需要 kitty / sixel / iTerm2".to_string())
+                }
                 _ => Ok(None),
             };
         }
@@ -112,6 +114,7 @@ impl ImageBoard {
             picker,
             protocol: None,
             fingerprint: None,
+            side: 0,
             protocol_name,
         }))
     }
@@ -125,19 +128,49 @@ impl ImageBoard {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        let side = self.target_side(area);
         let fp = fingerprint(app);
-        if self.fingerprint != Some(fp) {
-            let img = render_board(app, CANVAS as u32);
-            self.protocol = Some(self.picker.new_resize_protocol(DynamicImage::ImageRgba8(img)));
+        if self.fingerprint != Some(fp) || self.side != side {
+            let img = render_board(app, side);
+            self.protocol = Some(
+                self.picker
+                    .new_resize_protocol(DynamicImage::ImageRgba8(img)),
+            );
             self.fingerprint = Some(fp);
+            self.side = side;
         }
         if let Some(state) = self.protocol.as_mut() {
+            // StatefulImage 从区域左上角开始画；按实际 cell 尺寸算一个居中矩形
+            let size = state.size_for(
+                Resize::Fit(None),
+                ratatui::layout::Size::new(area.width, area.height),
+            );
+            let rect = centered_rect(area, size.width, size.height);
             frame.render_stateful_widget(
                 StatefulImage::new().resize(Resize::Fit(None)),
-                area,
+                rect,
                 state,
             );
         }
+    }
+
+    /// 目标源图边长：取区域实际像素的短边，限制在 240–900。
+    fn target_side(&self, area: Rect) -> u32 {
+        let font = self.picker.font_size();
+        let w = area.width as u32 * font.width.max(1) as u32;
+        let h = area.height as u32 * font.height.max(1) as u32;
+        w.min(h).clamp(MIN_SIDE, MAX_SIDE)
+    }
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
     }
 }
 
@@ -213,10 +246,11 @@ struct Metrics {
     cell: f64,
 }
 
-fn metrics(size: u8) -> Metrics {
-    let board = CANVAS - 2.0 * MARGIN;
+fn metrics(size: u8, side: f64) -> Metrics {
+    let margin = (side * 0.09).max(10.0);
+    let board = side - 2.0 * margin;
     Metrics {
-        margin: MARGIN,
+        margin,
         cell: board / (size as f64 - 1.0).max(1.0),
     }
 }
@@ -230,7 +264,7 @@ fn center(m: &Metrics, p: goban::Point) -> (i32, i32) {
 
 fn render_board(app: &App, side: u32) -> RgbaImage {
     let mut canvas = Canvas::new(side, side, [WOOD[0], WOOD[1], WOOD[2], 255]);
-    let m = metrics(app.size);
+    let m = metrics(app.size, side as f64);
     let board = m.cell * (app.size as f64 - 1.0);
     let n = app.size as i32;
 
@@ -256,11 +290,17 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
     // 坐标：数字/字母点阵字，按格子大小缩放
     let scale = ((m.cell * 0.32 / 8.0).round() as i32).clamp(1, 3);
     let glyph = 8 * scale;
-    for i in 0..n as usize {
+    for (i, col) in GTP_COLS.iter().enumerate().take(n as usize) {
         let x = (m.margin + i as f64 * m.cell).round() as i32;
-        let letter = (GTP_COLS[i] as char).to_string();
+        let letter = (*col as char).to_string();
         let w = text_width(&letter, scale);
-        canvas.text(&letter, x - w / 2, m.margin as i32 - glyph - 12, scale, COORD);
+        canvas.text(
+            &letter,
+            x - w / 2,
+            m.margin as i32 - glyph - 12,
+            scale,
+            COORD,
+        );
         canvas.text(
             &letter,
             x - w / 2,
@@ -273,13 +313,7 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
         let w = text_width(&row, scale);
         let y = (m.margin + i as f64 * m.cell).round() as i32 - glyph / 2;
         canvas.text(&row, m.margin as i32 - w - 12, y, scale, COORD);
-        canvas.text(
-            &row,
-            (m.margin + board) as i32 + 12,
-            y,
-            scale,
-            COORD,
-        );
+        canvas.text(&row, (m.margin + board) as i32 + 12, y, scale, COORD);
     }
 
     // 候选点
@@ -296,7 +330,13 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
     // 棋子
     for (p, c) in app.display_game().position().board.stones() {
         let (x, y) = center(&m, p);
-        draw_stone(&mut canvas, x, y, (m.cell * 0.46).round() as i32, c == goban::Color::Black);
+        draw_stone(
+            &mut canvas,
+            x,
+            y,
+            (m.cell * 0.46).round() as i32,
+            c == goban::Color::Black,
+        );
     }
 
     // 最后一手
@@ -367,7 +407,8 @@ impl Canvas {
 
     fn dot(&mut self, x: i32, y: i32, w: i32, color: [u8; 4]) {
         let w = w.max(1);
-        let start = -(w - 1) / 2;
+        // 2px 线要占 x-1 和 x，居中而不是偏右下
+        let start = -(w / 2);
         for dy in start..start + w {
             for dx in start..start + w {
                 self.blend(x + dx, y + dy, color);
@@ -474,7 +515,7 @@ mod tests {
         assert_eq!(img.width(), 720);
         assert_eq!(img.height(), 720);
 
-        let m = metrics(9);
+        let m = metrics(9, 720.0);
         let (sx, sy) = center(&m, goban::Point::new(2, 2));
         // 中心是最后一手红点，往旁边挪半格看棋子本体
         let off = (m.cell * 0.25) as i32;
@@ -484,10 +525,14 @@ mod tests {
         assert!(last[0] > 180 && last[1] < 80, "最后一手应是红点: {last:?}");
 
         let (ex, ey) = center(&m, goban::Point::new(3, 3));
-        let empty = img
-            .get_pixel((ex + off) as u32, (ey + off) as u32)
-            .0;
+        let empty = img.get_pixel((ex + off) as u32, (ey + off) as u32).0;
         assert!(empty[0] > 150, "空点应是木色: {empty:?}");
+    }
+
+    #[test]
+    fn centered_rect_puts_the_board_in_the_middle() {
+        let r = centered_rect(Rect::new(0, 0, 80, 40), 50, 20);
+        assert_eq!((r.x, r.y, r.width, r.height), (15, 10, 50, 20));
     }
 
     #[test]
