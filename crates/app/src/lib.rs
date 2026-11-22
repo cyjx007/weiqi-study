@@ -222,23 +222,36 @@ impl App {
         }
     }
 
-    pub fn open_sgf_file(
-        &mut self,
-        path: PathBuf,
-        sg: &SgfGame,
-    ) -> Result<(), String> {
+    /// 打开一盘棋。
+    ///
+    /// 外部文件**永远不原地改写**：先复制到 `games/`，之后的自动保存只写副本。
+    /// 已经在 `games/` 里的文件直接续写。
+    pub fn open_sgf_file(&mut self, path: PathBuf, sg: &SgfGame) -> Result<(), String> {
         self.size = sg.size;
         self.komi = sg.komi.unwrap_or(7.5);
         self.setup = sg.setup.clone();
         self.moves = sg.moves.clone();
         self.pos = self.moves.len();
-        self.current_file = Some(path);
         self.evals.clear();
         self.review = None;
         self.last_comment = None;
         self.failed_pos = None;
         self.cursor = Point::new(self.size / 2, self.size / 2);
-        self.rebuild()
+        self.rebuild()?;
+
+        let inside_store = path.starts_with(self.store.dir());
+        self.current_file = if inside_store {
+            Some(path)
+        } else {
+            match self.store.create() {
+                Ok(copy) => {
+                    self.store.save(&copy, self.size, self.komi, &self.setup, &self.moves)?;
+                    Some(copy)
+                }
+                Err(_) => None,
+            }
+        };
+        Ok(())
     }
 
     pub fn toggle_games(&mut self) {
@@ -715,6 +728,43 @@ mod tests {
         reopened.open_sgf_file(file, &sg).unwrap();
         assert_eq!(reopened.total_moves(), 1);
         assert_eq!(reopened.pos(), 1);
+    }
+
+    #[test]
+    fn opening_external_sgf_never_writes_it() {
+        use std::io::Write;
+        let store = test_store();
+        let external = std::env::temp_dir().join(format!(
+            "weiqi-external-{}-{}.sgf",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let original = "(;GM[1]FF[4]SZ[9]KM[7.5]PB[Alice];B[cc];W[gg])";
+        std::fs::File::create(&external)
+            .unwrap()
+            .write_all(original.as_bytes())
+            .unwrap();
+
+        let sg = sgf::parse(original).unwrap();
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = store.clone();
+        app.open_sgf_file(external.clone(), &sg).unwrap();
+
+        // 副本在 games 目录，原文件路径不再被引用
+        let current = app.current_file.clone().unwrap();
+        assert!(current.starts_with(store.dir()));
+        assert_ne!(current, external);
+
+        // 继续落子只写副本
+        app.cursor = Point::new(4, 4);
+        app.play_at_cursor().unwrap();
+        let after = std::fs::read_to_string(&external).unwrap();
+        assert_eq!(after, original);
+        let copy = std::fs::read_to_string(&current).unwrap();
+        assert!(copy.contains(";B[ee]") || copy.contains(";W[ee]") || copy.contains("[ee]"));
+
+        let _ = std::fs::remove_file(&external);
+        let _ = std::fs::remove_dir_all(store.dir());
     }
 
     #[test]
