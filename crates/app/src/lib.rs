@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn analysis_produces_quick_comment() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         app.cursor = Point::new(2, 2);
         app.play_at_cursor().unwrap();
         // 推荐手故意和实际下的不一样，才能测到「推荐」那句
