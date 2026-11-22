@@ -193,6 +193,7 @@ crates/cli       go-review
 crates/tui       weiqi-tui（ratatui）
 crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）
 packaging/       图形界面的桌面入口
+scripts/         gui-smoke.sh：CI 用的无头 GUI 冒烟测试
 nix/package.nix  构建两个二进制的 Nix 包
 flake.nix        flake 输出：package 与 dev shell
 samples/         TUI 无参数时打开的示例棋谱
@@ -206,10 +207,14 @@ cargo test -p app -- --ignored      # 端到端：需要本机 KataGo + 网络
 cargo build --release
 nix develop                         # 图形界面需要 GTK4 / libadwaita / pkg-config
 nix build .#default                 # 用 Nix 构建全部二进制
+
+scripts/gui-smoke.sh                # Xvfb 里跑 GUI 冒烟（需要 Xvfb，xdotool 可选）
+scripts/gui-smoke.sh --switch       # 额外用 xdotool 试着切换棋谱
 ```
 
-CI 会先装 GTK4 和 libadwaita，再跑 `cargo test --workspace` 和
-`cargo build --release --workspace`。
+CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo test --workspace`、
+`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh` 启动 GUI：
+崩溃、panic 或空转到 100% CPU 都会让 CI 失败。
 
 ## 注意
 

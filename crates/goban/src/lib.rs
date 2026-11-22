@@ -672,4 +672,172 @@ mod tests {
         g.undo();
         assert_eq!(&before, g.position());
     }
+
+    // ---- 属性测试：不引第三方依赖，用确定性 PRNG 跑随机对局 ----
+
+    /// xorshift64*：同样种子得到同样序列，失败可复现。
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// 随机下一盘合法棋；非法手直接跳过（不当作失败）。
+    fn random_game(seed: u64, size: u8, plies: usize) -> Game {
+        let mut rng = Rng(seed | 1);
+        let mut g = Game::new(size, 7.5);
+        let mut played = 0;
+        while played < plies {
+            if rng.below(16) == 0 {
+                g.play(Move::Pass).unwrap();
+                played += 1;
+                continue;
+            }
+            let x = rng.below(size as u64) as u8;
+            let y = rng.below(size as u64) as u8;
+            if g.play(Move::Play(Point::new(x, y))).is_ok() {
+                played += 1;
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn random_games_keep_stone_accounting() {
+        for seed in 1..=8 {
+            let size = 9;
+            let mut g = Game::new(size, 7.5);
+            let mut rng = Rng(seed * 7919);
+            let mut plays = 0usize;
+            for _ in 0..150 {
+                let mv = if rng.below(20) == 0 {
+                    Move::Pass
+                } else {
+                    Move::Play(Point::new(
+                        rng.below(size as u64) as u8,
+                        rng.below(size as u64) as u8,
+                    ))
+                };
+                if g.play(mv).is_err() {
+                    continue;
+                }
+                if let Move::Play(_) = mv {
+                    plays += 1;
+                }
+                let pos = g.position();
+                let stones = pos.board.stones().count();
+                let captured = pos.captures[0] as usize + pos.captures[1] as usize;
+                assert_eq!(
+                    stones,
+                    plays - captured,
+                    "seed {seed}: 盘上子数必须等于落子数减提子数"
+                );
+                assert!(stones <= size as usize * size as usize);
+                let area = g.area_score();
+                assert!(
+                    area.black + area.white <= size as u16 * size as u16,
+                    "seed {seed}: 黑白总面积不能超过棋盘"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn random_games_replay_identically() {
+        for seed in 1..=4 {
+            let original = random_game(seed, 9, 80);
+            let mut replay = Game::new(9, 7.5);
+            for (i, mv) in original.moves().iter().enumerate() {
+                replay
+                    .play(*mv)
+                    .unwrap_or_else(|e| panic!("seed {seed}: 重放第 {i} 手失败：{e}"));
+            }
+            assert_eq!(replay.moves(), original.moves(), "seed {seed}: 手顺不一致");
+            assert_eq!(
+                replay.position(),
+                original.position(),
+                "seed {seed}: 终局不一致"
+            );
+            for turn in 0..=original.moves().len() {
+                assert_eq!(
+                    replay.position_at(turn as u16),
+                    original.position_at(turn as u16),
+                    "seed {seed}: 第 {turn} 手局面不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn undo_all_restores_start() {
+        let mut g = random_game(42, 9, 60);
+        while g.undo().is_some() {}
+        assert!(g.moves().is_empty());
+        assert_eq!(g.position(), &Position::new(9));
+        assert_eq!(g.area_score().black + g.area_score().white, 0);
+        // 撤空后还能继续下
+        assert!(g.play(Move::Play(p(4, 4))).is_ok());
+    }
+
+    #[test]
+    fn only_black_stones_own_the_whole_board() {
+        for size in [5u8, 9, 13] {
+            let mut rng = Rng(size as u64 * 104_729);
+            let setup: Vec<(Color, Point)> = (0..6)
+                .map(|_| {
+                    (
+                        Color::Black,
+                        Point::new(rng.below(size as u64) as u8, rng.below(size as u64) as u8),
+                    )
+                })
+                .collect();
+            let g = Game::with_setup(size, 0.0, setup);
+            let s = g.area_score();
+            assert_eq!(
+                s.black,
+                size as u16 * size as u16,
+                "{size} 路盘只有黑子时，全盘都算黑"
+            );
+            assert_eq!(s.white, 0);
+        }
+    }
+
+    /// 换色 + 水平镜像后，黑白得分必须对调。
+    #[test]
+    fn area_score_is_symmetric_under_color_swap() {
+        for seed in 1..=4 {
+            let size = 9u8;
+            let g = random_game(seed, size, 40);
+            let mirror: Vec<(Color, Point)> = g
+                .position()
+                .board
+                .stones()
+                .map(|(pt, c)| (c.opposite(), Point::new(size - 1 - pt.x, pt.y)))
+                .collect();
+            let mirrored = Game::with_setup(size, 0.0, mirror);
+            let a = g.area_score();
+            let b = mirrored.area_score();
+            assert_eq!(a.black, b.white, "seed {seed}: 黑得分应等于镜像白得分");
+            assert_eq!(a.white, b.black, "seed {seed}: 白得分应等于镜像黑得分");
+        }
+    }
+
+    #[test]
+    fn out_of_bounds_move_is_rejected() {
+        let mut g = Game::new(9, 7.5);
+        assert_eq!(g.play(Move::Play(p(9, 0))), Err(IllegalMove::OutOfBounds));
+        assert_eq!(g.play(Move::Play(p(0, 9))), Err(IllegalMove::OutOfBounds));
+        assert_eq!(g.moves().len(), 0);
+    }
 }

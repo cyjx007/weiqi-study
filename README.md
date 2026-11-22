@@ -198,6 +198,7 @@ crates/cli       go-review binary
 crates/tui       weiqi-tui binary (ratatui)
 crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
 packaging/       desktop entry for the GUI
+scripts/         gui-smoke.sh: headless GUI smoke test used by CI
 nix/package.nix  Nix package building both binaries
 flake.nix        flake outputs: package and dev shell
 samples/         demo SGF used by the TUI fallback
@@ -211,10 +212,14 @@ cargo test -p app -- --ignored      # end-to-end: needs a local KataGo + network
 cargo build --release
 nix develop                         # GTK4 / libadwaita / pkg-config for the GUI
 nix build .#default                 # builds all binaries via Nix
+
+scripts/gui-smoke.sh                # GUI smoke test under Xvfb (needs Xvfb, optional xdotool)
+scripts/gui-smoke.sh --switch       # also try switching games via xdotool
 ```
 
-CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
-`cargo build --release --workspace` on every push.
+CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test --workspace`,
+`cargo build --release --workspace`, then starts the GUI under Xvfb with
+`scripts/gui-smoke.sh` and fails if it crashes, panics, or spins at 100% CPU.
 
 ## Notes
 

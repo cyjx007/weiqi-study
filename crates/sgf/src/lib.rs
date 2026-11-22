@@ -388,4 +388,98 @@ mod tests {
         let g = parse(src).unwrap();
         assert_eq!(g.moves.len(), 2);
     }
+
+    // ---- 属性测试：随机合法棋谱写出再读回，必须完全一致 ----
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    fn random_legal_game(seed: u64, size: u8, plies: usize) -> goban::Game {
+        let mut rng = Rng(seed | 1);
+        let mut g = goban::Game::new(size, 7.5);
+        let mut played = 0;
+        while played < plies {
+            if rng.below(12) == 0 {
+                g.play(Move::Pass).unwrap();
+                played += 1;
+                continue;
+            }
+            let x = rng.below(size as u64) as u8;
+            let y = rng.below(size as u64) as u8;
+            if g.play(Move::Play(Point::new(x, y))).is_ok() {
+                played += 1;
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn random_games_round_trip_through_sgf() {
+        for (seed, size) in [(1u64, 9u8), (2, 13), (3, 19)] {
+            let game = random_legal_game(seed, size, 90);
+            let text = write_game(size, 7.5, &[], game.moves());
+            let back = parse(&text).unwrap_or_else(|e| panic!("seed {seed}: 解析失败：{e}"));
+
+            assert_eq!(back.size, size, "seed {seed}");
+            assert_eq!(back.komi, Some(7.5), "seed {seed}");
+            assert_eq!(back.moves, game.moves(), "seed {seed}: 手顺必须一致");
+
+            // 重放读回的手顺，终局必须和原局相同
+            let mut replay = goban::Game::new(size, 7.5);
+            for mv in &back.moves {
+                replay.play(*mv).expect("读回的棋谱必须能重放");
+            }
+            assert_eq!(
+                replay.position(),
+                game.position(),
+                "seed {seed}: 终局不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn setup_stones_round_trip() {
+        let setup = vec![
+            (Color::Black, Point::new(2, 2)),
+            (Color::Black, Point::new(6, 6)),
+            (Color::White, Point::new(2, 6)),
+            (Color::White, Point::new(6, 2)),
+        ];
+        let moves = vec![Move::Play(Point::new(4, 4)), Move::Pass];
+        let text = write_game(9, 0.5, &setup, &moves);
+        let back = parse(&text).unwrap();
+
+        assert_eq!(back.size, 9);
+        assert_eq!(back.komi, Some(0.5));
+        assert_eq!(back.moves, moves);
+        let mut got = back.setup;
+        let mut want = setup;
+        got.sort_by_key(|(c, p)| (c.index(), p.y, p.x));
+        want.sort_by_key(|(c, p)| (c.index(), p.y, p.x));
+        assert_eq!(got, want, "摆子必须原样读回");
+    }
+
+    #[test]
+    fn consecutive_passes_round_trip_at_every_size() {
+        for size in [5u8, 9, 13, 19] {
+            let moves = vec![Move::Pass, Move::Pass, Move::Pass];
+            let text = write_game(size, 7.5, &[], &moves);
+            let back = parse(&text).unwrap();
+            assert_eq!(back.moves, moves, "{size} 路盘连续 Pass 必须读回");
+        }
+    }
 }
