@@ -8,6 +8,7 @@ pub mod storage;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use i18n::{strings, Lang};
 use storage::{GameEntry, GameStore};
@@ -63,6 +64,7 @@ pub struct App {
     /// 最近一手的即时点评
     pub last_comment: Option<String>,
     pub lang: Lang,
+    pub engine: Arc<engine::Engine>,
     pub store: GameStore,
     pub current_file: Option<PathBuf>,
     pub games: Vec<GameEntry>,
@@ -80,7 +82,9 @@ pub struct App {
 impl App {
     /// 空盘新局（不读 SGF）。
     pub fn new(size: u8, komi: f32, config: AppConfig) -> Self {
+        let engine = Arc::new(engine::Engine::new(config.engine.clone()));
         App {
+            engine,
             size,
             komi,
             cursor: Point::new(size / 2, size / 2),
@@ -690,7 +694,7 @@ mod tests {
             guard += 1;
             match app.next_action() {
                 Action::Analyze => {
-                    let result = engine::analyze_position(&app.config.engine, &app.snapshot());
+                    let result = app.engine.analyze_position(&app.snapshot());
                     let pos = app.pos();
                     app.apply(AppEvent::Analysis { pos, result });
                 }

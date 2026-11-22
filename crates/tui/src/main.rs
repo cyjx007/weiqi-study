@@ -186,10 +186,10 @@ fn spawn_analysis(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     app.busy = true;
     app.status = fill(strings(app.lang).analyzing, app.config.engine.visits);
     let game = app.snapshot();
-    let cfg = app.config.engine.clone();
+    let engine = app.engine.clone();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = engine::analyze_position(&cfg, &game);
+        let result = engine.analyze_position(&game);
         let _ = tx.send(AppEvent::Analysis { pos, result });
     });
 }
@@ -209,11 +209,12 @@ fn spawn_review(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
             return;
         }
     };
-    let cfg = app.config.engine.clone();
+    let engine = app.engine.clone();
     let english = !app.lang.is_zh();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = engine::analyze_game(&cfg, &game, |_, _| {})
+        let result = engine
+            .analyze_game(&game, |_, _| {})
             .map(|evals| review::build(english, &game, &evals, 5.0));
         let _ = tx.send(AppEvent::Review(result));
     });

@@ -87,7 +87,8 @@ fn run() -> Result<(), String> {
         cfg.visits
     );
     let started = Instant::now();
-    let evals = engine::analyze_game(&cfg, &game, |done, total| {
+    let engine = engine::Engine::new(cfg);
+    let evals = engine.analyze_game(&game, |done, total| {
         eprint!("\r  进度 {done}/{total}");
     })?;
     eprintln!("\r  完成，用时 {:.1}s", started.elapsed().as_secs_f32());

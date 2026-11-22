@@ -181,35 +181,97 @@ pub fn parse_gtp_move(s: &str, size: u8) -> Move {
     }
 }
 
-/// 整盘分析：0..=最后一手全部局面。
-pub fn analyze_game<F>(
-    cfg: &EngineConfig,
-    game: &Game,
-    progress: F,
-) -> Result<Vec<TurnEval>, String>
-where
-    F: FnMut(usize, usize),
-{
-    let turns: Vec<u16> = (0..=game.moves().len() as u16).collect();
-    analyze_turns(cfg, game, &turns, progress)
+/// 引擎句柄：每个前端持有自己的实例，内部只有一个常驻会话。
+pub struct Engine {
+    cfg: EngineConfig,
+    session: std::sync::Mutex<Option<AnalysisSession>>,
 }
 
-/// 只分析当前局面（实时看胜率/候选点时用）。
-pub fn analyze_position(cfg: &EngineConfig, game: &Game) -> Result<TurnEval, String> {
-    let turn = game.moves().len() as u16;
-    let mut evals = analyze_turns(cfg, game, &[turn], |_, _| {})?;
-    evals
-        .pop()
-        .ok_or_else(|| "没有拿到当前局面的分析结果".to_string())
-}
+impl Engine {
+    pub fn new(cfg: EngineConfig) -> Self {
+        Engine {
+            cfg,
+            session: std::sync::Mutex::new(None),
+        }
+    }
 
-/// 常驻分析会话：第一次分析时启动，之后复用同一个 KataGo 进程。
-static SESSION: std::sync::Mutex<Option<AnalysisSession>> = std::sync::Mutex::new(None);
+    pub fn config(&self) -> &EngineConfig {
+        &self.cfg
+    }
+
+    pub fn analyze_game<F>(&self, game: &Game, progress: F) -> Result<Vec<TurnEval>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        let turns: Vec<u16> = (0..=game.moves().len() as u16).collect();
+        self.analyze_turns(game, &turns, progress)
+    }
+
+    pub fn analyze_position(&self, game: &Game) -> Result<TurnEval, String> {
+        let turn = game.moves().len() as u16;
+        let mut evals = self.analyze_turns(game, &[turn], |_, _| {})?;
+        evals
+            .pop()
+            .ok_or_else(|| "没有拿到当前局面的分析结果".to_string())
+    }
+
+    pub fn analyze_turns<F>(
+        &self,
+        game: &Game,
+        turns: &[u16],
+        mut progress: F,
+    ) -> Result<Vec<TurnEval>, String>
+    where
+        F: FnMut(usize, usize),
+    {
+        for (label, path) in [
+            ("katago", &self.cfg.katago),
+            ("model", &self.cfg.model),
+            ("config", &self.cfg.config),
+        ] {
+            if label == "katago" {
+                if self.cfg.katago.components().count() > 1 && !path.exists() {
+                    return Err(format!("找不到 katago: {}", path.display()));
+                }
+            } else if !path.exists() {
+                return Err(format!("找不到 {label}: {}", path.display()));
+            }
+        }
+
+        let mut turns: Vec<u16> = turns.to_vec();
+        turns.sort_unstable();
+        turns.dedup();
+        if turns.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| "分析会话锁失败".to_string())?;
+        let need_start = match guard.as_mut() {
+            Some(session) => session.is_dead(),
+            None => true,
+        };
+        if need_start {
+            *guard = Some(AnalysisSession::start(&self.cfg)?);
+        }
+        let result = guard
+            .as_mut()
+            .expect("会话已初始化")
+            .query(&self.cfg, game, &turns, &mut progress);
+        if result.is_err() {
+            // 出错就丢掉会话（Drop 会 kill），下次重新拉起
+            *guard = None;
+        }
+        result
+    }
+}
 
 struct AnalysisSession {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    rx: std::sync::mpsc::Receiver<String>,
     seq: u64,
 }
 
@@ -230,10 +292,19 @@ impl AnalysisSession {
             .map_err(|e| format!("启动 KataGo 失败: {e}"))?;
         let stdin = child.stdin.take().ok_or("打不开 KataGo stdin")?;
         let stdout = child.stdout.take().ok_or("打不开 KataGo stdout")?;
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         Ok(AnalysisSession {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            rx,
             seq: 0,
         })
     }
@@ -292,16 +363,19 @@ impl AnalysisSession {
 
         let total = turns.len();
         let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
-        let mut line = String::new();
         while evals.len() < total {
-            line.clear();
-            let n = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|e| format!("读 KataGo 输出失败: {e}"))?;
-            if n == 0 {
-                return Err("KataGo 提前退出".to_string());
-            }
+            let line = match self
+                .rx
+                .recv_timeout(std::time::Duration::from_secs(90))
+            {
+                Ok(line) => line,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("KataGo 分析超时（90s 无输出）".to_string())
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("KataGo 意外退出".to_string())
+                }
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -326,59 +400,6 @@ impl Drop for AnalysisSession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-/// 指定局面集合的分析：复用常驻会话，第一次调用时才启动 KataGo。
-pub fn analyze_turns<F>(
-    cfg: &EngineConfig,
-    game: &Game,
-    turns: &[u16],
-    mut progress: F,
-) -> Result<Vec<TurnEval>, String>
-where
-    F: FnMut(usize, usize),
-{
-    for (label, path) in [
-        ("katago", &cfg.katago),
-        ("model", &cfg.model),
-        ("config", &cfg.config),
-    ] {
-        if label == "katago" {
-            if cfg.katago.components().count() > 1 && !path.exists() {
-                return Err(format!("找不到 katago: {}", path.display()));
-            }
-        } else if !path.exists() {
-            return Err(format!("找不到 {label}: {}", path.display()));
-        }
-    }
-
-    let mut turns: Vec<u16> = turns.to_vec();
-    turns.sort_unstable();
-    turns.dedup();
-    if turns.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut guard = SESSION
-        .lock()
-        .map_err(|_| "分析会话锁失败".to_string())?;
-    let need_start = match guard.as_mut() {
-        Some(session) => session.is_dead(),
-        None => true,
-    };
-    if need_start {
-        *guard = Some(AnalysisSession::start(cfg)?);
-    }
-    let session = guard.as_mut().expect("会话已初始化");
-    session
-        .query(cfg, game, &turns, &mut progress)
-        .map_err(|e| {
-            // 出错后丢掉会话，下次重新拉起，避免半截状态
-            if let Some(mut old) = guard.take() {
-                let _ = old.child.kill();
-            }
-            e
-        })
 }
 
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
