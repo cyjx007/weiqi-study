@@ -13,10 +13,11 @@ use ratatui::{
 
 const WOOD: C = C::Rgb(214, 176, 124);
 const LINE: C = C::Rgb(126, 96, 62);
-const HOSHI: C = C::Rgb(96, 68, 40);
+const HOSHI: C = C::Rgb(64, 40, 16);
+const CAND: C = C::Rgb(20, 40, 110);
 const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
-const CAND: [&str; 3] = ["1", "2", "3"];
+const CAND_LABELS: [&str; 3] = ["1", "2", "3"];
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -151,21 +152,24 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
             if is_last {
                 style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
-            let (sym, fg) = match stone {
-                Some(Color::Black) => ("●", C::Black),
-                Some(Color::White) => ("○", C::White),
+            let (sym, fg, bold) = match stone {
+                Some(Color::Black) => ("●", C::Black, false),
+                Some(Color::White) => ("●", C::White, true),
                 None => match app.candidate_rank(p) {
-                    Some(rank) => (CAND[rank - 1], C::Yellow),
+                    Some(rank) => (CAND_LABELS[rank - 1], CAND, true),
                     None => {
                         let hoshi = stars.contains(&(i as usize)) && stars.contains(&(j as usize));
                         if hoshi {
-                            ("·", HOSHI)
+                            ("•", HOSHI, true)
                         } else {
-                            ("·", LINE)
+                            ("·", LINE, false)
                         }
                     }
                 },
             };
+            if bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
             buf.set_string(x, y, cell_text(sym, spacing), style.fg(fg));
 
             // 光标：用奇数宽的块罩住落点，保证点在方块正中（偶数格宽做不到精确居中）
@@ -426,8 +430,8 @@ mod tests {
         let app = test_app();
         let s = compact(render_to_string(&app, 100, 30));
         assert!(s.contains("对局") || s.contains("Game"));
-        assert!(s.contains('●'));
-        assert!(s.contains('○'));
+        assert!(s.matches('●').count() >= 2); // 黑白都用实心圆，靠颜色区分
+        assert!(s.contains('·'));
         assert!(s.contains('A'));
     }
 
