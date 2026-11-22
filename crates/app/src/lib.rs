@@ -161,6 +161,9 @@ impl App {
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
         app.rebuild()?;
+        if !sg.warnings.is_empty() {
+            app.status = sg.warnings.join("；");
+        }
         Ok(app)
     }
 
@@ -347,6 +350,9 @@ impl App {
         self.game = game;
         self.vs_ai = false;
         self.current_file = new_file;
+        if !sg.warnings.is_empty() {
+            self.status = sg.warnings.join("；");
+        }
         Ok(())
     }
 
@@ -1017,6 +1023,13 @@ mod tests {
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
         assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn sgf_warnings_show_in_status() {
+        let sg = sgf::parse("(;SZ[9]KM[abc];B[cc])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        assert!(app.status.contains("KM"), "{}", app.status);
     }
 
     #[test]

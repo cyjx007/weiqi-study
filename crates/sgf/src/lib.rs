@@ -14,6 +14,8 @@ pub struct SgfGame {
     pub first: Option<Color>,
     pub setup: Vec<(Color, Point)>,
     pub moves: Vec<Move>,
+    /// 宽松解析时遇到的问题（非法 KM、乱序手、无法识别的 PL 等）
+    pub warnings: Vec<String>,
 }
 
 impl SgfGame {
@@ -49,21 +51,21 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
 
     // 先确定第一手颜色：SGF 的 B/W 是文件里的事实，不能用"有没有摆子"去猜。
     // 摆子只影响轮次校验的起点，不影响文件已经写明的颜色。
-    let first_color = nodes
+    let first_move = nodes
         .iter()
         .flat_map(|props| props.iter())
         .find_map(|(ident, _)| match ident.as_str() {
             "B" => Some(Color::Black),
             "W" => Some(Color::White),
             _ => None,
-        })
-        .unwrap_or(Color::Black);
-    out.first = Some(first_color);
+        });
+    let first_color = first_move.unwrap_or(Color::Black);
+    let mut pl: Option<Color> = None;
 
     // 第一遍：读盘面参数（根节点在前）
     // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
     let mut move_nodes = 0usize;
-    for props in &nodes {
+    for (node_idx, props) in nodes.iter().enumerate() {
         for (ident, values) in props {
             match ident.as_str() {
                 "SZ" => {
@@ -85,8 +87,28 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                 "KM" => {
                     if out.komi.is_none() {
                         if let Some(v) = values.first() {
-                            out.komi = v.trim().parse::<f32>().ok();
+                            match v.trim().parse::<f32>() {
+                                Ok(k) => out.komi = Some(k),
+                                Err(_) => {
+                                    out.warnings.push(format!("KM 不是数字：{v:?}，按默认贴目"))
+                                }
+                            }
                         }
+                    }
+                }
+                "PL" => {
+                    let v = values.first().map(|s| s.trim()).unwrap_or("");
+                    let color = match v {
+                        "B" => Some(Color::Black),
+                        "W" => Some(Color::White),
+                        _ => None,
+                    };
+                    match color {
+                        Some(c) if node_idx == 0 => pl = Some(c),
+                        Some(_) => out
+                            .warnings
+                            .push(format!("忽略第 {} 个节点的 PL", node_idx + 1)),
+                        None => out.warnings.push(format!("PL 值无法识别：{v:?}")),
                     }
                 }
                 "RU" if out.rules.is_none() => {
@@ -98,6 +120,19 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
             }
         }
     }
+
+    out.first = Some(match (first_move, pl) {
+        (Some(f), Some(p)) => {
+            if p != f {
+                out.warnings
+                    .push("PL 与首手颜色不一致，按首手颜色重放".to_string());
+            }
+            f
+        }
+        (Some(f), None) => f,
+        (None, Some(p)) => p,
+        (None, None) => first_color,
+    });
 
     // 第二遍：摆子 + 落子
     // 摆子只在还没有任何 B/W 之前允许（根节点拆成多个节点也兼容）
@@ -142,6 +177,9 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     // 轮次对不上的（残缺棋谱）整手丢弃，连坐标也不校验：
                     // 否则一个多余的坏坐标会让整盘打不开。
                     if color != expected {
+                        out.warnings.push(format!(
+                            "第 {move_nodes} 手颜色与轮次不符（{ident}），已跳过"
+                        ));
                         continue;
                     }
                     let raw = values.first().map(String::as_str).unwrap_or("");
@@ -646,6 +684,60 @@ mod tests {
     }
 
     /// 文件里的 B/W 是事实：有开局摆子也不能把第一手吞掉。
+    #[test]
+    fn pl_sets_first_player() {
+        // 没有落子时 PL 决定先手（AB 摆子按惯例是白先，PL[B] 覆盖它）
+        let g = parse("(;SZ[9]AB[dd]PL[B])").unwrap();
+        assert_eq!(g.first_to_move(), Color::Black);
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+
+        let g = parse("(;SZ[9]PL[W]AW[dd])").unwrap();
+        assert_eq!(g.first_to_move(), Color::White);
+    }
+
+    #[test]
+    fn pl_conflicting_with_first_move_warns() {
+        let g = parse("(;SZ[9]PL[W];B[cc];W[gg])").unwrap();
+        assert_eq!(g.first_to_move(), Color::Black, "以文件里的首手为准");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("PL")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn invalid_komi_warns() {
+        let g = parse("(;SZ[9]KM[abc];B[cc])").unwrap();
+        assert_eq!(g.komi, None);
+        assert!(
+            g.warnings.iter().any(|w| w.contains("KM")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn out_of_turn_move_warns() {
+        let g = parse("(;SZ[9];B[cc];B[dd];W[ee])").unwrap();
+        assert_eq!(g.moves.len(), 2);
+        assert!(
+            g.warnings.iter().any(|w| w.contains("轮次不符")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn non_root_pl_warns() {
+        let g = parse("(;SZ[9];B[cc];W[gg]PL[B])").unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("PL")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
     #[test]
     fn declared_colors_are_preserved_with_setup() {
         // 根节点被拆成两个节点、摆子仍在前：允许
