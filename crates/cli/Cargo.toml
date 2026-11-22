@@ -1,0 +1,15 @@
+[package]
+name = "weiqi-review-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "go-review"
+path = "src/main.rs"
+
+[dependencies]
+goban = { path = "../goban" }
+sgf = { path = "../sgf" }
+engine = { path = "../engine" }
+review = { path = "../review" }

@@ -1,0 +1,8 @@
+[package]
+name = "sgf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goban = { path = "../goban" }

@@ -1,0 +1,9 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goban = { path = "../goban" }
+serde_json = "1"
