@@ -85,6 +85,21 @@ impl KoRule {
             KoRule::SituationalSuperko => "情境超级劫",
         }
     }
+
+    /// 从 SGF `RU` 属性猜规则；认不出来就用默认（位置超级劫）。
+    pub fn from_rules(rules: Option<&str>) -> KoRule {
+        let Some(r) = rules else {
+            return KoRule::default();
+        };
+        let r = r.to_ascii_lowercase();
+        if r.contains("japanese") {
+            KoRule::Simple
+        } else if r.contains("korean") {
+            KoRule::SituationalSuperko
+        } else {
+            KoRule::PositionalSuperko
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -630,6 +645,22 @@ mod tests {
     }
 
     #[test]
+    fn ko_rule_from_sgf_rules() {
+        assert_eq!(KoRule::from_rules(Some("Japanese")), KoRule::Simple);
+        assert_eq!(KoRule::from_rules(Some("Japanese rules")), KoRule::Simple);
+        assert_eq!(
+            KoRule::from_rules(Some("Korean")),
+            KoRule::SituationalSuperko
+        );
+        assert_eq!(
+            KoRule::from_rules(Some("Chinese")),
+            KoRule::PositionalSuperko
+        );
+        assert_eq!(KoRule::from_rules(None), KoRule::default());
+        assert_eq!(KoRule::from_rules(Some("AGA")), KoRule::PositionalSuperko);
+    }
+
+    #[test]
     fn area_score_counts_black_and_white_territory() {
         let g = Game::with_setup(
             5,
@@ -693,9 +724,14 @@ mod tests {
         }
     }
 
+    /// 种子扩散：`seed | 1` 会把 2 和 3 折叠成同一个状态。
+    fn seeded(seed: u64) -> u64 {
+        splitmix64(seed) | 1
+    }
+
     /// 随机下一盘合法棋；非法手直接跳过（不当作失败）。
     fn random_game(seed: u64, size: u8, plies: usize) -> Game {
-        let mut rng = Rng(seed | 1);
+        let mut rng = Rng(seeded(seed));
         let mut g = Game::new(size, 7.5);
         let mut played = 0;
         while played < plies {
@@ -718,7 +754,7 @@ mod tests {
         for seed in 1..=8 {
             let size = 9;
             let mut g = Game::new(size, 7.5);
-            let mut rng = Rng(seed * 7919);
+            let mut rng = Rng(seeded(seed * 7919));
             let mut plays = 0usize;
             for _ in 0..150 {
                 let mv = if rng.below(20) == 0 {
@@ -793,7 +829,7 @@ mod tests {
     #[test]
     fn only_black_stones_own_the_whole_board() {
         for size in [5u8, 9, 13] {
-            let mut rng = Rng(size as u64 * 104_729);
+            let mut rng = Rng(seeded(size as u64 * 104_729));
             let setup: Vec<(Color, Point)> = (0..6)
                 .map(|_| {
                     (

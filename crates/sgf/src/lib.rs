@@ -33,6 +33,8 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     };
 
     // 第一遍：读盘面参数（根节点在前）
+    // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
+    let mut move_nodes = 0usize;
     for props in &nodes {
         for (ident, values) in props {
             match ident.as_str() {
@@ -81,15 +83,12 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     }
                 }
                 "B" | "W" => {
+                    move_nodes += 1;
                     let color = if ident == "B" {
                         Color::Black
                     } else {
                         Color::White
                     };
-                    let raw = values.first().map(String::as_str).unwrap_or("");
-                    let mv = parse_move(raw, out.size).map_err(|e| {
-                        format!("第 {} 手坐标非法 [{raw}]：{e}", out.moves.len() + 1)
-                    })?;
                     let expected = if out.setup.is_empty() {
                         if out.moves.len().is_multiple_of(2) {
                             Color::Black
@@ -101,10 +100,15 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     } else {
                         Color::Black
                     };
-                    // 轮次对不上的（残缺棋谱）跳过，避免整盘解析失败
-                    if color == expected {
-                        out.moves.push(mv);
+                    // 轮次对不上的（残缺棋谱）整手丢弃，连坐标也不校验：
+                    // 否则一个多余的坏坐标会让整盘打不开。
+                    if color != expected {
+                        continue;
                     }
+                    let raw = values.first().map(String::as_str).unwrap_or("");
+                    let mv = parse_move(raw, out.size)
+                        .map_err(|e| format!("第 {move_nodes} 手坐标非法 [{raw}]：{e}"))?;
+                    out.moves.push(mv);
                 }
                 _ => {}
             }
@@ -218,17 +222,23 @@ fn skip_tree(chars: &[char], i: &mut usize) {
     }
 }
 
+/// SGF 坐标轴字符 → 0-based 下标。
+///
+/// `char as u8` 是截断转换：`'š'` 的低 8 位正好是 `'a'`，不先判 ASCII 就会被当成 0。
+fn coord_axis(c: char, which: &str) -> Result<u8, String> {
+    if !c.is_ascii_lowercase() {
+        return Err(format!("{which}坐标不是小写字母：{c}"));
+    }
+    Ok(c as u8 - b'a')
+}
+
 fn parse_coord(s: &str, size: u8) -> Result<Point, String> {
     let b: Vec<char> = s.chars().collect();
     if b.len() != 2 {
         return Err(format!("坐标长度应为 2，实际 {}（{s:?}）", b.len()));
     }
-    let x = (b[0] as u8)
-        .checked_sub(b'a')
-        .ok_or_else(|| format!("横坐标不是小写字母：{}", b[0]))?;
-    let y = (b[1] as u8)
-        .checked_sub(b'a')
-        .ok_or_else(|| format!("纵坐标不是小写字母：{}", b[1]))?;
+    let x = coord_axis(b[0], "横")?;
+    let y = coord_axis(b[1], "纵")?;
     if x >= size || y >= size {
         return Err(format!("坐标超出 {} 路棋盘", size));
     }
@@ -374,6 +384,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_ascii_coordinates() {
+        // 'š' 的低 8 位是 'a'，不能靠 `char as u8` 截断后当成合法坐标
+        let err = parse("(;SZ[9];B[ša])").unwrap_err();
+        assert!(err.contains("坐标非法"), "{err}");
+        let err = parse("(;SZ[9];B[aš])").unwrap_err();
+        assert!(err.contains("坐标非法"), "{err}");
+    }
+
+    #[test]
+    fn out_of_turn_move_with_bad_coordinate_is_skipped() {
+        // 残缺棋谱里多出来的一手：整手丢弃，不该让整盘打不开
+        let g = parse("(;SZ[9];B[dd];B[zz])").unwrap();
+        assert_eq!(g.moves, vec![Move::Play(Point::new(3, 3))]);
+    }
+
+    #[test]
+    fn error_reports_source_node_index() {
+        // 第 2 手乱序被跳过，第 3 手坐标非法：报错要按源文件的手数
+        let err = parse("(;SZ[9];B[dd];B[cc];W[zz])").unwrap_err();
+        assert!(err.contains("第 3 手"), "{err}");
+    }
+
+    #[test]
     fn rejects_invalid_setup_coordinates() {
         let err = parse("(;SZ[9]AB[zz])").unwrap_err();
         assert!(err.contains("AB"), "{err}");
@@ -408,8 +441,16 @@ mod tests {
         }
     }
 
+    /// `seed | 1` 会把 2 和 3 折叠成同一个状态；先做一次 splitmix 扩散。
+    fn seeded(seed: u64) -> u64 {
+        let mut x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (x ^ (x >> 31)) | 1
+    }
+
     fn random_legal_game(seed: u64, size: u8, plies: usize) -> goban::Game {
-        let mut rng = Rng(seed | 1);
+        let mut rng = Rng(seeded(seed));
         let mut g = goban::Game::new(size, 7.5);
         let mut played = 0;
         while played < plies {

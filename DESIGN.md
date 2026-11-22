@@ -100,10 +100,10 @@ pub struct Position {                               // 可落子的局面
     pub board: Board,
     pub to_move: Color,
     pub captures: [u16; 2],
-    pub ko: Option<Point>,                          // 简单劫
+    pub last_move: Option<Move>,
 }
 
-pub enum KoRule { Simple, PositionalSuperko, SituationalSuperko }
+pub enum KoRule { Simple, PositionalSuperko, SituationalSuperko }  // 从 SGF RU 映射
 
 pub struct Game {                                   // 整盘棋：历史 + 可配置劫争
     ko: KoRule,                                     // 默认 PositionalSuperko

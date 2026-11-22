@@ -54,6 +54,9 @@ cleanup() {
     rm -rf "$TMP"
 }
 trap cleanup EXIT
+# 本地 Ctrl-C / CI 超时：走 exit，让 EXIT trap 负责清理
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
     echo "FAIL: $*" >&2
@@ -73,13 +76,30 @@ if [ -z "${DISPLAY:-}" ]; then
         echo "没有 DISPLAY 也没有 Xvfb；跳过 GUI 冒烟" >&2
         exit 2
     fi
-    export DISPLAY=:${WEIQI_SMOKE_DISPLAY:-99}
-    Xvfb "$DISPLAY" -screen 0 1280x900x24 >"$TMP/xvfb.log" 2>&1 &
+    # 挑一个空闲显示号，避免连到残留的 X server
+    for n in $(seq 99 110); do
+        if [ ! -e "/tmp/.X11-unix/X$n" ]; then
+            export DISPLAY=":$n"
+            break
+        fi
+    done
+    if [ -z "${DISPLAY:-}" ]; then
+        echo "找不到空闲的 X display（:99-:110）" >&2
+        exit 2
+    fi
+    Xvfb "$DISPLAY" -nolisten tcp -screen 0 1280x900x24 >"$TMP/xvfb.log" 2>&1 &
     XVFB_PID=$!
+    XVFB_OK=0
     for _ in $(seq 50); do
-        [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ] && break
+        if ! kill -0 "$XVFB_PID" 2>/dev/null; then break; fi
+        if [ -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; then XVFB_OK=1; break; fi
         sleep 0.1
     done
+    if [ "$XVFB_OK" != 1 ]; then
+        echo "Xvfb 启动失败：" >&2
+        cat "$TMP/xvfb.log" >&2 || true
+        exit 2
+    fi
 fi
 
 export GDK_BACKEND=x11
@@ -87,13 +107,15 @@ export XDG_DATA_HOME="$TMP/data"
 export WEIQI_LANG=zh
 
 # 私有一个 D-Bus 会话：adw::Application 按 application-id 做单实例，
-# 共用会话总线时第二次启动会直接把激活转给已有窗口然后退出（CI 里也可能有残留实例）。
-if command -v dbus-daemon >/dev/null; then
-    BUS_INFO=$(dbus-daemon --session --fork --print-address=1 --print-pid=1)
-    export DBUS_SESSION_BUS_ADDRESS
-    DBUS_SESSION_BUS_ADDRESS=$(printf '%s\n' "$BUS_INFO" | sed -n 1p)
-    DBUS_PID=$(printf '%s\n' "$BUS_INFO" | sed -n 2p)
+# 共用会话总线时第二次启动会直接把激活转给已有窗口然后退出。
+if ! command -v dbus-daemon >/dev/null; then
+    echo "需要 dbus-daemon 隔离 adw 单实例；没装就跳过 GUI 冒烟" >&2
+    exit 2
 fi
+BUS_INFO=$(dbus-daemon --session --fork --print-address=1 --print-pid=1)
+export DBUS_SESSION_BUS_ADDRESS
+DBUS_SESSION_BUS_ADDRESS=$(printf '%s\n' "$BUS_INFO" | sed -n 1p)
+DBUS_PID=$(printf '%s\n' "$BUS_INFO" | sed -n 2p)
 
 "$BIN" >"$TMP/gui.log" 2>&1 &
 APP_PID=$!
@@ -136,21 +158,34 @@ if [ -n "$WID" ]; then
     xdotool windowactivate "$WID" 2>/dev/null \
         || xdotool windowfocus "$WID" 2>/dev/null || true
     # 键盘导航：下一步/上一步/开局/终局/退出预览
+    KEY_FAIL=0
     for k in n n p g G Escape; do
-        xdotool key --window "$WID" "$k" >/dev/null 2>&1 || true
+        xdotool key --window "$WID" "$k" >/dev/null 2>&1 || KEY_FAIL=$((KEY_FAIL + 1))
         sleep 0.2
     done
+    if [ "$KEY_FAIL" -eq 6 ]; then
+        fail "6 次按键注入全部失败（xdotool 发不到窗口）"
+    fi
     kill -0 "$APP_PID" 2>/dev/null || fail "键盘导航后进程退出"
 
     if [ "$WANT_SWITCH" = 1 ]; then
-        # 尽力而为：Tab 到棋谱下拉框（prev/next 之后的第三个控件）再切换。
-        xdotool key --window "$WID" Tab Tab Tab >/dev/null 2>&1 || true
-        sleep 0.3
-        xdotool key --window "$WID" Down >/dev/null 2>&1 || true
-        sleep 0.3
-        xdotool key --window "$WID" Down Return >/dev/null 2>&1 || true
-        sleep 1
-        kill -0 "$APP_PID" 2>/dev/null || fail "切换棋谱后进程退出"
+        if [ "$HAVE_XDOTOOL" != 1 ]; then
+            echo "未安装 xdotool，--switch 跳过" >&2
+        else
+            # 尽力而为：Tab 到棋谱下拉框（prev/next 之后的第三个控件）再切换。
+            xdotool key --window "$WID" Tab Tab Tab >/dev/null 2>&1 || true
+            sleep 0.3
+            xdotool key --window "$WID" Down >/dev/null 2>&1 || true
+            sleep 0.3
+            xdotool key --window "$WID" Down Return >/dev/null 2>&1 || true
+            sleep 1
+            kill -0 "$APP_PID" 2>/dev/null || fail "切换棋谱后进程退出"
+        fi
+    fi
+
+    # 按键可能触发后台线程 panic，检查要放在操作之后
+    if grep -qE 'panicked at|thread .* panicked|SIGABRT|Aborted' "$TMP/gui.log"; then
+        fail "交互后日志里有 panic"
     fi
 
     CPU=$(cpu_percent "$APP_PID")

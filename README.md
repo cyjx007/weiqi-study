@@ -219,7 +219,7 @@ scripts/gui-smoke.sh --switch       # also try switching games via xdotool
 
 CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test --workspace`,
 `cargo build --release --workspace`, then starts the GUI under Xvfb with
-`scripts/gui-smoke.sh` and fails if it crashes, panics, or spins at 100% CPU.
+`scripts/gui-smoke.sh --switch` and fails if it crashes, panics, or idles above 80% CPU.
 
 ## Notes
 

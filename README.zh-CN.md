@@ -213,8 +213,8 @@ scripts/gui-smoke.sh --switch       # 额外用 xdotool 试着切换棋谱
 ```
 
 CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo test --workspace`、
-`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh` 启动 GUI：
-崩溃、panic 或空转到 100% CPU 都会让 CI 失败。
+`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch` 启动 GUI：
+崩溃、panic 或空闲 CPU 超过 80% 都会让 CI 失败。
 
 ## 注意
 

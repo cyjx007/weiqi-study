@@ -525,11 +525,14 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
     let mut candidates = Vec::new();
     if let Some(arr) = v.get("moveInfos").and_then(|x| x.as_array()) {
         for m in arr.iter().take(8) {
-            let mv = m
-                .get("move")
-                .and_then(|x| x.as_str())
-                .ok_or("moveInfo 缺少 move")?;
-            let mv = parse_gtp_move(mv, game.size())?;
+            // 候选级容错：引擎可能给出 resign / unknown / 越界坐标，
+            // 跳过这一个候选即可，不要因为一个坏值丢掉整轮分析。
+            let Some(raw) = m.get("move").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let Ok(mv) = parse_gtp_move(raw, game.size()) else {
+                continue;
+            };
             let cwr = m.get("winrate").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
             let csc = m.get("scoreLead").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
             let (cwr_b, csc_b) = if to_move == Color::Black {
@@ -541,8 +544,8 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
                 Some(a) => a
                     .iter()
                     .filter_map(|s| s.as_str())
-                    .map(|s| parse_gtp_move(s, game.size()))
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .filter_map(|s| parse_gtp_move(s, game.size()).ok())
+                    .collect::<Vec<_>>(),
                 None => Vec::new(),
             };
             let visits = m.get("visits").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
@@ -553,6 +556,9 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
                 pv,
                 visits,
             });
+        }
+        if candidates.is_empty() && !arr.is_empty() {
+            return Err("moveInfos 里的候选全部无法解析".to_string());
         }
     }
 
@@ -594,6 +600,36 @@ mod tests {
         assert!(parse_gtp_move("resign", 19).is_err());
     }
 
+    #[test]
+    fn bad_candidate_is_skipped_not_fatal() {
+        let game = Game::new(9, 7.5);
+        let v = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": [
+                {"move": "resign", "winrate": 0.5, "scoreLead": 0.0, "pv": ["resign"], "visits": 1},
+                {"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "pv": ["D4", "resign", "E5"], "visits": 10}
+            ]
+        });
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.candidates.len(), 1, "坏候选跳过，好候选保留");
+        assert_eq!(ev.candidates[0].mv, Move::Play(Point::new(3, 5))); // 9 路盘的 D4
+        assert_eq!(
+            ev.candidates[0].pv,
+            vec![Move::Play(Point::new(3, 5)), Move::Play(Point::new(4, 4))]
+        );
+    }
+
+    #[test]
+    fn all_candidates_bad_is_an_error() {
+        let game = Game::new(9, 7.5);
+        let v = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": [{"move": "resign"}, {"move": "unknown"}]
+        });
+        let err = eval_from_json(&v, &game, 0).unwrap_err();
+        assert!(err.contains("全部无法解析"), "{err}");
+    }
+
     /// 假 KataGo：不依赖 GPU/模型，验证协议解析与错误路径。
     fn fake_engine(script: &str) -> (Engine, std::path::PathBuf) {
         use std::io::Write;
@@ -607,7 +643,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        // 0700 私有目录：/tmp 里别让别的用户提前创建同名目录
+        std::fs::create_dir(&dir).unwrap();
+        let mut dir_perms = std::fs::metadata(&dir).unwrap().permissions();
+        dir_perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, dir_perms).unwrap();
         let bin = dir.join("katago");
         std::fs::File::create(&bin)
             .unwrap()

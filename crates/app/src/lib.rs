@@ -18,7 +18,7 @@ use i18n::{strings, Lang};
 use storage::{GameEntry, GameStore};
 
 use engine::{EngineConfig, TurnEval};
-use goban::{Color, Game, Move, Point};
+use goban::{Color, Game, KoRule, Move, Point};
 use review::Review;
 use sgf::SgfGame;
 
@@ -83,6 +83,7 @@ pub struct App {
     pub show_info: bool,
     pub game_cursor: usize,
     setup: Vec<(Color, Point)>,
+    ko: KoRule,
     moves: Vec<Move>,
     pos: usize,
     game: Game,
@@ -131,6 +132,7 @@ impl App {
             show_info: false,
             game_cursor: 0,
             setup: Vec::new(),
+            ko: KoRule::default(),
             moves: Vec::new(),
             pos: 0,
             game: Game::new(size, komi),
@@ -145,6 +147,7 @@ impl App {
     pub fn from_sgf(sg: &SgfGame, config: AppConfig) -> Result<Self, String> {
         let mut app = Self::new(sg.size, sg.komi.unwrap_or(7.5), config);
         app.setup = sg.setup.clone();
+        app.ko = KoRule::from_rules(sg.rules.as_deref());
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
         app.rebuild()?;
@@ -152,7 +155,7 @@ impl App {
     }
 
     fn rebuild(&mut self) -> Result<(), String> {
-        let mut game = Game::with_setup(self.size, self.komi, self.setup.clone());
+        let mut game = Game::with_setup_and_rule(self.size, self.komi, self.setup.clone(), self.ko);
         for (i, mv) in self.moves[..self.pos].iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -190,7 +193,7 @@ impl App {
 
     /// 整盘快照（复盘用）。
     pub fn full_game(&self) -> Result<Game, String> {
-        let mut game = Game::with_setup(self.size, self.komi, self.setup.clone());
+        let mut game = Game::with_setup_and_rule(self.size, self.komi, self.setup.clone(), self.ko);
         for (i, mv) in self.moves.iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -954,6 +957,22 @@ mod tests {
     fn demo() -> App {
         let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[dd];W[ee])").unwrap();
         App::from_sgf(&sg, AppConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn sgf_rules_select_ko_rule() {
+        let jp = sgf::parse("(;SZ[9]RU[Japanese];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&jp, AppConfig::default()).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::Simple);
+
+        let cn = sgf::parse("(;SZ[9]RU[Chinese];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&cn, AppConfig::default()).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::PositionalSuperko);
+
+        // 没有 RU 时保持默认
+        let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&none, AppConfig::default()).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::default());
     }
 
     fn eval(pos: usize, to_move: Color, wr: f32, best: Move) -> TurnEval {
