@@ -6,13 +6,13 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color as C, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Wrap},
     Frame,
 };
 
-const WOOD: C = C::Rgb(196, 158, 108);
-const LINE: C = C::Rgb(110, 82, 48);
-const CURSOR: C = C::Rgb(90, 140, 200);
+const WOOD: C = C::Rgb(214, 176, 124);
+const LINE: C = C::Rgb(126, 96, 62);
+const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const CAND: [&str; 3] = ["1", "2", "3"];
 
@@ -34,53 +34,65 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
         "复盘"
     };
     let title = format!(" 对局 · 轮到{}({}) ", app.to_move().name_zh(), who);
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(Block::default().style(Style::default().bg(WOOD)), inner);
 
-    let n = app.size as usize;
-    let bw = n * 2;
-    let bh = n + 1;
-    if inner.width < (bw + 4) as u16 || inner.height < bh as u16 {
+    let n = app.size as u16;
+    // 终端宽就放宽格距，棋盘不至于缩在中间一小块
+    let spacing: u16 = if inner.width >= n * 3 + 10 { 3 } else { 2 };
+    let grid_w = n * spacing;
+    let need_w = grid_w + 4; // 左边两列坐标 + 右边留白
+    let need_h = n + 2; // 上下各一行坐标
+    if inner.width < need_w || inner.height < need_h {
         frame.render_widget(
-            Paragraph::new("窗口太小，放大一点").style(Style::default().fg(C::Gray).bg(WOOD)),
+            Paragraph::new("窗口太小，放大一点").style(Style::default().fg(C::Gray)),
             inner,
         );
         return;
     }
-    let x0 = inner.x + (inner.width - (bw as u16 + 3)) / 2;
-    let y0 = inner.y + (inner.height - bh as u16) / 2;
+    let x0 = inner.x + (inner.width - need_w) / 2;
+    let y0 = inner.y + (inner.height - need_h) / 2;
+
+    // 只有棋盘这一块铺木色，其余保持终端背景
+    let wood_rect = Rect {
+        x: x0,
+        y: y0,
+        width: need_w,
+        height: need_h,
+    };
+    frame.render_widget(Block::default().style(Style::default().bg(WOOD)), wood_rect);
+
     let buf = frame.buffer_mut();
     let wood = Style::default().bg(WOOD);
+    let stars = star_points(n as usize);
+    let grid_x = x0 + 3;
 
-    // 列字母
-    for (j, letter) in GTP_COLS.iter().take(n).enumerate() {
-        buf.set_string(
-            x0 + 3 + j as u16 * 2,
-            y0,
-            (*letter as char).to_string(),
-            wood.fg(LINE),
-        );
+    for j in 0..n {
+        let letter = GTP_COLS[j as usize] as char;
+        buf.set_string(grid_x + j * spacing, y0, letter.to_string(), wood.fg(LINE));
     }
 
     for i in 0..n {
         let row = n - i;
         buf.set_string(
             x0,
-            y0 + 1 + i as u16,
+            y0 + 1 + i,
             format!("{row:>2}"),
             wood.fg(LINE),
         );
         for j in 0..n {
             let p = Point::new(j as u8, i as u8);
-            let x = x0 + 3 + j as u16 * 2;
-            let y = y0 + 1 + i as u16;
+            let x = grid_x + j * spacing;
+            let y = y0 + 1 + i;
             let stone = app.game().position().board.at(p);
             let is_last = app.game().position().last_move == Some(Move::Play(p));
             let mut style = wood;
             if is_last {
-                style = style.add_modifier(Modifier::BOLD);
+                style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
             if app.cursor == p {
                 style = style.bg(CURSOR);
@@ -90,11 +102,23 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
                 Some(Color::White) => ("○", C::White),
                 None => match app.candidate_rank(p) {
                     Some(rank) => (CAND[rank - 1], C::Yellow),
-                    None => ("·", LINE),
+                    None => {
+                        let hoshi = stars.contains(&(i as usize)) && stars.contains(&(j as usize));
+                        if hoshi { ("╋", C::Rgb(96, 68, 40)) } else { ("┼", LINE) }
+                    }
                 },
             };
             buf.set_string(x, y, format!("{sym} "), style.fg(fg));
         }
+    }
+}
+
+fn star_points(n: usize) -> &'static [usize] {
+    match n {
+        19 => &[3, 9, 15],
+        13 => &[3, 6, 9],
+        9 => &[2, 4, 6],
+        _ => &[],
     }
 }
 
@@ -287,6 +311,18 @@ mod tests {
         assert!(s.contains('●')); // 黑子
         assert!(s.contains('○')); // 白子
         assert!(s.contains('A')); // 列字母
+    }
+
+    #[test]
+    fn commentary_panel_shows_text() {
+        let mut app = test_app();
+        app.last_comment = Some("特点：二路，贴着对方下（接触战）。\n推荐 R3（三路，66.0%）。".to_string());
+        let s: String = render_to_string(&app, 110, 40)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(s.contains("特点"));
+        assert!(s.contains("推荐"));
     }
 
     #[test]
