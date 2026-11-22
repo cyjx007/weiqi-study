@@ -143,7 +143,7 @@ impl Board {
         p.y as usize * self.size as usize + p.x as usize
     }
 
-    fn neighbors(&self, p: Point) -> Vec<Point> {
+    pub fn neighbors(&self, p: Point) -> Vec<Point> {
         let mut out = Vec::with_capacity(4);
         if p.x > 0 {
             out.push(Point::new(p.x - 1, p.y));
@@ -161,7 +161,7 @@ impl Board {
     }
 
     /// 返回 (同色连通块, 气)。起点为空则返回两个空 vec。
-    fn group_and_liberties(&self, start: Point) -> (Vec<Point>, Vec<Point>) {
+    pub fn group_and_liberties(&self, start: Point) -> (Vec<Point>, Vec<Point>) {
         let color = match self.at(start) {
             Some(c) => c,
             None => return (Vec::new(), Vec::new()),

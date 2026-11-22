@@ -333,13 +333,16 @@ impl App {
                             if let (Some(before), Some(after)) = (before, after) {
                                 let color = self.game.color_of_move(pos as u16);
                                 let mv = self.moves[pos - 1];
-                                self.last_comment = Some(review::quick_comment(
-                                    &before,
-                                    &after,
-                                    color,
-                                    mv,
-                                    self.size,
-                                ));
+                                let size = self.size;
+                                let comment = self
+                                    .game
+                                    .position_at(pos as u16 - 1)
+                                    .map(|pos_before| {
+                                        review::quick_comment(
+                                            pos_before, &before, &after, color, mv, size,
+                                        )
+                                    });
+                                self.last_comment = comment;
                             }
                         }
                     }
