@@ -170,7 +170,7 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
 
             // 光标：用奇数宽的块罩住落点，保证点在方块正中（偶数格宽做不到精确居中）
             if app.cursor == p {
-                let block_w = if spacing >= 3 { 3 } else { 2 };
+                let block_w = if spacing >= 3 { 3 } else { 1 };
                 let pad = (spacing.saturating_sub(1)) / 2;
                 let start = pad.saturating_sub(block_w / 2);
                 buf.set_string(

@@ -206,8 +206,8 @@ CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
 - Engine queries use Chinese rules; Japanese-rules records still review, but komi semantics differ.
 - The built-in area scorer does not judge life and death — it is a rough display only; real
   evaluation comes from KataGo's `scoreLead`.
-- Each analysis starts a fresh KataGo process, so expect about a second of model loading per
-  request.
+- The first analysis starts KataGo and keeps it alive for the rest of the session; later requests
+  skip the model load. Closing the TUI or the GUI ends the engine process.
 - The TUI interface is English or Chinese (`WEIQI_LANG`); the written commentary is Chinese-only for now.
 - Games are saved automatically after every move; nothing is deleted by the tool.
 

@@ -203,7 +203,132 @@ pub fn analyze_position(cfg: &EngineConfig, game: &Game) -> Result<TurnEval, Str
         .ok_or_else(|| "没有拿到当前局面的分析结果".to_string())
 }
 
-/// 指定局面集合的分析：一次拉起 KataGo，分批送 query，按 turn 收集。
+/// 常驻分析会话：第一次分析时启动，之后复用同一个 KataGo 进程。
+static SESSION: std::sync::Mutex<Option<AnalysisSession>> = std::sync::Mutex::new(None);
+
+struct AnalysisSession {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+    seq: u64,
+}
+
+impl AnalysisSession {
+    fn start(cfg: &EngineConfig) -> Result<Self, String> {
+        let mut child = Command::new(&cfg.katago)
+            .arg("analysis")
+            .arg("-model")
+            .arg(&cfg.model)
+            .arg("-config")
+            .arg(&cfg.config)
+            .arg("-override-config")
+            .arg("logToStderr=false")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动 KataGo 失败: {e}"))?;
+        let stdin = child.stdin.take().ok_or("打不开 KataGo stdin")?;
+        let stdout = child.stdout.take().ok_or("打不开 KataGo stdout")?;
+        Ok(AnalysisSession {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            seq: 0,
+        })
+    }
+
+    fn is_dead(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
+    }
+
+    fn query(
+        &mut self,
+        cfg: &EngineConfig,
+        game: &Game,
+        turns: &[u16],
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<Vec<TurnEval>, String> {
+        self.seq += 1;
+        let base = self.seq;
+        let size = game.size();
+        let moves_json: Vec<Value> = game
+            .moves()
+            .iter()
+            .enumerate()
+            .map(|(i, mv)| {
+                let color = game.color_of_move(i as u16 + 1);
+                let coord = match mv {
+                    Move::Play(p) => gtp_coord(*p, size),
+                    Move::Pass => "pass".to_string(),
+                };
+                json!([color.sgf_char().to_string(), coord])
+            })
+            .collect();
+        let setup_json: Vec<Value> = game
+            .setup()
+            .iter()
+            .map(|(c, p)| json!([c.sgf_char().to_string(), gtp_coord(*p, size)]))
+            .collect();
+
+        for (n, chunk) in turns.chunks(cfg.chunk.max(1)).enumerate() {
+            let query = json!({
+                "id": format!("q{base}-{n}"),
+                "initialStones": setup_json,
+                "moves": moves_json,
+                "rules": "chinese",
+                "komi": game.komi(),
+                "boardXSize": size,
+                "boardYSize": size,
+                "analyzeTurns": chunk,
+                "maxVisits": cfg.visits,
+                "analysisPVLen": 6,
+            });
+            writeln!(self.stdin, "{query}").map_err(|e| format!("写入 query 失败: {e}"))?;
+        }
+        self.stdin
+            .flush()
+            .map_err(|e| format!("刷新 query 失败: {e}"))?;
+
+        let total = turns.len();
+        let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
+        let mut line = String::new();
+        while evals.len() < total {
+            line.clear();
+            let n = self
+                .stdout
+                .read_line(&mut line)
+                .map_err(|e| format!("读 KataGo 输出失败: {e}"))?;
+            if n == 0 {
+                return Err("KataGo 提前退出".to_string());
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: Value = serde_json::from_str(&line)
+                .map_err(|e| format!("解析 JSON 失败: {e}: {line}"))?;
+            if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
+                return Err(format!("KataGo 报错: {err}"));
+            }
+            let Some(turn) = value.get("turnNumber").and_then(|x| x.as_u64()) else {
+                continue;
+            };
+            evals.push(eval_from_json(&value, game, turn as u16)?);
+            progress(evals.len(), total);
+        }
+        evals.sort_by_key(|e| e.turn);
+        Ok(evals)
+    }
+}
+
+impl Drop for AnalysisSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// 指定局面集合的分析：复用常驻会话，第一次调用时才启动 KataGo。
 pub fn analyze_turns<F>(
     cfg: &EngineConfig,
     game: &Game,
@@ -213,143 +338,47 @@ pub fn analyze_turns<F>(
 where
     F: FnMut(usize, usize),
 {
-    if cfg.katago.components().count() > 1 && !cfg.katago.exists() {
-        return Err(format!("找不到 katago: {}", cfg.katago.display()));
-    }
-    if !cfg.model.exists() {
-        return Err(format!(
-            "找不到网络文件: {}（用 KATAGO_MODEL 指定 .bin.gz）",
-            cfg.model.display()
-        ));
-    }
-    if !cfg.config.exists() {
-        return Err(format!("找不到配置: {}", cfg.config.display()));
+    for (label, path) in [
+        ("katago", &cfg.katago),
+        ("model", &cfg.model),
+        ("config", &cfg.config),
+    ] {
+        if label == "katago" {
+            if cfg.katago.components().count() > 1 && !path.exists() {
+                return Err(format!("找不到 katago: {}", path.display()));
+            }
+        } else if !path.exists() {
+            return Err(format!("找不到 {label}: {}", path.display()));
+        }
     }
 
     let mut turns: Vec<u16> = turns.to_vec();
     turns.sort_unstable();
     turns.dedup();
-    let total = turns.len();
-    if total == 0 {
+    if turns.is_empty() {
         return Ok(Vec::new());
     }
 
-    let size = game.size();
-    let moves_json: Vec<Value> = game
-        .moves()
-        .iter()
-        .enumerate()
-        .map(|(i, mv)| {
-            let color = game.color_of_move(i as u16 + 1);
-            let coord = match mv {
-                Move::Play(p) => gtp_coord(*p, size),
-                Move::Pass => "pass".to_string(),
-            };
-            json!([color.sgf_char().to_string(), coord])
+    let mut guard = SESSION
+        .lock()
+        .map_err(|_| "分析会话锁失败".to_string())?;
+    let need_start = match guard.as_mut() {
+        Some(session) => session.is_dead(),
+        None => true,
+    };
+    if need_start {
+        *guard = Some(AnalysisSession::start(cfg)?);
+    }
+    let session = guard.as_mut().expect("会话已初始化");
+    session
+        .query(cfg, game, &turns, &mut progress)
+        .map_err(|e| {
+            // 出错后丢掉会话，下次重新拉起，避免半截状态
+            if let Some(mut old) = guard.take() {
+                let _ = old.child.kill();
+            }
+            e
         })
-        .collect();
-
-    let setup_json: Vec<Value> = game
-        .setup()
-        .iter()
-        .map(|(c, p)| json!([c.sgf_char().to_string(), gtp_coord(*p, size)]))
-        .collect();
-
-    let mut queries = Vec::new();
-    for chunk in turns.chunks(cfg.chunk.max(1)) {
-        queries.push(json!({
-            "id": format!("chunk-{}", chunk.first().copied().unwrap_or(0)),
-            "initialStones": setup_json,
-            "moves": moves_json,
-            "rules": "chinese",
-            "komi": game.komi(),
-            "boardXSize": size,
-            "boardYSize": size,
-            "analyzeTurns": chunk,
-            "maxVisits": cfg.visits,
-            "analysisPVLen": 6,
-        }));
-    }
-
-    let mut child = Command::new(&cfg.katago)
-        .arg("analysis")
-        .arg("-model")
-        .arg(&cfg.model)
-        .arg("-config")
-        .arg(&cfg.config)
-        .arg("-override-config")
-        .arg("logToStderr=false")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("启动 KataGo 失败: {e}"))?;
-
-    {
-        let stdin = child.stdin.as_mut().ok_or("打不开 KataGo stdin")?;
-        for q in &queries {
-            writeln!(stdin, "{q}").map_err(|e| format!("写入 query 失败: {e}"))?;
-        }
-        stdin.flush().ok();
-    }
-    drop(child.stdin.take());
-
-    let stdout = child.stdout.take().ok_or("打不开 KataGo stdout")?;
-    let reader = BufReader::new(stdout);
-    let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
-    let mut failure: Option<String> = None;
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                failure = Some(format!("读 KataGo 输出失败: {e}"));
-                break;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                failure = Some(format!("解析 JSON 失败: {e}: {line}"));
-                break;
-            }
-        };
-        if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
-            failure = Some(format!("KataGo 报错: {err}"));
-            break;
-        }
-        let Some(turn) = value.get("turnNumber").and_then(|x| x.as_u64()) else {
-            continue;
-        };
-        match eval_from_json(&value, game, turn as u16) {
-            Ok(ev) => evals.push(ev),
-            Err(e) => {
-                failure = Some(e);
-                break;
-            }
-        }
-        progress(evals.len(), total);
-    }
-    // 出错时别留孤儿子进程
-    if failure.is_some() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
-    if let Some(e) = failure {
-        return Err(e);
-    }
-
-    evals.sort_by_key(|e| e.turn);
-    if evals.len() != total {
-        return Err(format!(
-            "只收到 {} / {} 个局面的分析结果",
-            evals.len(),
-            total
-        ));
-    }
-    Ok(evals)
 }
 
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
