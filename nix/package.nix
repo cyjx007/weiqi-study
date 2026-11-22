@@ -1,8 +1,16 @@
-{ lib, rustPlatform }:
+{
+  lib,
+  rustPlatform,
+  pkg-config,
+  gobject-introspection,
+  wrapGAppsHook4,
+  gtk4,
+  libadwaita,
+}:
 
 rustPlatform.buildRustPackage {
   pname = "weiqi-study";
-  version = "0.2.2";
+  version = "0.3.0";
 
   # flake 会把源码过滤成 git 跟踪的文件，target/ 和 katago 软链不会进来
   src = lib.cleanSource ../.;
@@ -12,11 +20,23 @@ rustPlatform.buildRustPackage {
   # 单测不需要 GPU、不需要网络
   doCheck = true;
 
-  # 默认的 cargoInstallHook 会把 target/<triple>/release 下的可执行文件装进 $out/bin，
-  # 两个 bin（go-review、weiqi-tui）都在里面，不用自己写 installPhase。
+  nativeBuildInputs = [
+    pkg-config
+    gobject-introspection
+    wrapGAppsHook4
+  ];
+
+  buildInputs = [
+    gtk4
+    libadwaita
+  ];
+
+  postInstall = ''
+    install -Dm644 ${../packaging/weiqi-study.desktop} $out/share/applications/weiqi-study.desktop
+  '';
 
   meta = {
-    description = "Local Go study tools: KataGo review + terminal board";
+    description = "Local Go study tools: KataGo review, terminal board and GTK4 window";
     license = lib.licenses.mit;
     mainProgram = "weiqi-tui";
   };
