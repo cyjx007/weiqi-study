@@ -3,7 +3,7 @@
 //! 纯函数、确定性输出（不读时钟、不随机），方便做快照测试。
 
 use engine::{gtp_coord, TurnEval};
-use goban::{Color, Game, Move};
+use goban::{Color, Game, Move, Point};
 
 #[derive(Clone, Debug)]
 pub struct MoveDelta {
@@ -246,6 +246,66 @@ pub fn build(game: &Game, evals: &[TurnEval], threshold: f32) -> Review {
         blunders,
         summary,
         details,
+    }
+}
+
+/// 一手棋的即时点评（TUI 每步调用，不依赖整盘 Review）。
+pub fn quick_comment(
+    before: &TurnEval,
+    after: &TurnEval,
+    mover: Color,
+    mv: Move,
+    size: u8,
+) -> String {
+    let wr_before = winrate_for(mover, before.winrate_black);
+    let wr_after = winrate_for(mover, after.winrate_black);
+    let loss = wr_before - wr_after;
+    let zone = match mv {
+        Move::Play(p) => format!("（{}）", zone_name(p, size)),
+        Move::Pass => String::new(),
+    };
+    let mut s = format!(
+        "{}{}：胜率 {:.1}% → {:.1}%（{:+.1}）。",
+        move_text(mv, size),
+        zone,
+        wr_before,
+        wr_after,
+        -loss
+    );
+    match before.candidates.first() {
+        Some(best) if best.mv != mv => {
+            s.push_str(&format!(
+                "推荐 {}（{:.1}%）",
+                move_text(best.mv, size),
+                winrate_for(mover, best.winrate_black)
+            ));
+            if !best.pv.is_empty() {
+                let pv: Vec<String> = best
+                    .pv
+                    .iter()
+                    .take(4)
+                    .map(|m| move_text(*m, size))
+                    .collect();
+                s.push_str("，之后大致 ");
+                s.push_str(&pv.join(" "));
+            }
+            s.push('。');
+        }
+        Some(_) => s.push_str("和推荐一致。"),
+        None => {}
+    }
+    s
+}
+
+fn zone_name(p: Point, size: u8) -> &'static str {
+    let dx = p.x.min(size.saturating_sub(1).saturating_sub(p.x));
+    let dy = p.y.min(size.saturating_sub(1).saturating_sub(p.y));
+    if dx <= 3 && dy <= 3 {
+        "角"
+    } else if dx <= 3 || dy <= 3 {
+        "边"
+    } else {
+        "中腹"
     }
 }
 

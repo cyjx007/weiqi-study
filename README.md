@@ -1,129 +1,190 @@
-# weiqi-study — local Go study tools
+# weiqi-study
 
 [![ci](https://github.com/cyjx007/weiqi-study/actions/workflows/ci.yml/badge.svg)](https://github.com/cyjx007/weiqi-study/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Review your own games with KataGo, offline, on a laptop GPU.**
+**Study Go on your own machine: play the engine, see why each move was good or bad.**
 
 English · [中文](README.zh-CN.md)
 
-Two front-ends share one rules/analysis core:
+weiqi-study is a small toolkit for learning Go locally. It drives a local KataGo engine and
+turns its numbers into things you can read: how much a move cost, what the engine would have
+played instead, and what the follow-up would look like.
 
-- `go-review` — feed it an SGF, get a per-move winrate/score table and a plain-language review
-  of your worst moves.
-- `weiqi-tui` — a terminal board: navigate the game, try variations, ask for the current
-  position's evaluation, run a full-game review and jump straight to blunders.
+It ships two front-ends. `go-review` takes an SGF and prints a per-move table plus a written
+review of your worst moves. `weiqi-tui` is a terminal board for playing against the engine:
+after every move it shows the evaluation, the top candidate moves, and a one-paragraph
+explanation of the move just played.
 
-Everything runs locally. No accounts, no uploads, no cloud engine.
-
-## What a review looks like
-
-```
-19 路 · 贴目 7.5 · 共 40 手
-
-手数  执  落点   胜率变化                    目差变化
-─────────────────────────────────────────────────────────────
-  15  黑  R17    38.6% →   4.6%  (-34.0)   -1.0 → -6.9
-  12  白  R10    65.5% →  55.7%   (-9.7)   +1.3 → +0.3
-  ...
-
-整体：平均每手损失 4.8 个百分点。
-布局（第 1–50 手）：平均 4.8，最差 -34.0（第 15 手）
-最大失误：第 15 手 黑 R17（-34.0）
-
-──── 失误详情 ────
-第 15 手 黑 R17：胜率 38.6% → 4.6%（-34.0）。这手是明显失误。
-    当时该下 R11（38.9%），之后大致 R11 O3 M3 J17。
-    目差 -1.0 → -6.9。
-```
-
-The narrative is currently Chinese-only; the numbers are language-neutral.
+It does **not** include the engine or the neural network. You point it at a KataGo binary and
+a `*.bin.gz` network; nothing is downloaded, uploaded, or sent to a server.
 
 ## Requirements
 
-- **KataGo** with a neural net (`*.bin.gz`). Any KataGo 1.15+ binary works.
-  This repo defaults to a net that ships with a Steam board-game collection, but nothing
-  depends on it — point `KATAGO_MODEL` at any net you have.
-- A GPU is optional. KataGo's OpenCL backend is what makes it pleasant; CPU works too,
-  just slower.
+- Linux (developed on NixOS; any distribution with a Rust toolchain works)
+- Rust 1.85+ (or Nix, which brings its own toolchain)
+- KataGo 1.15+ with any backend (OpenCL, CUDA, or Eigen) and one `*.bin.gz` network
+- A terminal with 256-color support for the TUI
 
-## Build
+## Install
 
-```sh
-# with Nix
-nix shell nixpkgs#cargo nixpkgs#rustc -c cargo build --release
+Try it without installing anything:
 
-# or use the wrapper
-./dev.sh build --release
+```bash
+nix build github:cyjx007/weiqi-study
+./result/bin/go-review --help
 ```
 
-Binaries land in `target/release/`.
+Or install both binaries into a profile:
 
-## Run
-
-```sh
-# review a game
-./target/release/go-review game.sgf --visits 120
-
-# terminal study board
-./target/release/weiqi-tui game.sgf
+```bash
+nix profile install github:cyjx007/weiqi-study
 ```
 
-Configuration is by environment variable:
+From a checkout:
 
-| Variable | Default |
-| --- | --- |
-| `KATAGO_BIN` | `~/go-study/katago/bin/katago` |
-| `KATAGO_MODEL` | net from the Steam collection's `NinOneQi` directory |
-| `KATAGO_CFG` | `~/go-study/analysis.cfg` |
+```bash
+git clone https://github.com/cyjx007/weiqi-study
+cd weiqi-study
+nix develop          # cargo, rustc, katago
+cargo build --release
+```
 
-`--visits N` trades time for accuracy: 60 is fine for spotting trends, 200+ for serious review.
+## Usage
 
-### TUI keys
+Point the tools at your engine and network once per shell:
+
+```bash
+export KATAGO_BIN=/opt/katago/katago
+export KATAGO_MODEL=/opt/katago/networks/model.bin.gz
+```
+
+Then:
+
+```bash
+# review a recorded game; prints a table and the worst-move explanations
+go-review game.sgf --visits 120
+
+# open a game in the study board
+weiqi-tui game.sgf
+
+# or start from an empty board and press t to play the engine
+weiqi-tui
+```
+
+TUI keys:
 
 | Key | Action |
 | --- | --- |
-| `hjkl` / arrows | move cursor |
-| `Enter` | play at cursor |
+| `hjkl` / arrows | move the cursor |
+| `Enter` | play at the cursor |
+| `t` | start a human-vs-engine game (you are Black) |
+| `v` | toggle automatic engine replies |
 | `u` | undo one move |
 | `n` / `p` | next / previous move |
 | `g` / `G` | jump to start / end |
-| `a` | analyse current position |
-| `A` | full-game review |
-| `b` | jump to next blunder |
+| `a` | analyse the current position |
+| `A` | full-game review (builds a blunder list) |
+| `b` | jump to the next blunder |
 | `?` | help |
 | `q` / `Esc` | quit |
 
-## Architecture
+First run and daily use differ only in setup:
 
-```
-crates/goban     rules: captures, suicide, positional superko, area scoring (no IO)
-crates/sgf       SGF reader (follows the main line, skips variations)
-crates/engine    KataGo process + analysis JSON -> black-perspective values
-crates/review    deterministic Chinese commentary templates
-crates/app       UI-independent state (navigation, play/undo, cached analysis)
-crates/cli       go-review binary
-crates/tui       weiqi-tui binary (ratatui)
+| Task | First run | Afterwards |
+| --- | --- | --- |
+| Review a game | set `KATAGO_BIN` / `KATAGO_MODEL`, then `go-review game.sgf` | `go-review game.sgf` |
+| Study board | same env vars, then `weiqi-tui game.sgf` | `weiqi-tui game.sgf` |
+| Play from scratch | `weiqi-tui`, press `t` | same |
+
+## Configuration
+
+Environment variables:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `KATAGO_BIN` | `katago` from `PATH` | Engine executable |
+| `KATAGO_MODEL` | auto-detected `*.bin.gz` | Neural network to load |
+| `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | Analysis config; generated on first use |
+
+Command-line flags (`--help` is authoritative):
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--visits N` | `120` | Visits per position: more is slower and stronger |
+| `--min-loss P` | `5` | Only show moves that lost at least P winrate points |
+| `--all` | off | Show every move in the table |
+| `--komi K` | from SGF (`7.5` fallback) | Override komi |
+| `--no-engine` | off | Parse the SGF only, skip the engine |
+
+Auto-detection looks for `katago` on `PATH` and for a network shipped with a Steam
+board-game collection; set the variables explicitly if either is missing.
+
+## How it works
+
+```text
+SGF ──> sgf (main line, setup stones)
+          │
+          ▼
+        goban (rules: captures, suicide, positional superko)
+          │
+          ▼
+        engine (KataGo analysis JSON, batched)
+          │   winrate/score → always stored from Black's point of view
+          ▼
+        review (deterministic commentary templates)
+          │
+          ├──> go-review   (text table + explanations)
+          └──> app + tui   (board, prediction, commentary, engine replies)
 ```
 
-Two invariants keep the code honest:
+Key invariants:
 
 - Winrates and score leads are stored **from Black's point of view** and flipped exactly once,
   at render time.
-- Coordinate strings (SGF/GTP) exist only in `sgf` and `engine`; the core works on
+- SGF and GTP coordinate strings exist only in `sgf` and `engine`; the core works on
   `Point { x, y }`.
+- `review` is deterministic: no clock, no randomness, so its output can be snapshot-tested.
+- Failure modes are explicit: a missing engine, network, or config produces an error; an
+  analysis error is shown in the status line and is not retried automatically.
 
-See [DESIGN.md](DESIGN.md) (Chinese) for the full design and the GTK4 plan.
+## Project layout
 
-## Known limits
+```text
+crates/goban     rules only: captures, suicide, positional superko, area scoring
+crates/sgf       SGF reader: follows the main line, skips variations
+crates/engine    KataGo process management and analysis JSON parsing
+crates/review    commentary templates (pure, deterministic)
+crates/app       UI-independent state: navigation, play/undo, engine turns
+crates/cli       go-review binary
+crates/tui       weiqi-tui binary (ratatui)
+nix/package.nix  Nix package building both binaries
+flake.nix        flake outputs: package and dev shell
+samples/         demo SGF used by the TUI fallback
+```
+
+## Development
+
+```bash
+cargo test --workspace              # unit tests: no GPU, no engine needed
+cargo test -p app -- --ignored      # end-to-end: needs a local KataGo + network
+cargo build --release
+nix build .#default                 # builds both binaries via Nix
+```
+
+CI runs `cargo test --workspace` and `cargo build --release --workspace` on every push.
+
+## Notes
 
 - SGF: main line only; variation trees are ignored.
-- Positions set up with `AB`/`AW` are treated as handicap games (White to move first).
-- Analysis queries use Chinese rules; Japanese-rules games still review fine, komi semantics differ slightly.
-- The built-in area scorer does not judge life and death — it is a rough display only. Real
-  evaluation always comes from KataGo's `scoreLead`.
-- Each analysis spawns a fresh KataGo process, so there is a ~1.5 s model-load cost each time.
+- Positions set up with `AB`/`AW` are treated as handicap games (White moves first).
+- Engine queries use Chinese rules; Japanese-rules records still review, but komi semantics differ.
+- The built-in area scorer does not judge life and death — it is a rough display only; real
+  evaluation comes from KataGo's `scoreLead`.
+- Each analysis starts a fresh KataGo process, so expect about a second of model loading per
+  request.
+- The written commentary is currently Chinese-only; the numbers are language-neutral.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

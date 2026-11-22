@@ -60,7 +60,7 @@ Rust crates 走 crates.io：`ratatui`、`crossterm`、`gtk4`、`libadwaita`、`g
 ### 目录
 
 ```
-weiqi-study/               # 实际放在 ~/go-study
+weiqi-study/               # 实际放在 weiqi-study/
 ├─ Cargo.toml                # workspace
 ├─ crates/
 │  ├─ goban/                 # 规则：Board/Position/Game、提子、劫、禁入点、面积数子

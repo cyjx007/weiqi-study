@@ -23,24 +23,122 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let nets = home.join(".local/share/Steam/steamapps/common/NinOneQi/engines/go");
         EngineConfig {
             katago: std::env::var_os("KATAGO_BIN")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("go-study/katago/bin/katago")),
-            model: std::env::var_os("KATAGO_MODEL").map(PathBuf::from).unwrap_or_else(|| {
-                nets.join("kata1-b18c384nbt-s9996604416-d4316597426.bin.gz")
-            }),
+                .unwrap_or_else(find_katago),
+            model: std::env::var_os("KATAGO_MODEL")
+                .map(PathBuf::from)
+                .or_else(find_model)
+                .unwrap_or_default(),
             config: std::env::var_os("KATAGO_CFG")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("go-study/analysis.cfg")),
+                .unwrap_or_else(|| ensure_config(config_dir().join("analysis.cfg"))),
             visits: 120,
             chunk: 30,
         }
     }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config"))
+        .join("weiqi-study")
+}
+
+fn state_dir() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local/state"))
+        .join("weiqi-study")
+}
+
+fn which(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+fn find_katago() -> PathBuf {
+    if let Some(p) = which("katago") {
+        return p;
+    }
+    // 常见的手动安装位置（Nix profile / 项目内自建）
+    for candidate in [
+        home_dir().join("go-study/katago/bin/katago"),
+        PathBuf::from("/usr/bin/katago"),
+        PathBuf::from("/usr/local/bin/katago"),
+    ] {
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    PathBuf::from("katago")
+}
+
+/// 在 Steam 棋类合集里找一个网络（存在就用，找不到让用户显式设置 KATAGO_MODEL）。
+fn find_model() -> Option<PathBuf> {
+    let common = home_dir().join(".local/share/Steam/steamapps/common");
+    for dir in [
+        common.join("NinOneQi/engines/go"),
+        common.join("Just Go/JustGo_Data/StreamingAssets/AI/Katago/networks/Analysis"),
+    ] {
+        if let Some(p) = largest_net(&dir) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn largest_net(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("gz") {
+            continue;
+        }
+        // 拟人网（human SL）不能当普通模型加载
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains("human"))
+        {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        if best.as_ref().is_none_or(|(s, _)| size > *s) {
+            best = Some((size, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// 配置文件不存在时写一份最小可用的（OpenCL 友好）。
+fn ensure_config(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let logs = state_dir().join("logs");
+        let _ = std::fs::create_dir_all(&logs);
+        let text = format!(
+            "logDir = {}\nlogToStderr = false\nlogErrorsAndWarnings = true\n\
+             numAnalysisThreads = 2\nnumSearchThreadsPerAnalysisThread = 8\n\
+             nnMaxBatchSize = 16\nnnCacheSizePowerOfTwo = 20\n\
+             reportAnalysisWinratesAs = SIDETOMOVE\nanalysisPVLen = 8\nmaxVisits = 120\n",
+            logs.display()
+        );
+        let _ = std::fs::write(&path, text);
+    }
+    path
 }
 
 #[derive(Clone, Debug)]
@@ -115,14 +213,17 @@ pub fn analyze_turns<F>(
 where
     F: FnMut(usize, usize),
 {
-    for (label, path) in [
-        ("katago", &cfg.katago),
-        ("model", &cfg.model),
-        ("config", &cfg.config),
-    ] {
-        if !path.exists() {
-            return Err(format!("找不到 {label}: {}", path.display()));
-        }
+    if cfg.katago.components().count() > 1 && !cfg.katago.exists() {
+        return Err(format!("找不到 katago: {}", cfg.katago.display()));
+    }
+    if !cfg.model.exists() {
+        return Err(format!(
+            "找不到网络文件: {}（用 KATAGO_MODEL 指定 .bin.gz）",
+            cfg.model.display()
+        ));
+    }
+    if !cfg.config.exists() {
+        return Err(format!("找不到配置: {}", cfg.config.display()));
     }
 
     let mut turns: Vec<u16> = turns.to_vec();

@@ -28,7 +28,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
-    let title = format!(" 对局 · 轮到{} ", app.to_move().name_zh());
+    let who = if app.ai_enabled {
+        if app.to_move() == app.human { "你" } else { "AI" }
+    } else {
+        "复盘"
+    };
+    let title = format!(" 对局 · 轮到{}({}) ", app.to_move().name_zh(), who);
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -97,16 +102,13 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(4),
-        Constraint::Min(6),
-        Constraint::Length(4),
+        Constraint::Length(7),
+        Constraint::Min(5),
+        Constraint::Length(3),
     ])
     .split(area);
 
-    let wr = app
-        .analysis
-        .as_ref()
-        .map(|a| a.winrate_black)
-        .unwrap_or(0.5);
+    let wr = app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(" 胜率（黑） "))
         .gauge_style(Style::default().fg(C::Rgb(235, 235, 235)).bg(C::Rgb(45, 45, 45)))
@@ -114,45 +116,101 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
         .label(format!("{:.1}%", wr * 100.0));
     frame.render_widget(gauge, chunks[0]);
 
-    let score = app
-        .analysis
-        .as_ref()
-        .map(|a| a.score_black)
-        .unwrap_or(0.0);
+    let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
+    let who = if !app.ai_enabled {
+        "复盘".to_string()
+    } else if app.to_move() == app.human {
+        "你".to_string()
+    } else {
+        "AI".to_string()
+    };
     let info = Paragraph::new(vec![
         Line::from(format!("目差   黑 {score:+.1}")),
         Line::from(format!("手数   {} / {}", app.pos(), app.total_moves())),
-        Line::from(format!("轮到   {}", app.to_move().name_zh())),
+        Line::from(format!("轮到   {}（{}）", app.to_move().name_zh(), who)),
     ])
     .block(Block::default().borders(Borders::ALL).title(" 局面 "));
     frame.render_widget(info, chunks[1]);
 
     let mut lines = Vec::new();
-    if let Some(a) = &app.analysis {
-        for (i, c) in a.candidates.iter().take(5).enumerate() {
-            let mv = match c.mv {
-                Move::Play(p) => engine::gtp_coord(p, app.size),
-                Move::Pass => "pass".to_string(),
-            };
+    let pred = app.prediction();
+    if pred.is_empty() {
+        lines.push(Line::from("按 a 分析当前局面"));
+    } else {
+        for (i, (mv, wr)) in pred.iter().enumerate() {
             lines.push(Line::from(format!(
                 "{}. {:<4} 黑 {:.1}%",
                 i + 1,
-                mv,
-                c.winrate_black * 100.0
+                mv_text(*mv, app.size),
+                wr * 100.0
             )));
         }
-    } else {
-        lines.push(Line::from("按 a 分析当前局面"));
+        if let Some(a) = app.analysis() {
+            if let Some(best) = a.candidates.first() {
+                let pv: Vec<String> = best
+                    .pv
+                    .iter()
+                    .take(5)
+                    .map(|m| mv_text(*m, app.size))
+                    .collect();
+                if !pv.is_empty() {
+                    lines.push(Line::from(format!("变化 {}", pv.join(" "))));
+                }
+            }
+        }
     }
     let cand = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" 候选 "))
+        .block(Block::default().borders(Borders::ALL).title(" 预测 / 候选 "))
         .wrap(Wrap { trim: true });
     frame.render_widget(cand, chunks[2]);
+
+    let mut text = String::new();
+    if let Some(c) = &app.last_comment {
+        text.push_str(c);
+    }
+    if app.ai_enabled && app.to_move() == app.human {
+        if let Some(a) = app.analysis() {
+            if let Some(best) = a.candidates.first() {
+                if !text.is_empty() {
+                    text.push_str("\n\n");
+                }
+                text.push_str(&format!(
+                    "建议 {}（黑 {:.1}%）",
+                    mv_text(best.mv, app.size),
+                    best.winrate_black * 100.0
+                ));
+                let pv: Vec<String> = best
+                    .pv
+                    .iter()
+                    .take(4)
+                    .map(|m| mv_text(*m, app.size))
+                    .collect();
+                if !pv.is_empty() {
+                    text.push_str(&format!("，之后大致 {}", pv.join(" ")));
+                }
+                text.push('。');
+            }
+        }
+    }
+    if text.is_empty() {
+        text.push_str("按 t 开始人机对局；你落子后这里会写这手亏了多少、该下哪。");
+    }
+    let c = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title(" 讲解 "))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(c, chunks[3]);
 
     let status = Paragraph::new(app.status.as_str())
         .style(Style::default().fg(C::Gray))
         .block(Block::default().borders(Borders::ALL).title(" 状态 "));
-    frame.render_widget(status, chunks[3]);
+    frame.render_widget(status, chunks[4]);
+}
+
+fn mv_text(mv: Move, size: u8) -> String {
+    match mv {
+        Move::Play(p) => engine::gtp_coord(p, size),
+        Move::Pass => "pass".to_string(),
+    }
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
@@ -167,6 +225,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("u               撤回一手"),
         Line::from("n / p           下一手 / 上一手"),
         Line::from("g / G           回到开局 / 跳到末尾"),
+        Line::from("t               开始人机对局（你执黑）"),
+        Line::from("v               开关 AI 应手"),
         Line::from("a               分析当前局面"),
         Line::from("A               全盘复盘（生成失误清单）"),
         Line::from("b               跳到下一个失误"),

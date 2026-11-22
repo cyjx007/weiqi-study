@@ -23,6 +23,7 @@
           packages = [
             pkgs.cargo
             pkgs.rustc
+            pkgs.katago
           ];
         };
       });
