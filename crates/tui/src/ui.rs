@@ -1,5 +1,7 @@
 //! 界面渲染：只读 `App` 状态，不修改任何东西。
 
+use crate::image_board::ImageBoard;
+
 use app::i18n::{color_name, strings};
 use app::{move_text, App};
 use goban::{Color, Move, Point};
@@ -19,7 +21,7 @@ const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const CAND_LABELS: [&str; 3] = ["1", "2", "3"];
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &App, image: &mut Option<ImageBoard>) {
     let area = frame.area();
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
     let content = rows[0];
@@ -30,10 +32,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let side_w = 38.min(content.width.saturating_sub(44));
     if docked {
         let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(side_w)]).split(content);
-        draw_board(frame, app, cols[0]);
+        draw_board(frame, app, cols[0], image);
         draw_side(frame, app, cols[1]);
     } else {
-        draw_board(frame, app, content);
+        draw_board(frame, app, content, image);
         if app.show_info {
             let w = 38.min(content.width);
             let rect = Rect {
@@ -75,7 +77,7 @@ fn choose_scale(inner_w: u16, inner_h: u16, n: u16) -> Option<(u16, u16)> {
     None
 }
 
-fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<ImageBoard>) {
     let s = strings(app.lang);
     let who = if app.ai_enabled {
         if app.to_move() == app.human {
@@ -99,6 +101,12 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
         .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // 图片模式：Cairo/位图负责棋盘，文字侧栏照旧
+    if let Some(img) = image.as_mut() {
+        img.draw(frame, inner, app);
+        return;
+    }
 
     let n = app.size as u16;
     let Some((spacing, row_step)) = choose_scale(inner.width, inner.height, n) else {
@@ -404,7 +412,8 @@ mod tests {
     fn render_to_string(app: &App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, app)).unwrap();
+        let mut image = None;
+        terminal.draw(|f| draw(f, app, &mut image)).unwrap();
         let buffer = terminal.backend().buffer();
         buffer
             .content

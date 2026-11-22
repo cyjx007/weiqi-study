@@ -68,6 +68,9 @@ go-review game.sgf --visits 120
 # 在学习界面里打开棋谱
 weiqi-tui game.sgf
 
+# 指定棋盘渲染方式（auto 探测 kitty/sixel/iTerm2，失败回退文本）
+weiqi-tui game.sgf --mode auto
+
 # 或者从空盘开始，按 t 和引擎对下
 weiqi-tui
 
@@ -85,6 +88,10 @@ Nix 包装会安装 `packaging/weiqi-study.desktop`，所以 `weiqi-gui` 会出�
 
 棋盘保持正方形：格距和行距成对缩放（2×1、4×2、6×3），整体居中；窗口变窄时侧栏自动
 隐藏，按 `i` 可以临时覆盖显示。
+
+`--mode auto`（默认）会询问终端是否支持 kitty / sixel / iTerm2 图片协议：支持就画 720×720
+的 RGBA 棋盘（坐标用 `font8x8` 点阵字体），否则用原来的文本点阵；`--mode image` 强制图片、
+不支持时直接报错，`--mode text` 强制文本。
 
 TUI 按键：
 
@@ -129,6 +136,7 @@ TUI 按键：
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--visits N` | `120` | 每个局面推演次数，越大越准越慢 |
+| `--mode auto\|image\|text` | `auto` | 棋盘渲染：`auto` 探测 kitty/sixel/iTerm2 失败回退文本；`image` 不支持则报错；`text` 强制点阵 |
 | `--min-loss P` | `5` | 只显示亏损 ≥ P 个胜率点的手 |
 | `--all` | 关 | 表格里显示每一手 |
 | `--komi K` | 取自 SGF（缺省 `7.5`） | 覆盖贴目 |

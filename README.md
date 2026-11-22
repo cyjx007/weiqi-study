@@ -70,6 +70,9 @@ go-review game.sgf --visits 120
 # open a game in the study board
 weiqi-tui game.sgf
 
+# choose the board renderer (auto probes kitty/sixel/iTerm2, text fallback)
+weiqi-tui game.sgf --mode auto
+
 # or start from an empty board and press t to play the engine
 weiqi-tui
 
@@ -131,6 +134,7 @@ Command-line flags (`--help` is authoritative):
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--visits N` | `120` | Visits per position: more is slower and stronger |
+| `--mode auto\|image\|text` | `auto` | Board renderer: `auto` probes kitty/sixel/iTerm2 and falls back to the text grid; `image` errors if unsupported; `text` forces the dot grid |
 | `--min-loss P` | `5` | Only show moves that lost at least P winrate points |
 | `--all` | off | Show every move in the table |
 | `--komi K` | from SGF (`7.5` fallback) | Override komi |

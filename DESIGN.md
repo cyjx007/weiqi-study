@@ -184,17 +184,22 @@ pub struct Review {
 └──────────────────────────────────────────┘ └──────────────────┘
 ```
 
-- 棋盘 19×19 用真彩色 `●`/`○`，最后一步用反色标记
-- `hjkl` / 方向键移动光标，`Enter` 落子，`u` 撤销，`a` 触发分析，`s` 存 SGF
+- 棋盘两种渲染：文本点阵（`·`/`●`，窄窗口自动缩放）与 720×720 RGBA 图片
+  （`--mode auto|image|text`；auto 探测 kitty/sixel/iTerm2，失败回退文本；
+  图片坐标用 `font8x8` 点阵字体，按局面指纹缓存，避免每帧重编码）
+- `hjkl` / 方向键移动光标，`Enter` 落子，`u` 撤销，`a` 触发分析，落子自动存 SGF
 - 底部状态行：手数、轮到谁、引擎耗时
 - 鼠标可选支持（crossterm 有，但先不做）
 
 ### GUI（gtk4-rs + libadwaita）
 
+- 代码拆成 `main.rs`（入口）/ `board.rs`（Cairo 绘制与命中）/ `panels.rs`（侧栏控件与文案）/
+  `controller.rs`（按键、按钮、定时器全部接到 `app::Controller`）
 - 主窗口 `GtkApplicationWindow` + `AdwHeaderBar`
 - 棋盘用 `gtk::DrawingArea` + Cairo：19 条线、星位、棋子（径向渐变）、最后一手标记、候选点半透明圆 + 胜率
-- 侧栏 `AdwOverlaySplitView`：胜率条（`GtkLevelBar`）、候选列表（`GtkListView`）、失误列表（`GtkListBox`，点一条跳转）
-- 菜单：打开 SGF、保存、对弈模式、引擎设置（网络/visits）
+- 侧栏是固定宽 `GtkBox` + 卡片：胜率、局面、预测/变化、讲解、操作按钮、棋谱下拉、状态 + 语言
+- 快捷键与 TUI 相同（`hjkl`/Enter/`t`/`v`/`a`/`A`/`b`/`u`/`n`/`p`/`g`/`G`/`q`）；
+  菜单（打开/保存/引擎设置）尚未做
 - 原生 Wayland，无需 XWayland
 
 ## 六、测试策略

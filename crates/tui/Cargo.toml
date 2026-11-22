@@ -9,7 +9,10 @@ name = "weiqi-tui"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.29"
+ratatui = "0.30"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false }
+font8x8 = "0.3"
 app = { path = "../app" }
 goban = { path = "../goban" }
 sgf = { path = "../sgf" }

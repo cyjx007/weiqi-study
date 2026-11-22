@@ -1,11 +1,13 @@
 //! weiqi-tui：本地围棋学习界面（ratatui）。
 
+mod image_board;
 mod ui;
 
 use std::time::Duration;
 
-use app::i18n::strings;
+use app::i18n::{fill, strings};
 use app::{App, AppConfig, Controller};
+use image_board::{ImageBoard, Mode};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 /// 事件轮询间隔；也决定 AI 应手、分析结果回到界面的节奏。
@@ -21,6 +23,7 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut path: Option<String> = None;
     let mut visits: Option<u32> = None;
+    let mut mode = Mode::Auto;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -32,10 +35,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|_| "--visits 不是数字")?,
                 );
             }
+            "--mode" => {
+                let value = args.next().ok_or("--mode 需要 auto|image|text")?;
+                mode = Mode::parse(&value)?;
+            }
             "-h" | "--help" => {
                 println!(
                     "weiqi-tui — local Go study board / 本地围棋学习界面\n\n\
-                     用法: weiqi-tui [game.sgf] [--visits N]\n\
+                     用法: weiqi-tui [game.sgf] [--visits N] [--mode auto|image|text]\n\
+                     --mode  棋盘渲染：auto 探测 kitty/sixel/iTerm2（失败回退文本）,\n\
+                              image 强制图片（不支持则报错）, text 强制文本点阵\n\
                      t 人机对局 / play the engine, Enter 落子, L 棋谱 / games, ? 帮助 / help\n\
                      不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。"
                 );
@@ -75,7 +84,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, Controller::new(app));
+    let mut image = match ImageBoard::new(mode) {
+        Ok(image) => image,
+        Err(e) => {
+            ratatui::restore();
+            return Err(e.into());
+        }
+    };
+    let mut app = app;
+    if let Some(img) = &image {
+        app.status = fill(strings(app.lang).image_board, img.protocol_name());
+    } else if mode != Mode::Text {
+        app.status = strings(app.lang).image_fallback.to_string();
+    }
+    let result = event_loop(&mut terminal, Controller::new(app), &mut image);
     ratatui::restore();
     result
 }
@@ -83,11 +105,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     mut ctrl: Controller,
+    image: &mut Option<ImageBoard>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut dirty = true;
     loop {
         if dirty {
-            terminal.draw(|frame| ui::draw(frame, &ctrl.app))?;
+            terminal.draw(|frame| ui::draw(frame, &ctrl.app, image))?;
             dirty = false;
         }
 
