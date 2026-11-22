@@ -25,6 +25,7 @@ a `*.bin.gz` network; nothing is downloaded, uploaded, or sent to a server.
 - Rust 1.85+ (or Nix, which brings its own toolchain)
 - KataGo 1.15+ with any backend (OpenCL, CUDA, or Eigen) and one `*.bin.gz` network
 - A terminal with 256-color support for the TUI
+- GTK4 and libadwaita for the native window (the Nix package provides them)
 
 ## Install
 
@@ -33,6 +34,7 @@ Try it without installing anything:
 ```bash
 nix build github:cyjx007/weiqi-study
 ./result/bin/go-review --help
+./result/bin/weiqi-gui        # native window
 ```
 
 Or install both binaries into a profile:
@@ -70,7 +72,17 @@ weiqi-tui game.sgf
 
 # or start from an empty board and press t to play the engine
 weiqi-tui
+
+# native GTK4 window (also available from the desktop menu)
+weiqi-gui
 ```
+
+The GUI uses the mouse: click an intersection to play, hover to preview. Buttons mirror the TUI
+keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved game, and `EN/中文`
+switches the interface language. Keyboard shortcuts are the same as the TUI.
+
+The Nix package installs `packaging/weiqi-study.desktop`, so `weiqi-gui` appears in the
+application launcher.
 
 Every game is saved automatically as SGF under `$XDG_DATA_HOME/weiqi-study/games` (usually
 `~/.local/share/weiqi-study/games`). Press `L` in the TUI to reopen any of them, review, or
@@ -167,6 +179,8 @@ crates/review    commentary templates (pure, deterministic)
 crates/app       UI-independent state: navigation, play/undo, engine turns
 crates/cli       go-review binary
 crates/tui       weiqi-tui binary (ratatui)
+crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
+packaging/       desktop entry for the GUI
 nix/package.nix  Nix package building both binaries
 flake.nix        flake outputs: package and dev shell
 samples/         demo SGF used by the TUI fallback
@@ -178,10 +192,12 @@ samples/         demo SGF used by the TUI fallback
 cargo test --workspace              # unit tests: no GPU, no engine needed
 cargo test -p app -- --ignored      # end-to-end: needs a local KataGo + network
 cargo build --release
-nix build .#default                 # builds both binaries via Nix
+nix develop                         # GTK4 / libadwaita / pkg-config for the GUI
+nix build .#default                 # builds all binaries via Nix
 ```
 
-CI runs `cargo test --workspace` and `cargo build --release --workspace` on every push.
+CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
+`cargo build --release --workspace` on every push.
 
 ## Notes
 

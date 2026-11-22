@@ -23,6 +23,7 @@ weiqi-study 是一套本地围棋学习工具。它驱动本机的 KataGo，把�
 - Rust 1.85+（或用 Nix，工具链由它提供）
 - KataGo 1.15+，任一后端（OpenCL / CUDA / Eigen），以及一个 `*.bin.gz` 网络
 - 能显示 256 色的终端（TUI 用）
+- GTK4 + libadwaita（原生窗口用；Nix 包会带上）
 
 ## 安装
 
@@ -31,6 +32,7 @@ weiqi-study 是一套本地围棋学习工具。它驱动本机的 KataGo，把�
 ```bash
 nix build github:cyjx007/weiqi-study
 ./result/bin/go-review --help
+./result/bin/weiqi-gui        # 原生窗口
 ```
 
 或者把两个二进制装进 profile：
@@ -68,7 +70,15 @@ weiqi-tui game.sgf
 
 # 或者从空盘开始，按 t 和引擎对下
 weiqi-tui
+
+# GTK4 原生窗口（也会出现在应用菜单里）
+weiqi-gui
 ```
+
+图形界面用鼠标：点交叉点落子，悬停预览；按钮对应 TUI 的快捷键（新局 / 分析 / 复盘 / 撤回），
+下拉框打开任意棋谱，`EN/中文` 切语言；键盘快捷键和 TUI 一致。
+
+Nix 包装会安装 `packaging/weiqi-study.desktop`，所以 `weiqi-gui` 会出现在启动器里。
 
 每盘棋都会自动存成 SGF，放在 `$XDG_DATA_HOME/weiqi-study/games`（通常是
 `~/.local/share/weiqi-study/games`）。在 TUI 里按 `L` 可以随时打开、复盘或继续走。
@@ -163,6 +173,8 @@ crates/review    讲评模板（纯函数、确定性）
 crates/app       与界面无关的状态：导航、落子/撤回、引擎应手
 crates/cli       go-review
 crates/tui       weiqi-tui（ratatui）
+crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）
+packaging/       图形界面的桌面入口
 nix/package.nix  构建两个二进制的 Nix 包
 flake.nix        flake 输出：package 与 dev shell
 samples/         TUI 无参数时打开的示例棋谱
@@ -174,10 +186,12 @@ samples/         TUI 无参数时打开的示例棋谱
 cargo test --workspace              # 单元测试：不需要 GPU 和引擎
 cargo test -p app -- --ignored      # 端到端：需要本机 KataGo + 网络
 cargo build --release
-nix build .#default                 # 用 Nix 构建两个二进制
+nix develop                         # 图形界面需要 GTK4 / libadwaita / pkg-config
+nix build .#default                 # 用 Nix 构建全部二进制
 ```
 
-CI 在每次 push 时跑 `cargo test --workspace` 和 `cargo build --release --workspace`。
+CI 会先装 GTK4 和 libadwaita，再跑 `cargo test --workspace` 和
+`cargo build --release --workspace`。
 
 ## 注意
 
