@@ -733,6 +733,7 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
         for &sy in stars {
             let x = g.ox + sx as f64 * g.cell;
             let y = g.oy + sy as f64 * g.cell;
+            cr.new_sub_path();
             cr.arc(x, y, g.cell * 0.09, 0.0, std::f64::consts::TAU);
             cr.fill().ok();
         }
@@ -762,6 +763,9 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
         cr.move_to(g.ox + g.board + g.cell * 0.45, y);
         cr.show_text(&label).ok();
     }
+    // 文字用的 move_to 会留下当前点，后面画圆必须先开新子路径，
+    // 否则 arc() 会自动从那个点连一条线过来（就是那条斜线）。
+    cr.new_path();
 
     let board = &app.game().position().board;
     // 候选
@@ -770,6 +774,7 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
             let x = g.ox + p.x as f64 * g.cell;
             let y = g.oy + p.y as f64 * g.cell;
             cr.set_source_rgba(0.15, 0.45, 0.85, 0.45);
+            cr.new_sub_path();
             cr.arc(x, y, g.cell * 0.42, 0.0, std::f64::consts::TAU);
             cr.fill().ok();
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
@@ -792,6 +797,7 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
         let x = g.ox + p.x as f64 * g.cell;
         let y = g.oy + p.y as f64 * g.cell;
         cr.set_source_rgba(0.85, 0.15, 0.15, 0.9);
+        cr.new_sub_path();
         cr.arc(x, y, g.cell * 0.12, 0.0, std::f64::consts::TAU);
         cr.fill().ok();
     }
@@ -803,6 +809,7 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
         let y = g.oy + p.y as f64 * g.cell;
         cr.set_source_rgba(0.2, 0.6, 1.0, 0.55);
         cr.set_line_width(2.0);
+        cr.new_sub_path();
         cr.arc(x, y, g.cell * 0.5, 0.0, std::f64::consts::TAU);
         cr.stroke().ok();
     }
@@ -810,6 +817,7 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
 
 fn draw_stone(cr: &cairo::Context, x: f64, y: f64, r: f64, black: bool) {
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.28);
+    cr.new_sub_path();
     cr.arc(x + r * 0.08, y + r * 0.12, r, 0.0, std::f64::consts::TAU);
     cr.fill().ok();
 
@@ -822,10 +830,12 @@ fn draw_stone(cr: &cairo::Context, x: f64, y: f64, r: f64, black: bool) {
         grad.add_color_stop_rgb(1.0, 0.78, 0.78, 0.78);
     }
     cr.set_source(&grad).ok();
+    cr.new_sub_path();
     cr.arc(x, y, r, 0.0, std::f64::consts::TAU);
     cr.fill().ok();
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
     cr.set_line_width(1.0);
+    cr.new_sub_path();
     cr.arc(x, y, r, 0.0, std::f64::consts::TAU);
     cr.stroke().ok();
 }
