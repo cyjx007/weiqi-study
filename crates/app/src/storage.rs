@@ -74,10 +74,14 @@ impl GameStore {
         {
             let mut file =
                 fs::File::create(&tmp).map_err(|e| format!("创建 {} 失败：{e}", tmp.display()))?;
-            file.write_all(text.as_bytes())
-                .map_err(|e| format!("写入 {} 失败：{e}", tmp.display()))?;
-            file.sync_all()
-                .map_err(|e| format!("同步 {} 失败：{e}", tmp.display()))?;
+            file.write_all(text.as_bytes()).map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("写入 {} 失败：{e}", tmp.display())
+            })?;
+            file.sync_all().map_err(|e| {
+                let _ = fs::remove_file(&tmp);
+                format!("同步 {} 失败：{e}", tmp.display())
+            })?;
         }
         fs::rename(&tmp, path).map_err(|e| {
             let _ = fs::remove_file(&tmp);

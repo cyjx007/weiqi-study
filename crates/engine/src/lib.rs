@@ -702,10 +702,11 @@ done"#,
         dir_perms.set_mode(0o700);
         std::fs::set_permissions(&dir, dir_perms).unwrap();
         let bin = dir.join("katago");
-        std::fs::File::create(&bin)
-            .unwrap()
-            .write_all(script.as_bytes())
-            .unwrap();
+        {
+            let mut f = std::fs::File::create(&bin).unwrap();
+            f.write_all(script.as_bytes()).unwrap();
+            f.sync_all().unwrap();
+        } // 显式关闭：否则紧接着 exec 可能拿到 ETXTBSY
         let mut perms = std::fs::metadata(&bin).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&bin, perms).unwrap();

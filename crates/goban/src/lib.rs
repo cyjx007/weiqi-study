@@ -339,16 +339,28 @@ impl Game {
         setup: Vec<(Color, Point)>,
         ko: KoRule,
     ) -> Self {
+        // 让子棋（黑摆子）白先；只摆白子或空盘都是黑先
+        let first = if setup.iter().any(|(c, _)| *c == Color::Black) {
+            Color::White
+        } else {
+            Color::Black
+        };
+        Self::with_setup_rule_first(size, komi, setup, ko, first)
+    }
+
+    /// 明确指定先手方。SGF 里的 `B`/`W` 是文件事实，不能靠摆子猜。
+    pub fn with_setup_rule_first(
+        size: u8,
+        komi: f32,
+        setup: Vec<(Color, Point)>,
+        ko: KoRule,
+        first: Color,
+    ) -> Self {
         let mut pos = Position::new(size);
         for (c, p) in &setup {
             pos.board.set(*p, Some(*c));
         }
-        // 有摆子（让子）时白先
-        pos.to_move = if setup.is_empty() {
-            Color::Black
-        } else {
-            Color::White
-        };
+        pos.to_move = first;
         let board_hash = hash_board(&pos);
         let situational = hash_position(&pos);
         Game {
@@ -661,6 +673,25 @@ mod tests {
         let s = g.area_score();
         assert_eq!(s.black, 81, "1 子 + 80 空点（没有白棋）");
         assert_eq!(s.white, 0);
+    }
+
+    #[test]
+    fn setup_determines_first_player() {
+        // 只摆白子：黑先
+        let g = Game::with_setup(9, 0.0, vec![(Color::White, p(2, 2))]);
+        assert_eq!(g.position().to_move, Color::Black);
+        // 让子（黑摆子）：白先
+        let g = Game::with_setup(9, 0.0, vec![(Color::Black, p(2, 2))]);
+        assert_eq!(g.position().to_move, Color::White);
+        // 显式指定优先
+        let g = Game::with_setup_rule_first(
+            9,
+            0.0,
+            vec![(Color::White, p(2, 2))],
+            KoRule::default(),
+            Color::White,
+        );
+        assert_eq!(g.position().to_move, Color::White);
     }
 
     #[test]

@@ -45,7 +45,6 @@ pub fn build_ui(application: &adw::Application) {
     let (side, panels) = Panels::build();
     let games = panels.games.clone();
     let lang_btn = panels.lang_btn.clone();
-    let new_btn = panels.new_btn.clone();
     let analyse_btn = panels.analyse_btn.clone();
     let review_btn = panels.review_btn.clone();
     let undo_btn = panels.undo_btn.clone();
@@ -198,17 +197,25 @@ pub fn build_ui(application: &adw::Application) {
         window.add_controller(keys);
     }
 
-    // 按钮
+    // 按钮：新局菜单（9/13/19 路）
     {
-        let ui = ui.clone();
-        new_btn.connect_clicked(move |_| {
-            let Ok(mut ui) = ui.try_borrow_mut() else {
-                return;
-            };
-            ui.ctrl.start_play();
-            reload_games(&mut ui);
-            refresh(&mut ui);
-        });
+        let (btns, popover) = {
+            let u = ui.borrow();
+            (u.panels.size_btns.clone(), u.panels.size_popover.clone())
+        };
+        for (btn, size) in btns.into_iter().zip([9u8, 13, 19]) {
+            let ui = ui.clone();
+            let popover = popover.clone();
+            btn.connect_clicked(move |_| {
+                popover.popdown();
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                ui.ctrl.start_play_on(size);
+                reload_games(&mut ui);
+                refresh(&mut ui);
+            });
+        }
     }
     {
         let ui = ui.clone();

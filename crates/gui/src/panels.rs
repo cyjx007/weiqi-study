@@ -16,7 +16,9 @@ pub struct Panels {
     pub status: gtk::Label,
     pub games: gtk::DropDown,
     pub lang_btn: gtk::Button,
-    pub new_btn: gtk::Button,
+    pub new_btn: gtk::MenuButton,
+    pub size_btns: Vec<gtk::Button>,
+    pub size_popover: gtk::Popover,
     pub analyse_btn: gtk::Button,
     pub review_btn: gtk::Button,
     pub undo_btn: gtk::Button,
@@ -67,7 +69,7 @@ impl Panels {
         games.set_hexpand(true);
 
         let lang_btn = gtk::Button::with_label("EN");
-        let new_btn = gtk::Button::with_label("");
+        let new_btn = gtk::MenuButton::new();
         let analyse_btn = gtk::Button::with_label("");
         let review_btn = gtk::Button::with_label("");
         let undo_btn = gtk::Button::with_label("");
@@ -132,14 +134,19 @@ impl Panels {
         strength_card.append(&visits_hint);
 
         // 像人一样下棋 + 模仿水平
+        // AdwSwitchRow / AdwComboRow 只能放进 GtkListBox，否则不会响应点击
+        let human_list = gtk::ListBox::new();
+        human_list.set_selection_mode(gtk::SelectionMode::None);
+        human_list.add_css_class("boxed-list");
         let human_switch = adw::SwitchRow::new();
-        strength_card.append(&human_switch);
+        human_list.append(&human_switch);
 
         let rank_model = gtk::StringList::new(&[]);
         let rank = adw::ComboRow::new();
         rank.set_model(Some(&rank_model));
         rank.set_sensitive(false);
-        strength_card.append(&rank);
+        human_list.append(&rank);
+        strength_card.append(&human_list);
 
         side.append(&strength_card);
 
@@ -168,7 +175,19 @@ impl Panels {
         comment_card.append(&scroll);
         side.append(&comment_card);
 
-        // 操作
+        // 操作：新局可选 9/13/19 路
+        let size_popover = gtk::Popover::new();
+        let size_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let mut size_btns = Vec::new();
+        for size in [9u8, 13, 19] {
+            let b = gtk::Button::with_label(&format!("{size}×{size}"));
+            b.add_css_class("flat");
+            size_box.append(&b);
+            size_btns.push(b);
+        }
+        size_popover.set_child(Some(&size_box));
+        new_btn.set_popover(Some(&size_popover));
+
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.add_css_class("actions");
         actions.append(&new_btn);
@@ -211,6 +230,8 @@ impl Panels {
             games,
             lang_btn,
             new_btn,
+            size_btns,
+            size_popover,
             analyse_btn,
             review_btn,
             undo_btn,

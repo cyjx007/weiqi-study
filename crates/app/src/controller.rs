@@ -144,6 +144,13 @@ impl Controller {
         self.analyze();
     }
 
+    /// 指定棋盘大小开新局。
+    pub fn start_play_on(&mut self, size: u8) {
+        self.dirty = true;
+        self.app.start_play_on(size);
+        self.analyze();
+    }
+
     /// 开关 AI 应手，并按新状态推进一手。
     pub fn toggle_ai(&mut self) {
         self.dirty = true;

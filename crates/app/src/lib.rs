@@ -87,6 +87,8 @@ pub struct App {
     pub game_cursor: usize,
     setup: Vec<(Color, Point)>,
     ko: KoRule,
+    /// 重放时的先手方（SGF 声明优先）
+    first: Color,
     moves: Vec<Move>,
     pos: usize,
     game: Game,
@@ -138,6 +140,7 @@ impl App {
             game_cursor: 0,
             setup: Vec::new(),
             ko: KoRule::default(),
+            first: Color::Black,
             moves: Vec::new(),
             pos: 0,
             game: Game::new(size, komi),
@@ -154,6 +157,7 @@ impl App {
         let mut app = Self::new(sg.size, sg.komi.unwrap_or(7.5), config);
         app.setup = sg.setup.clone();
         app.ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+        app.first = sg.first_to_move();
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
         app.rebuild()?;
@@ -251,11 +255,19 @@ impl App {
         }
     }
 
+    /// 指定棋盘大小开新局（9/13/19）。
+    pub fn start_play_on(&mut self, size: u8) {
+        self.size = size;
+        self.cursor = Point::new(size / 2, size / 2);
+        self.start_play();
+    }
+
     /// 开始一盘人机对局：空盘，你执黑，AI 执白。
     pub fn start_play(&mut self) {
         self.preview = None;
         self.next_generation();
         self.ko = KoRule::default();
+        self.first = Color::Black;
         self.setup.clear();
         self.moves.clear();
         self.pos = 0;
@@ -294,10 +306,11 @@ impl App {
         let size = sg.size;
         let komi = sg.komi.unwrap_or(7.5);
         let ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+        let first = sg.first_to_move();
         let setup = sg.setup.clone();
         let moves = sg.moves.clone();
 
-        let mut game = Game::with_setup_and_rule(size, komi, setup.clone(), ko);
+        let mut game = Game::with_setup_rule_first(size, komi, setup.clone(), ko, first);
         for (i, mv) in moves.iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -322,6 +335,7 @@ impl App {
         self.size = size;
         self.komi = komi;
         self.ko = ko;
+        self.first = first;
         self.setup = setup;
         self.moves = moves;
         self.pos = self.moves.len();
@@ -1003,6 +1017,26 @@ mod tests {
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
         assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn start_play_on_sets_board_size() {
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+        app.start_play_on(19);
+        assert_eq!(app.size, 19);
+        assert_eq!(app.game().size(), 19);
+        assert_eq!(app.total_moves(), 0);
+    }
+
+    #[test]
+    fn setup_game_replays_with_declared_colors() {
+        // AW 摆白子、黑先：cc 必须落成黑子，gg 必须落成白子
+        let sg = sgf::parse("(;SZ[9]AW[dd];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        let board = &app.game().position().board;
+        assert_eq!(board.at(Point::new(2, 2)), Some(Color::Black), "cc 应是黑");
+        assert_eq!(board.at(Point::new(6, 6)), Some(Color::White), "gg 应是白");
     }
 
     #[test]

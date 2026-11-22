@@ -10,8 +10,23 @@ pub struct SgfGame {
     pub size: u8,
     pub komi: Option<f32>,
     pub rules: Option<String>,
+    /// 文件里第一手 B/W 声明的先手方；没有落子时为 None
+    pub first: Option<Color>,
     pub setup: Vec<(Color, Point)>,
     pub moves: Vec<Move>,
+}
+
+impl SgfGame {
+    /// 重放时的先手方：优先用文件声明的颜色，没有落子再按让子惯例推断。
+    pub fn first_to_move(&self) -> Color {
+        self.first.unwrap_or_else(|| {
+            if self.setup.iter().any(|(c, _)| *c == Color::Black) {
+                Color::White
+            } else {
+                Color::Black
+            }
+        })
+    }
 }
 
 type Props = Vec<(String, Vec<String>)>;
@@ -43,6 +58,7 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
             _ => None,
         })
         .unwrap_or(Color::Black);
+    out.first = Some(first_color);
 
     // 第一遍：读盘面参数（根节点在前）
     // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
@@ -87,10 +103,12 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     // 摆子只在还没有任何 B/W 之前允许（根节点拆成多个节点也兼容）
     let mut saw_move = false;
     for (node_idx, props) in nodes.iter().enumerate() {
+        // 按节点判断：同一节点里 AB 写在 B 后面也算开局摆子
+        let move_before_node = saw_move;
         for (ident, values) in props {
             match ident.as_str() {
                 "AB" | "AW" => {
-                    if saw_move {
+                    if move_before_node {
                         // 中途摆子会改变此前棋步的合法性，不能当成开局摆子提前应用
                         return Err(format!(
                             "不支持中途摆子：第 {} 个节点的 {ident}",
@@ -638,6 +656,13 @@ mod tests {
         // 让子棋：AW 摆白子，黑先
         let g = parse("(;SZ[9]AW[dd];B[cc];W[gg])").unwrap();
         assert_eq!(g.moves.len(), 2, "AW + 黑先不能丢第一手");
+        assert_eq!(g.first, Some(Color::Black));
+        assert_eq!(g.first_to_move(), Color::Black);
+
+        // 让子棋：AB + 白先
+        let g = parse("(;SZ[9]AB[dd];W[cc])").unwrap();
+        assert_eq!(g.first, Some(Color::White));
+        assert_eq!(g.first_to_move(), Color::White);
         assert_eq!(g.moves[0], Move::Play(Point::new(2, 2)));
 
         // 真正的乱序（两个黑连着下）仍然丢弃第二个
