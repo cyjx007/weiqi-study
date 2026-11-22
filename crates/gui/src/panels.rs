@@ -38,7 +38,6 @@ pub struct Panels {
     pub commit_btn: gtk::Button,
     updating_controls: bool,
     sec_winrate: gtk::Label,
-    sec_position: gtk::Label,
     sec_predict: gtk::Label,
     sec_comment: gtk::Label,
     game_count: usize,
@@ -82,7 +81,7 @@ impl Panels {
         let rename_btn = gtk::Button::with_label("");
         let delete_btn = gtk::Button::with_label("");
 
-        let side = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
         side.set_size_request(360, -1);
         side.set_hexpand(false);
         side.set_margin_top(14);
@@ -103,15 +102,14 @@ impl Panels {
         head.append(&turn);
         head.append(&winrate_text);
         head.append(&winrate);
+        // 局面信息并进同一张卡，省出一整张卡的高度给预测/讲解
+        let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        sep.set_margin_top(2);
+        sep.set_margin_bottom(2);
+        head.append(&sep);
+        head.append(&score);
+        head.append(&moves);
         side.append(&head);
-
-        // 局面
-        let stats = card();
-        let sec_position = section("");
-        stats.append(&sec_position);
-        stats.append(&score);
-        stats.append(&moves);
-        side.append(&stats);
 
         // 每步思考量：四个快捷档位 + 精确输入
         let strength_card = card();
@@ -158,6 +156,7 @@ impl Panels {
 
         // 预测
         let predict_card = card();
+        predict_card.set_vexpand(true);
         let sec_predict = section("");
         predict_card.append(&sec_predict);
         predict_card.append(&cand);
@@ -257,7 +256,6 @@ impl Panels {
             visits_hint,
             updating_controls: false,
             sec_winrate,
-            sec_position,
             sec_predict,
             sec_comment,
             game_count: 0,
@@ -294,8 +292,6 @@ impl Panels {
         let s = strings(app.lang);
         self.sec_winrate
             .set_markup(&format!("<b>{}</b>", s.winrate));
-        self.sec_position
-            .set_markup(&format!("<b>{}</b>", s.position));
         self.sec_predict
             .set_markup(&format!("<b>{}</b>", s.predict));
         self.sec_comment
@@ -453,7 +449,7 @@ pub fn install_css() {
         .panel-card {
             background-color: alpha(currentColor, 0.055);
             border-radius: 12px;
-            padding: 12px;
+            padding: 10px;
         }
         .section-title { font-size: 0.8em; font-weight: 700; opacity: 0.6; }
         .turn-label { font-size: 1.25em; font-weight: 700; }

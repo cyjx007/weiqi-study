@@ -19,6 +19,7 @@ fn run() -> Result<(), String> {
     let mut min_loss = 5.0f32;
     let mut show_all = false;
     let mut no_engine = false;
+    let mut strict = false;
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -51,14 +52,20 @@ fn run() -> Result<(), String> {
             }
             "--all" => show_all = true,
             "--no-engine" => no_engine = true,
+            "--strict" => strict = true,
             other if other.starts_with('-') => return Err(format!("未知参数 {other}")),
             other => path = Some(other.to_string()),
         }
     }
 
-    let path = path.ok_or("用法：go-review <棋谱.sgf> [--visits N] [--min-loss P] [--all]")?;
+    let path =
+        path.ok_or("用法：go-review <棋谱.sgf> [--visits N] [--min-loss P] [--all] [--strict]")?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读不了 {path}：{e}"))?;
-    let sg = sgf::parse(&text)?;
+    let sg = if strict {
+        sgf::parse_strict(&text)?
+    } else {
+        sgf::parse(&text)?
+    };
     for w in &sg.warnings {
         eprintln!("警告：{w}");
     }
@@ -118,6 +125,7 @@ fn print_help() {
   --all           显示每一手
   --komi K        覆盖贴目
   --no-engine     只解析棋谱，不调用引擎（自检用）
+  --strict        棋谱有任何 warning 就报错（默认只警告）
   -h, --help      显示帮助
 
 环境变量：

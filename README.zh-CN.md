@@ -218,10 +218,10 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 
 ## 注意
 
-- SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。`PL`（指定下一手方）未读，让子棋默认白先
+- SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
 - SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
-- 用 `AB`/`AW` 摆出来的局面按让子棋处理（白先）
-- 提交给引擎的规则固定为中国规则；日本规则棋谱也能复盘，只是贴目语义略有差异
+- 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
+- 提交给引擎的规则跟随 SGF 的 `RU`：日本/新西兰→`japanese`，AGA/Ing/韩国→`korean`，中国和未知值→`chinese`
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`
 - 第一次分析时启动 KataGo，之后整个会话复用同一个进程（不再重复加载模型）；
   关掉 TUI 或窗口时引擎随之退出

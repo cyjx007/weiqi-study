@@ -98,10 +98,23 @@ pub struct App {
     ai_seed: u64,
     /// 是否人机对局（start_play 开始，读 SGF 时清掉）
     vs_ai: bool,
+    /// 最近一次读谱产生的 warning
+    pub warnings: Vec<String>,
     /// 棋局/引擎设置版本；旧的分析结果回来时按这个丢弃
     generation: u64,
     /// 引擎推荐变化的临时预览（不动主线）
     preview: Option<Preview>,
+}
+
+/// 状态栏用的 warning 摘要（只显示第一条 + 总数）。
+fn warning_text(warnings: &[String]) -> Option<String> {
+    warnings.first().map(|w| {
+        if warnings.len() > 1 {
+            format!("⚠ {} 条警告：{w}", warnings.len())
+        } else {
+            format!("⚠ {w}")
+        }
+    })
 }
 
 /// 从 `base` 开始预览 `pv` 的前 `step` 手；`game` 是预览到当前步的棋盘。
@@ -148,6 +161,7 @@ impl App {
             failed_pos: None,
             ai_seed: seed(),
             vs_ai: false,
+            warnings: Vec::new(),
             generation: 0,
             preview: None,
         }
@@ -161,8 +175,9 @@ impl App {
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
         app.rebuild()?;
-        if !sg.warnings.is_empty() {
-            app.status = sg.warnings.join("；");
+        app.warnings = sg.warnings.clone();
+        if let Some(w) = warning_text(&app.warnings) {
+            app.status = w;
         }
         Ok(app)
     }
@@ -250,10 +265,17 @@ impl App {
             return;
         };
         let setup = self.setup.clone();
-        if let Err(e) = self
-            .store
-            .save(&path, self.size, self.komi, &setup, &self.moves, self.ko)
-        {
+        if let Err(e) = self.store.save(
+            &path,
+            self.size,
+            self.komi,
+            &setup,
+            &self.moves,
+            storage::WriteOptions {
+                ko: self.ko,
+                first: self.first,
+            },
+        ) {
             self.status = e;
         }
     }
@@ -271,6 +293,7 @@ impl App {
         self.next_generation();
         self.ko = KoRule::default();
         self.first = Color::Black;
+        self.warnings.clear();
         self.setup.clear();
         self.moves.clear();
         self.pos = 0;
@@ -325,7 +348,14 @@ impl App {
         } else {
             match self.store.create() {
                 Ok(copy) => {
-                    self.store.save(&copy, size, komi, &setup, &moves, ko)?;
+                    self.store.save(
+                        &copy,
+                        size,
+                        komi,
+                        &setup,
+                        &moves,
+                        storage::WriteOptions { ko, first },
+                    )?;
                     Some(copy)
                 }
                 Err(_) => None,
@@ -350,8 +380,9 @@ impl App {
         self.game = game;
         self.vs_ai = false;
         self.current_file = new_file;
-        if !sg.warnings.is_empty() {
-            self.status = sg.warnings.join("；");
+        self.warnings = sg.warnings.clone();
+        if let Some(w) = warning_text(&self.warnings) {
+            self.status = w;
         }
         Ok(())
     }
@@ -394,7 +425,7 @@ impl App {
             Ok(sg) => match self.open_sgf_file(entry.path.clone(), &sg) {
                 Ok(()) => {
                     self.show_games = false;
-                    self.status = i18n::fill(
+                    let loaded = i18n::fill(
                         strings(self.lang).game_loaded,
                         entry
                             .path
@@ -402,6 +433,10 @@ impl App {
                             .and_then(|n| n.to_str())
                             .unwrap_or("?"),
                     );
+                    self.status = match warning_text(&self.warnings) {
+                        Some(w) => format!("{loaded} · {w}"),
+                        None => loaded,
+                    };
                 }
                 Err(e) => self.status = e,
             },
@@ -1023,6 +1058,24 @@ mod tests {
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
         assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn list_open_keeps_warnings_in_status() {
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+        let path = app.store.create().unwrap();
+        std::fs::write(&path, "(;SZ[9]KM[abc];B[cc])").unwrap();
+        app.refresh_games();
+        assert_eq!(app.games.len(), 1);
+        app.game_cursor = 0;
+        app.open_selected_game();
+        assert!(app.status.contains("KM"), "{}", app.status);
+        assert!(app.status.contains('⚠'), "{}", app.status);
+
+        // 开新局要清掉上一盘的 warning
+        app.start_play();
+        assert!(app.warnings.is_empty());
     }
 
     #[test]

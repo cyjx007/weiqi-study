@@ -97,10 +97,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let mut app = app;
-    if let Some(img) = &image {
-        app.status = fill(strings(app.lang).image_board, img.protocol_name());
-    } else if mode != Mode::Text {
-        app.status = strings(app.lang).image_fallback.to_string();
+    if app.warnings.is_empty() {
+        if let Some(img) = &image {
+            app.status = fill(strings(app.lang).image_board, img.protocol_name());
+        } else if mode != Mode::Text {
+            app.status = strings(app.lang).image_fallback.to_string();
+        }
     }
     let result = event_loop(&mut terminal, Controller::new(app), &mut image);
     ratatui::restore();

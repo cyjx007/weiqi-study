@@ -223,10 +223,10 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
 
 ## Notes
 
-- SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. `PL` (explicit next player) is not read; handicap setups default to White to move.
+- SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. Root `PL` (explicit next player) is honoured; handicap setups default to White to move.
 - Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal.
-- Positions set up with `AB`/`AW` are treated as handicap games (White moves first).
-- Engine queries use Chinese rules; Japanese-rules records still review, but komi semantics differ.
+- Malformed `KM`, out-of-turn moves and unrecognised `PL` are reported as warnings (status bar / stderr); `go-review --strict` turns them into errors.
+- Engine queries follow the SGF `RU`: Japanese/New Zealand map to `japanese`, AGA/Ing/Korean to `korean`, Chinese and unknown values to `chinese`.
 - The built-in area scorer does not judge life and death — it is a rough display only; real
   evaluation comes from KataGo's `scoreLead`.
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests

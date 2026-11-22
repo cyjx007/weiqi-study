@@ -17,6 +17,13 @@ pub struct GameEntry {
     pub label: String,
 }
 
+/// 写 SGF 需要的规则参数（打包传，避免 save 参数过多）。
+#[derive(Clone, Copy, Debug)]
+pub struct WriteOptions {
+    pub ko: KoRule,
+    pub first: Color,
+}
+
 #[derive(Clone, Debug)]
 pub struct GameStore {
     dir: PathBuf,
@@ -70,9 +77,9 @@ impl GameStore {
         komi: f32,
         setup: &[(Color, Point)],
         moves: &[Move],
-        ko: KoRule,
+        opts: WriteOptions,
     ) -> Result<(), String> {
-        let text = sgf::write_game(size, komi, setup, moves, ko);
+        let text = sgf::write_game(size, komi, setup, moves, opts.ko, opts.first);
         let tmp = path.with_extension("sgf.tmp");
         {
             let mut file =
@@ -243,7 +250,17 @@ mod tests {
         let path = store.create().unwrap();
         let moves = vec![Move::Play(Point::new(15, 3)), Move::Play(Point::new(3, 15))];
         store
-            .save(&path, 19, 7.5, &[], &moves, KoRule::default())
+            .save(
+                &path,
+                19,
+                7.5,
+                &[],
+                &moves,
+                WriteOptions {
+                    ko: KoRule::default(),
+                    first: Color::Black,
+                },
+            )
             .unwrap();
         assert!(path.exists());
         assert!(!path.with_extension("sgf.tmp").exists());

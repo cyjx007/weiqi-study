@@ -10,7 +10,7 @@ pub struct SgfGame {
     pub size: u8,
     pub komi: Option<f32>,
     pub rules: Option<String>,
-    /// 文件里第一手 B/W 声明的先手方；没有落子时为 None
+    /// 先手方：根 PL 或首手 B/W；两者都没有时为 None（交给 `first_to_move` 推断）
     pub first: Option<Color>,
     pub setup: Vec<(Color, Point)>,
     pub moves: Vec<Move>,
@@ -59,6 +59,10 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
             "W" => Some(Color::White),
             _ => None,
         });
+    // 根节点被拆成多个节点时，PL 仍算"开局前"
+    let first_move_node = nodes
+        .iter()
+        .position(|props| props.iter().any(|(ident, _)| ident == "B" || ident == "W"));
     let first_color = first_move.unwrap_or(Color::Black);
     let mut pl: Option<Color> = None;
 
@@ -86,9 +90,20 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                 }
                 "KM" => {
                     if out.komi.is_none() {
-                        if let Some(v) = values.first() {
-                            match v.trim().parse::<f32>() {
-                                Ok(k) => out.komi = Some(k),
+                        let Some(v) = values.first() else { continue };
+                        if values.len() > 1 {
+                            out.warnings.push("KM 有多个值，只取第一个".to_string());
+                        }
+                        let raw = v.trim();
+                        if raw.is_empty() {
+                            out.warnings.push("KM 为空，按默认贴目".to_string());
+                        } else {
+                            // 部分编辑器用逗号当小数点
+                            match raw.replace(',', ".").parse::<f32>() {
+                                Ok(k) if k.is_finite() => out.komi = Some(k),
+                                Ok(_) => out
+                                    .warnings
+                                    .push(format!("KM 不是有限数：{v:?}，按默认贴目")),
                                 Err(_) => {
                                     out.warnings.push(format!("KM 不是数字：{v:?}，按默认贴目"))
                                 }
@@ -97,6 +112,12 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     }
                 }
                 "PL" => {
+                    if values.len() > 1 {
+                        out.warnings.push(format!(
+                            "第 {} 个节点的 PL 有多个值，只取第一个",
+                            node_idx + 1
+                        ));
+                    }
                     let v = values.first().map(|s| s.trim()).unwrap_or("");
                     let color = match v {
                         "B" => Some(Color::Black),
@@ -104,11 +125,13 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                         _ => None,
                     };
                     match color {
-                        Some(c) if node_idx == 0 => pl = Some(c),
+                        Some(c) if first_move_node.is_none_or(|m| node_idx <= m) => pl = Some(c),
                         Some(_) => out
                             .warnings
                             .push(format!("忽略第 {} 个节点的 PL", node_idx + 1)),
-                        None => out.warnings.push(format!("PL 值无法识别：{v:?}")),
+                        None => out
+                            .warnings
+                            .push(format!("第 {} 个节点的 PL 值无法识别：{v:?}", node_idx + 1)),
                     }
                 }
                 "RU" if out.rules.is_none() => {
@@ -121,18 +144,19 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
         }
     }
 
-    out.first = Some(match (first_move, pl) {
+    out.first = match (first_move, pl) {
         (Some(f), Some(p)) => {
             if p != f {
                 out.warnings
                     .push("PL 与首手颜色不一致，按首手颜色重放".to_string());
             }
-            f
+            Some(f)
         }
-        (Some(f), None) => f,
-        (None, Some(p)) => p,
-        (None, None) => first_color,
-    });
+        (Some(f), None) => Some(f),
+        (None, Some(p)) => Some(p),
+        // 没有落子也没有 PL：交给 first_to_move() 按摆子惯例推断
+        (None, None) => None,
+    };
 
     // 第二遍：摆子 + 落子
     // 摆子只在还没有任何 B/W 之前允许（根节点拆成多个节点也兼容）
@@ -195,7 +219,22 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     if out.moves.is_empty() && out.setup.is_empty() {
         return Err("没有找到任何落子（可能是空棋谱或只含变化图）".to_string());
     }
+    // 状态栏只有一行，warning 太多反而看不清
+    if out.warnings.len() > 5 {
+        let rest = out.warnings.len() - 5;
+        out.warnings.truncate(5);
+        out.warnings.push(format!("…还有 {rest} 条警告"));
+    }
     Ok(out)
+}
+
+/// 严格模式：有任何 warning 就报错。
+pub fn parse_strict(src: &str) -> Result<SgfGame, String> {
+    let g = parse(src)?;
+    if let Some(w) = g.warnings.first() {
+        return Err(format!("严格模式：{w}（共 {} 条警告）", g.warnings.len()));
+    }
+    Ok(g)
 }
 
 fn parse_tree(chars: &[char], i: &mut usize) -> Result<Vec<Props>, String> {
@@ -379,6 +418,7 @@ pub fn write_game(
     setup: &[(Color, Point)],
     moves: &[Move],
     ko: KoRule,
+    first: Color,
 ) -> String {
     fn coord(p: Point) -> String {
         let mut s = String::new();
@@ -407,11 +447,10 @@ pub fn write_game(
         out.push_str(&whites.concat());
     }
 
-    let first = if setup.is_empty() {
-        Color::Black
-    } else {
-        Color::White
-    };
+    // 没有落子时用 PL 记住先手（否则重载后只能按摆子惯例猜）
+    if moves.is_empty() {
+        out.push_str(&format!("PL[{}]", first.sgf_char()));
+    }
     for (i, mv) in moves.iter().enumerate() {
         let color = if i.is_multiple_of(2) {
             first
@@ -468,7 +507,7 @@ mod tests {
             Move::Pass,
             Move::Play(Point::new(3, 15)),
         ];
-        let text = write_game(19, 7.5, &[], &moves, KoRule::default());
+        let text = write_game(19, 7.5, &[], &moves, KoRule::default(), Color::Black);
         let back = parse(&text).unwrap();
         assert_eq!(back.size, 19);
         assert_eq!(back.komi, Some(7.5));
@@ -478,7 +517,7 @@ mod tests {
     #[test]
     fn writes_and_reparses_two_passes() {
         let moves = vec![Move::Play(Point::new(2, 2)), Move::Pass, Move::Pass];
-        let text = write_game(9, 7.5, &[], &moves, KoRule::default());
+        let text = write_game(9, 7.5, &[], &moves, KoRule::default(), Color::Black);
         let back = parse(&text).unwrap();
         assert_eq!(back.moves, moves);
     }
@@ -597,7 +636,14 @@ mod tests {
     fn random_games_round_trip_through_sgf() {
         for (seed, size) in [(1u64, 9u8), (2, 13), (3, 19)] {
             let game = random_legal_game(seed, size, 90);
-            let text = write_game(size, 7.5, &[], game.moves(), KoRule::default());
+            let text = write_game(
+                size,
+                7.5,
+                &[],
+                game.moves(),
+                KoRule::default(),
+                Color::Black,
+            );
             let back = parse(&text).unwrap_or_else(|e| panic!("seed {seed}: 解析失败：{e}"));
 
             assert_eq!(back.size, size, "seed {seed}");
@@ -626,12 +672,13 @@ mod tests {
             (Color::White, Point::new(6, 2)),
         ];
         let moves = vec![Move::Play(Point::new(4, 4)), Move::Pass];
-        let text = write_game(9, 0.5, &setup, &moves, KoRule::default());
+        let text = write_game(9, 0.5, &setup, &moves, KoRule::default(), Color::White);
         let back = parse(&text).unwrap();
 
         assert_eq!(back.size, 9);
         assert_eq!(back.komi, Some(0.5));
         assert_eq!(back.moves, moves);
+        assert_eq!(back.first_to_move(), Color::White, "让子棋白先");
         let mut got = back.setup;
         let mut want = setup;
         got.sort_by_key(|(c, p)| (c.index(), p.y, p.x));
@@ -643,7 +690,7 @@ mod tests {
     fn consecutive_passes_round_trip_at_every_size() {
         for size in [5u8, 9, 13, 19] {
             let moves = vec![Move::Pass, Move::Pass, Move::Pass];
-            let text = write_game(size, 7.5, &[], &moves, KoRule::default());
+            let text = write_game(size, 7.5, &[], &moves, KoRule::default(), Color::Black);
             let back = parse(&text).unwrap();
             assert_eq!(back.moves, moves, "{size} 路盘连续 Pass 必须读回");
         }
@@ -656,7 +703,14 @@ mod tests {
             KoRule::PositionalSuperko,
             KoRule::SituationalSuperko,
         ] {
-            let text = write_game(9, 7.5, &[], &[Move::Play(Point::new(2, 2))], ko);
+            let text = write_game(
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(2, 2))],
+                ko,
+                Color::Black,
+            );
             let back = parse(&text).unwrap();
             assert_eq!(ko_rule_from_rules(back.rules.as_deref()), ko, "{text}");
         }
@@ -684,6 +738,99 @@ mod tests {
     }
 
     /// 文件里的 B/W 是事实：有开局摆子也不能把第一手吞掉。
+    #[test]
+    fn first_to_move_infers_from_setup() {
+        let ab = parse("(;SZ[9]AB[dd])").unwrap();
+        assert_eq!(ab.first, None, "没有落子也没有 PL 时应交给推断");
+        assert_eq!(ab.first_to_move(), Color::White);
+
+        let aw = parse("(;SZ[9]AW[dd])").unwrap();
+        assert_eq!(aw.first_to_move(), Color::Black);
+
+        let empty = SgfGame {
+            size: 9,
+            first: None,
+            ..Default::default()
+        };
+        assert_eq!(empty.first_to_move(), Color::Black);
+    }
+
+    #[test]
+    fn write_game_preserves_first_player() {
+        // AB + PL[B]：写回时不能按"有摆子就白先"翻转颜色
+        let setup = vec![(Color::Black, Point::new(3, 3))];
+        let moves = vec![Move::Play(Point::new(2, 2))];
+        let text = write_game(9, 7.5, &setup, &moves, KoRule::default(), Color::Black);
+        let back = parse(&text).unwrap();
+        assert_eq!(back.first, Some(Color::Black));
+        assert_eq!(back.first_to_move(), Color::Black);
+        assert_eq!(back.moves, moves);
+
+        // 只有摆子时写 PL，重载后先手不丢
+        let text = write_game(9, 7.5, &setup, &[], KoRule::default(), Color::White);
+        assert!(text.contains("PL[W]"), "{text}");
+        let back = parse(&text).unwrap();
+        assert_eq!(back.first_to_move(), Color::White);
+    }
+
+    #[test]
+    fn pl_invalid_or_multi_warns() {
+        let g = parse("(;SZ[9]PL[b];B[cc])").unwrap();
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("PL") && w.contains("第 1")),
+            "{:?}",
+            g.warnings
+        );
+
+        let g = parse("(;SZ[9]PL[B][W];B[cc])").unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("多个值")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn komi_edge_cases_warn() {
+        let g = parse("(;SZ[9]KM[];B[cc])").unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("为空")),
+            "{:?}",
+            g.warnings
+        );
+
+        // 逗号小数点按 7.5 处理，不报警
+        let g = parse("(;SZ[9]KM[7,5];B[cc])").unwrap();
+        assert_eq!(g.komi, Some(7.5));
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+
+        // NaN / inf 不是有限数
+        for v in ["NaN", "inf", "-inf"] {
+            let src = format!("(;SZ[9]KM[{v}];B[cc])");
+            let g = parse(&src).unwrap();
+            assert_eq!(g.komi, None, "{v}");
+            assert!(
+                g.warnings.iter().any(|w| w.contains("有限数")),
+                "{v}: {:?}",
+                g.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn empty_sgf_is_an_error() {
+        let err = parse("(;SZ[9])").unwrap_err();
+        assert!(err.contains("没有找到任何落子"), "{err}");
+    }
+
+    #[test]
+    fn strict_mode_rejects_warnings() {
+        assert!(parse_strict("(;SZ[9]KM[abc];B[cc])").is_err());
+        assert!(parse_strict("(;SZ[9]KM[7.5];B[cc])").is_ok());
+    }
+
     #[test]
     fn pl_sets_first_player() {
         // 没有落子时 PL 决定先手（AB 摆子按惯例是白先，PL[B] 覆盖它）
@@ -726,6 +873,17 @@ mod tests {
             "{:?}",
             g.warnings
         );
+    }
+
+    #[test]
+    fn split_root_pl_is_allowed() {
+        let g = parse("(;SZ[9];PL[B];B[cc])").unwrap();
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("PL")),
+            "{:?}",
+            g.warnings
+        );
+        assert_eq!(g.first_to_move(), Color::Black);
     }
 
     #[test]
