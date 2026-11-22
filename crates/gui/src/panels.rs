@@ -34,6 +34,7 @@ pub struct Panels {
     rank_zh: std::cell::Cell<Option<bool>>,
     strength_label: gtk::Label,
     visits_hint: gtk::Label,
+    ai_row: adw::ExpanderRow,
     pub variation_btn: gtk::Button,
     pub commit_btn: gtk::Button,
     updating_controls: bool,
@@ -46,7 +47,7 @@ pub struct Panels {
 
 impl Panels {
     /// 构造右侧栏 + 底部状态栏；返回整块侧栏和持有控件引用的 `Panels`。
-    pub fn build() -> (gtk::Box, Self) {
+    pub fn build() -> (gtk::ScrolledWindow, Self) {
         let winrate = gtk::ProgressBar::new();
         winrate.set_show_text(true);
         winrate.set_fraction(0.5);
@@ -111,10 +112,9 @@ impl Panels {
         head.append(&moves);
         side.append(&head);
 
-        // 每步思考量：四个快捷档位 + 精确输入
+        // AI 设置：默认折叠，给预测/讲解留出高度
         let strength_card = card();
         let strength_label = section("");
-        strength_card.append(&strength_label);
 
         let presets_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         presets_row.set_homogeneous(true);
@@ -124,33 +124,36 @@ impl Panels {
             presets_row.append(&btn);
             presets.push(btn);
         }
-        strength_card.append(&presets_row);
 
         let visits = gtk::SpinButton::with_range(10.0, 5000.0, 10.0);
         visits.set_hexpand(true);
         visits.set_numeric(true);
-        strength_card.append(&visits);
 
         let visits_hint = label("");
         visits_hint.add_css_class("dim-label");
         visits_hint.set_wrap(true);
-        strength_card.append(&visits_hint);
 
-        // 像人一样下棋 + 模仿水平
-        // AdwSwitchRow / AdwComboRow 只能放进 GtkListBox，否则不会响应点击
-        let human_list = gtk::ListBox::new();
-        human_list.set_selection_mode(gtk::SelectionMode::None);
-        human_list.add_css_class("boxed-list");
         let human_switch = adw::SwitchRow::new();
         human_switch.set_subtitle_lines(2);
-        human_list.append(&human_switch);
 
         let rank_model = gtk::StringList::new(&[]);
         let rank = adw::ComboRow::new();
         rank.set_model(Some(&rank_model));
         rank.set_sensitive(false);
-        human_list.append(&rank);
-        strength_card.append(&human_list);
+
+        // AdwSwitchRow / AdwComboRow 必须由 ListBox 类容器承载
+        let ai_list = gtk::ListBox::new();
+        ai_list.set_selection_mode(gtk::SelectionMode::None);
+        ai_list.add_css_class("boxed-list");
+        let ai_row = adw::ExpanderRow::new();
+        ai_row.add_row(&strength_label);
+        ai_row.add_row(&presets_row);
+        ai_row.add_row(&visits);
+        ai_row.add_row(&visits_hint);
+        ai_row.add_row(&human_switch);
+        ai_row.add_row(&rank);
+        ai_list.append(&ai_row);
+        strength_card.append(&ai_list);
 
         side.append(&strength_card);
 
@@ -254,6 +257,7 @@ impl Panels {
             commit_btn,
             strength_label,
             visits_hint,
+            ai_row,
             updating_controls: false,
             sec_winrate,
             sec_predict,
@@ -261,7 +265,14 @@ impl Panels {
             game_count: 0,
             updating_games: false,
         };
-        (side, panels)
+        // 展开 AI 设置时内容会超过窗口高度，套一层纵向滚动；宽度仍然固定
+        let scroller = gtk::ScrolledWindow::new();
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_propagate_natural_width(false);
+        scroller.set_hexpand(false);
+        scroller.set_size_request(380, -1);
+        scroller.set_child(Some(&side));
+        (scroller, panels)
     }
 
     pub fn is_updating_games(&self) -> bool {
@@ -304,6 +315,16 @@ impl Panels {
         self.delete_btn.set_label(s.delete);
         self.strength_label
             .set_markup(&format!("<b>{}</b>", s.strength));
+        self.ai_row.set_title(s.ai_settings);
+        let human_state = if app.human_enabled {
+            rank_label(app.human_profile(), app.lang)
+        } else {
+            s.off.to_string()
+        };
+        self.ai_row.set_subtitle(&format!(
+            "{} {} {} · {}：{}",
+            s.strength, app.config.engine.visits, s.visits_unit, s.human_net, human_state
+        ));
         self.visits_hint.set_text(s.thinking_hint);
         for (btn, text) in
             self.presets
