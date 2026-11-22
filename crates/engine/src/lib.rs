@@ -16,6 +16,8 @@ pub struct EngineConfig {
     pub katago: PathBuf,
     pub model: PathBuf,
     pub config: PathBuf,
+    /// 拟人网 `humanv0`；留 None 表示不可用（不传 `-human-model`）
+    pub human_model: Option<PathBuf>,
     pub visits: u32,
     /// 一次 query 分析多少个局面（控制内存与进度粒度）
     pub chunk: usize,
@@ -31,6 +33,9 @@ impl Default for EngineConfig {
                 .map(PathBuf::from)
                 .or_else(find_model)
                 .unwrap_or_default(),
+            human_model: std::env::var_os("KATAGO_HUMAN_MODEL")
+                .map(PathBuf::from)
+                .or_else(find_human_model),
             config: std::env::var_os("KATAGO_CFG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| ensure_config(config_dir().join("analysis.cfg"))),
@@ -91,26 +96,40 @@ fn find_model() -> Option<PathBuf> {
         common.join("NinOneQi/engines/go"),
         common.join("Just Go/JustGo_Data/StreamingAssets/AI/Katago/networks/Analysis"),
     ] {
-        if let Some(p) = largest_net(&dir) {
+        if let Some(p) = largest_net(&dir, false) {
             return Some(p);
         }
     }
     None
 }
 
-fn largest_net(dir: &std::path::Path) -> Option<PathBuf> {
+/// 拟人网（human SL）通常和普通网络放在同一个目录，文件名带 `humanv0`。
+fn find_human_model() -> Option<PathBuf> {
+    let common = home_dir().join(".local/share/Steam/steamapps/common");
+    for dir in [
+        common.join("NinOneQi/engines/go"),
+        common.join("Just Go/JustGo_Data/StreamingAssets/AI/Katago/networks/Analysis"),
+    ] {
+        if let Some(p) = largest_net(&dir, true) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn largest_net(dir: &std::path::Path, human: bool) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("gz") {
             continue;
         }
-        // 拟人网（human SL）不能当普通模型加载
-        if path
+        // 拟人网（human SL）和普通网络用途不同，不能混用
+        let is_human = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.contains("human"))
-        {
+            .is_some_and(|n| n.contains("human"));
+        if is_human != human {
             continue;
         }
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -158,6 +177,8 @@ pub struct TurnEval {
     pub winrate_black: f32,
     pub score_black: f32,
     pub candidates: Vec<Candidate>,
+    /// 拟人网给出的走子概率（含 pass 在最后一位）；普通模型为 None
+    pub human_policy: Option<Vec<f32>>,
 }
 
 pub fn gtp_coord(p: Point, size: u8) -> String {
@@ -185,18 +206,66 @@ pub fn parse_gtp_move(s: &str, size: u8) -> Move {
 pub struct Engine {
     cfg: EngineConfig,
     session: std::sync::Mutex<Option<AnalysisSession>>,
+    visits: std::sync::atomic::AtomicU32,
+    /// 拟人设置 + 会话参数版本（一起读写，避免版本和段位错配）
+    human: std::sync::Mutex<HumanState>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct HumanState {
+    /// Some(profile) = 拟人模式开启，例如 `rank_5k`
+    profile: Option<String>,
+    /// 拟人设置变化就 +1，下一次 query 重建进程
+    epoch: u64,
 }
 
 impl Engine {
     pub fn new(cfg: EngineConfig) -> Self {
         Engine {
+            visits: std::sync::atomic::AtomicU32::new(cfg.visits.max(1)),
             cfg,
             session: std::sync::Mutex::new(None),
+            human: std::sync::Mutex::new(HumanState::default()),
         }
     }
 
     pub fn config(&self) -> &EngineConfig {
         &self.cfg
+    }
+
+    pub fn visits(&self) -> u32 {
+        self.visits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 调整每次分析的 visits，下一次 query 生效（不需要重启进程）。
+    pub fn set_visits(&self, visits: u32) {
+        self.visits
+            .store(visits.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn human_profile(&self) -> Option<String> {
+        self.human
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .profile
+            .clone()
+    }
+
+    fn human_state(&self) -> HumanState {
+        self.human
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 开关拟人网 / 换段位。不在这里抢 session 锁：正在跑的分析可能占着它很久；
+    /// 只把版本号 +1，下一次 analyze_turns 发现版本不一致再重建进程。
+    pub fn set_human_profile(&self, profile: Option<String>) {
+        let mut guard = self.human.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.profile != profile {
+            guard.profile = profile;
+            guard.epoch += 1;
+        }
     }
 
     pub fn analyze_game<F>(&self, game: &Game, progress: F) -> Result<Vec<TurnEval>, String>
@@ -238,6 +307,20 @@ impl Engine {
             }
         }
 
+        let state = self.human_state();
+        let human = state.profile.clone();
+        let epoch = state.epoch;
+        if human.is_some() {
+            match &self.cfg.human_model {
+                Some(p) if p.exists() => {}
+                _ => {
+                    return Err(
+                        "拟人模式需要 humanv0 网络（设 KATAGO_HUMAN_MODEL）".to_string()
+                    )
+                }
+            }
+        }
+
         let mut turns: Vec<u16> = turns.to_vec();
         turns.sort_unstable();
         turns.dedup();
@@ -250,16 +333,25 @@ impl Engine {
             .lock()
             .map_err(|_| "分析会话锁失败".to_string())?;
         let need_start = match guard.as_mut() {
-            Some(session) => session.is_dead(),
+            Some(session) => session.is_dead() || session.epoch != epoch,
             None => true,
         };
         if need_start {
-            *guard = Some(AnalysisSession::start(&self.cfg)?);
+            let human_model = if human.is_some() {
+                self.cfg.human_model.as_deref()
+            } else {
+                None
+            };
+            *guard = Some(AnalysisSession::start(&self.cfg, human_model, epoch)?);
         }
-        let result = guard
-            .as_mut()
-            .expect("会话已初始化")
-            .query(&self.cfg, game, &turns, &mut progress);
+        let result = guard.as_mut().expect("会话已初始化").query(
+            &self.cfg,
+            self.visits(),
+            human.as_deref(),
+            game,
+            &turns,
+            &mut progress,
+        );
         if result.is_err() {
             // 出错就丢掉会话（Drop 会 kill），下次重新拉起
             *guard = None;
@@ -273,23 +365,28 @@ struct AnalysisSession {
     stdin: std::process::ChildStdin,
     rx: std::sync::mpsc::Receiver<String>,
     seq: u64,
+    epoch: u64,
 }
 
 impl AnalysisSession {
-    fn start(cfg: &EngineConfig) -> Result<Self, String> {
-        let mut child = Command::new(&cfg.katago)
-            .arg("analysis")
-            .arg("-model")
-            .arg(&cfg.model)
-            .arg("-config")
+    fn start(
+        cfg: &EngineConfig,
+        human_model: Option<&std::path::Path>,
+        epoch: u64,
+    ) -> Result<Self, String> {
+        let mut cmd = Command::new(&cfg.katago);
+        cmd.arg("analysis").arg("-model").arg(&cfg.model);
+        if let Some(model) = human_model {
+            cmd.arg("-human-model").arg(model);
+        }
+        cmd.arg("-config")
             .arg(&cfg.config)
             .arg("-override-config")
             .arg("logToStderr=false")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("启动 KataGo 失败: {e}"))?;
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().map_err(|e| format!("启动 KataGo 失败: {e}"))?;
         let stdin = child.stdin.take().ok_or("打不开 KataGo stdin")?;
         let stdout = child.stdout.take().ok_or("打不开 KataGo stdout")?;
         let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -306,6 +403,7 @@ impl AnalysisSession {
             stdin,
             rx,
             seq: 0,
+            epoch,
         })
     }
 
@@ -316,6 +414,8 @@ impl AnalysisSession {
     fn query(
         &mut self,
         cfg: &EngineConfig,
+        visits: u32,
+        human_profile: Option<&str>,
         game: &Game,
         turns: &[u16],
         progress: &mut dyn FnMut(usize, usize),
@@ -343,7 +443,7 @@ impl AnalysisSession {
             .collect();
 
         for (n, chunk) in turns.chunks(cfg.chunk.max(1)).enumerate() {
-            let query = json!({
+            let mut query = json!({
                 "id": format!("q{base}-{n}"),
                 "initialStones": setup_json,
                 "moves": moves_json,
@@ -352,9 +452,16 @@ impl AnalysisSession {
                 "boardXSize": size,
                 "boardYSize": size,
                 "analyzeTurns": chunk,
-                "maxVisits": cfg.visits,
+                "maxVisits": visits,
                 "analysisPVLen": 6,
             });
+            if let Some(profile) = human_profile {
+                query["includePolicy"] = json!(true);
+                query["overrideSettings"] = json!({
+                    "humanSLProfile": profile,
+                    "ignorePreRootHistory": false,
+                });
+            }
             writeln!(self.stdin, "{query}").map_err(|e| format!("写入 query 失败: {e}"))?;
         }
         self.stdin
@@ -455,12 +562,22 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
         }
     }
 
+    let human_policy = v
+        .get("humanPolicy")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|x| x.as_f64().unwrap_or(-1.0) as f32)
+                .collect::<Vec<f32>>()
+        });
+
     Ok(TurnEval {
         turn,
         to_move,
         winrate_black,
         score_black,
         candidates,
+        human_policy,
     })
 }
 

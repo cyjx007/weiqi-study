@@ -21,7 +21,17 @@ const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const CAND_LABELS: [&str; 3] = ["1", "2", "3"];
 
-pub fn draw(frame: &mut Frame, app: &App, image: &mut Option<ImageBoard>) {
+pub enum Overlay {
+    ConfirmDelete,
+    Rename(String),
+}
+
+pub fn draw(
+    frame: &mut Frame,
+    app: &App,
+    image: &mut Option<ImageBoard>,
+    overlay: Option<&Overlay>,
+) {
     let area = frame.area();
     let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
     let content = rows[0];
@@ -63,6 +73,9 @@ pub fn draw(frame: &mut Frame, app: &App, image: &mut Option<ImageBoard>) {
     if app.show_games {
         draw_games(frame, app, area);
     }
+    if let Some(overlay) = overlay {
+        draw_overlay(frame, app, area, overlay);
+    }
 }
 
 /// 保持像素接近正方形：字符高约为宽的两倍，所以行距 = 列距 / 2。
@@ -92,7 +105,7 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
         " {} · {} {}({}) ",
         s.game,
         s.turn,
-        color_name(app.to_move(), app.lang),
+        color_name(app.display_to_move(), app.lang),
         who
     );
     let block = Block::default()
@@ -154,8 +167,8 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
         for j in 0..n {
             let p = Point::new(j as u8, i as u8);
             let x = grid_x + j * spacing;
-            let stone = app.game().position().board.at(p);
-            let is_last = app.game().position().last_move == Some(Move::Play(p));
+            let stone = app.display_game().position().board.at(p);
+            let is_last = app.display_game().position().last_move == Some(Move::Play(p));
             let mut style = wood;
             if is_last {
                 style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
@@ -221,7 +234,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
     let s = strings(app.lang);
     let chunks = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(4),
+        Constraint::Length(7),
         Constraint::Length(7),
         Constraint::Min(5),
         Constraint::Length(3),
@@ -246,12 +259,22 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
     };
     let info = Paragraph::new(vec![
         Line::from(format!("{}   - {score:+.1}", s.score)),
-        Line::from(format!("{}   {} / {}", s.moves, app.pos(), app.total_moves())),
+        Line::from(format!("{}   {} / {}", s.moves, app.display_pos(), app.total_moves())),
         Line::from(format!(
             "{}   {}({})",
             s.turn,
-            color_name(app.to_move(), app.lang),
+            color_name(app.display_to_move(), app.lang),
             who
+        )),
+        Line::from(format!("{}   {} visits", s.strength, app.config.engine.visits)),
+        Line::from(format!(
+            "{}   {}",
+            s.human_net,
+            if app.human_enabled {
+                app.human_profile()
+            } else {
+                "-"
+            }
         )),
     ])
     .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.position)));
@@ -259,7 +282,10 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines = Vec::new();
     let pred = app.prediction();
-    if pred.is_empty() {
+    if let Some((step, total)) = app.preview_progress() {
+        lines.push(Line::from(format!("{} {step}/{total}", s.variation)));
+        lines.push(Line::from(s.variation_hint));
+    } else if pred.is_empty() {
         lines.push(Line::from(s.press_a));
     } else {
         for (i, (mv, wr)) in pred.iter().enumerate() {
@@ -368,6 +394,30 @@ fn draw_games(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(p, rect);
 }
 
+fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, overlay: &Overlay) {
+    let s = strings(app.lang);
+    let (body, hint) = match overlay {
+        Overlay::ConfirmDelete => (s.trash_confirm.to_string(), "d / Esc"),
+        Overlay::Rename(text) => (format!("{}: {}_", s.rename, text), s.rename_hint),
+    };
+    let w = 60.min(area.width);
+    let h = 7.min(area.height);
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let lines = vec![
+        Line::from(Span::styled(
+            body,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(hint, Style::default().fg(C::Gray))),
+    ];
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.games)))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(p, rect);
+}
+
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let s = strings(app.lang);
     let mut text = vec![Line::from(Span::styled(
@@ -413,7 +463,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut image = None;
-        terminal.draw(|f| draw(f, app, &mut image)).unwrap();
+        terminal.draw(|f| draw(f, app, &mut image, None)).unwrap();
         let buffer = terminal.backend().buffer();
         buffer
             .content
@@ -486,6 +536,32 @@ mod tests {
         assert_eq!(choose_scale(100, 40, 19), Some((4, 2)));
         assert_eq!(choose_scale(60, 40, 19), Some((2, 1)));
         assert_eq!(choose_scale(30, 12, 19), None);
+    }
+
+    #[test]
+    fn overlays_render_management_prompts() {
+        let app = test_app();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut image = None;
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &app,
+                    &mut image,
+                    Some(&Overlay::Rename("opening study".to_string())),
+                )
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("opening study"));
     }
 
     #[test]

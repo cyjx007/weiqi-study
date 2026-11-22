@@ -142,6 +142,63 @@ impl Controller {
         self.pump();
     }
 
+    /// 调整分析强度（visits），下一次分析生效。
+    pub fn set_visits(&mut self, visits: u32) {
+        self.dirty = true;
+        self.app.set_visits(visits);
+    }
+
+    pub fn adjust_visits(&mut self, delta: i32) {
+        let visits = (self.app.config.engine.visits as i32 + delta).max(10) as u32;
+        self.set_visits(visits);
+    }
+
+    /// 开关拟人网（humanv0）。
+    pub fn toggle_human(&mut self) {
+        self.dirty = true;
+        self.app.toggle_human();
+        self.pump();
+    }
+
+    /// 切换拟人段位。
+    pub fn cycle_human_rank(&mut self, delta: i32) {
+        self.dirty = true;
+        self.app.cycle_human_rank(delta);
+        self.pump();
+    }
+
+    pub fn set_human_rank(&mut self, idx: usize) {
+        self.dirty = true;
+        self.app.set_human_rank(idx);
+        self.pump();
+    }
+
+    /// 用当前分析的第一候选 PV 进入变化预览。
+    pub fn start_preview(&mut self) {
+        self.dirty = true;
+        self.app.start_preview();
+    }
+
+    pub fn preview_next(&mut self) {
+        self.dirty = true;
+        self.app.preview_next();
+    }
+
+    pub fn preview_prev(&mut self) {
+        self.dirty = true;
+        self.app.preview_prev();
+    }
+
+    pub fn exit_preview(&mut self) {
+        self.dirty = true;
+        self.app.exit_preview();
+    }
+
+    pub fn commit_preview(&mut self) {
+        self.dirty = true;
+        self.app.commit_preview();
+    }
+
     /// 打开棋谱列表里选中的那盘。
     pub fn open_selected_game(&mut self) {
         self.dirty = true;
@@ -195,6 +252,7 @@ mod tests {
                 pv: vec![best],
                 visits: 100,
             }],
+            human_policy: None,
         }
     }
 

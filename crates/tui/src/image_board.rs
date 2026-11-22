@@ -135,11 +135,12 @@ impl ImageBoard {
 /// 影响棋盘画面的状态；任何一项变化都要重新生成图片。
 fn fingerprint(app: &App) -> u64 {
     let mut h = DefaultHasher::new();
-    app.pos().hash(&mut h);
+    app.display_pos().hash(&mut h);
+    app.preview_progress().hash(&mut h);
     app.size.hash(&mut h);
     app.cursor.x.hash(&mut h);
     app.cursor.y.hash(&mut h);
-    match app.game().position().last_move {
+    match app.display_game().position().last_move {
         Some(Move::Play(p)) => {
             1u8.hash(&mut h);
             p.x.hash(&mut h);
@@ -252,13 +253,13 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
     }
 
     // 棋子
-    for (p, c) in app.game().position().board.stones() {
+    for (p, c) in app.display_game().position().board.stones() {
         let (x, y) = center(&m, p);
         draw_stone(&mut canvas, x, y, (m.cell * 0.46).round() as i32, c == goban::Color::Black);
     }
 
     // 最后一手
-    if let Some(Move::Play(p)) = app.game().position().last_move {
+    if let Some(Move::Play(p)) = app.display_game().position().last_move {
         let (x, y) = center(&m, p);
         canvas.circle(x, y, (m.cell * 0.12).round() as i32, LAST);
     }

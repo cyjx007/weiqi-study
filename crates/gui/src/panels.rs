@@ -2,7 +2,7 @@
 
 use adw::prelude::*;
 use app::i18n::{color_name, strings};
-use app::{move_text, App};
+use app::{move_text, App, HUMAN_RANKS};
 use gtk::gdk;
 
 pub struct Panels {
@@ -22,6 +22,16 @@ pub struct Panels {
     pub undo_btn: gtk::Button,
     pub prev_btn: gtk::Button,
     pub next_btn: gtk::Button,
+    pub rename_btn: gtk::Button,
+    pub delete_btn: gtk::Button,
+    pub visits: gtk::SpinButton,
+    pub human_switch: gtk::Switch,
+    pub rank: gtk::DropDown,
+    pub variation_btn: gtk::Button,
+    pub commit_btn: gtk::Button,
+    strength_label: gtk::Label,
+    human_label: gtk::Label,
+    updating_controls: bool,
     sec_winrate: gtk::Label,
     sec_position: gtk::Label,
     sec_predict: gtk::Label,
@@ -60,6 +70,8 @@ impl Panels {
         let undo_btn = gtk::Button::with_label("");
         let prev_btn = gtk::Button::with_label("‹");
         let next_btn = gtk::Button::with_label("›");
+        let rename_btn = gtk::Button::with_label("");
+        let delete_btn = gtk::Button::with_label("");
 
         let side = gtk::Box::new(gtk::Orientation::Vertical, 10);
         side.set_size_request(340, -1);
@@ -91,11 +103,42 @@ impl Panels {
         stats.append(&moves);
         side.append(&stats);
 
+        // AI 强度：visits + 拟人网开关/段位
+        let strength_card = card();
+        let strength_label = section("");
+        let visits = gtk::SpinButton::with_range(10.0, 5000.0, 10.0);
+        visits.set_hexpand(true);
+        visits.set_numeric(true);
+        strength_card.append(&strength_label);
+        strength_card.append(&visits);
+
+        let human_label = section("");
+        strength_card.append(&human_label);
+        let human_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let human_switch = gtk::Switch::new();
+        let ranks: Vec<&str> = HUMAN_RANKS
+            .iter()
+            .map(|r| r.strip_prefix("rank_").unwrap_or(r))
+            .collect();
+        let rank = gtk::DropDown::from_strings(&ranks);
+        rank.set_hexpand(true);
+        rank.set_sensitive(false);
+        human_row.append(&human_switch);
+        human_row.append(&rank);
+        strength_card.append(&human_row);
+        side.append(&strength_card);
+
         // 预测
         let predict_card = card();
         let sec_predict = section("");
         predict_card.append(&sec_predict);
         predict_card.append(&cand);
+        let preview_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let variation_btn = gtk::Button::with_label("");
+        let commit_btn = gtk::Button::with_label("");
+        preview_row.append(&variation_btn);
+        preview_row.append(&commit_btn);
+        predict_card.append(&preview_row);
         side.append(&predict_card);
 
         // 讲解（占满剩余高度）
@@ -119,13 +162,17 @@ impl Panels {
         actions.append(&undo_btn);
         side.append(&actions);
 
-        // 棋谱 + 翻手
+        // 棋谱 + 翻手 + 管理
         let games_card = card();
         let nav = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         nav.append(&prev_btn);
         nav.append(&next_btn);
         nav.append(&games);
         games_card.append(&nav);
+        let manage = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        manage.append(&rename_btn);
+        manage.append(&delete_btn);
+        games_card.append(&manage);
         side.append(&games_card);
 
         // 底部状态 + 语言
@@ -154,6 +201,16 @@ impl Panels {
             undo_btn,
             prev_btn,
             next_btn,
+            rename_btn,
+            delete_btn,
+            visits,
+            human_switch,
+            rank,
+            variation_btn,
+            commit_btn,
+            strength_label,
+            human_label,
+            updating_controls: false,
             sec_winrate,
             sec_position,
             sec_predict,
@@ -166,6 +223,10 @@ impl Panels {
 
     pub fn is_updating_games(&self) -> bool {
         self.updating_games
+    }
+
+    pub fn is_updating_controls(&self) -> bool {
+        self.updating_controls
     }
 
     /// 重新扫描棋谱目录并更新下拉框（调用方负责避免重入回调）。
@@ -194,6 +255,29 @@ impl Panels {
         self.analyse_btn.set_label(s.analyse_btn);
         self.review_btn.set_label(s.review_btn);
         self.undo_btn.set_label(s.undo_btn);
+        self.rename_btn.set_label(s.rename);
+        self.delete_btn.set_label(s.delete);
+        self.strength_label.set_markup(&format!("<b>{}</b>", s.strength));
+        self.human_label.set_markup(&format!("<b>{}</b>", s.human_net));
+        self.variation_btn.set_label(s.variation);
+        self.commit_btn.set_label(s.use_variation);
+        self.commit_btn
+            .set_sensitive(app.preview_active() && app.preview_progress().is_some_and(|(s, _)| s > 0));
+
+        self.updating_controls = true;
+        if self.visits.value() as u32 != app.config.engine.visits {
+            self.visits.set_value(app.config.engine.visits as f64);
+        }
+        let has_human = app.human_model_available();
+        self.human_switch.set_sensitive(has_human);
+        if self.human_switch.is_active() != app.human_enabled {
+            self.human_switch.set_active(app.human_enabled);
+        }
+        self.rank.set_sensitive(has_human);
+        if self.rank.selected() as usize != app.human_rank {
+            self.rank.set_selected(app.human_rank as u32);
+        }
+        self.updating_controls = false;
         self.lang_btn
             .set_label(if app.lang.is_zh() { "EN" } else { "中文" });
 
@@ -203,7 +287,7 @@ impl Panels {
 
         let who = if !app.ai_enabled {
             s.review.to_string()
-        } else if app.to_move() == app.human {
+        } else if app.display_to_move() == app.human {
             s.you.to_string()
         } else {
             s.ai.to_string()
@@ -211,15 +295,18 @@ impl Panels {
         self.turn.set_text(&format!(
             "{}: {}({})",
             s.turn,
-            color_name(app.to_move(), app.lang),
+            color_name(app.display_to_move(), app.lang),
             who
         ));
         let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
         self.score.set_text(&format!("{}: {score:+.1}", s.score));
         self.moves
-            .set_text(&format!("{}: {} / {}", s.moves, app.pos(), app.total_moves()));
+            .set_text(&format!("{}: {} / {}", s.moves, app.display_pos(), app.total_moves()));
 
         let mut cand = String::new();
+        if let Some((step, total)) = app.preview_progress() {
+            cand.push_str(&format!("{} {step}/{total}\n{}", s.variation, s.variation_hint));
+        }
         for (i, (mv, wr)) in app.prediction().iter().enumerate() {
             cand.push_str(&format!(
                 "{}. {}  {:.1}%\n",
@@ -247,7 +334,7 @@ impl Panels {
         self.cand.set_text(&cand);
 
         let mut text = app.last_comment.clone().unwrap_or_default();
-        if app.ai_enabled && app.to_move() == app.human {
+        if app.ai_enabled && !app.preview_active() && app.to_move() == app.human {
             if let Some(a) = app.analysis() {
                 if let Some(best) = a.candidates.first() {
                     if !text.is_empty() {

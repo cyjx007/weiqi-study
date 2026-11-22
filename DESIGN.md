@@ -169,6 +169,11 @@ pub struct Review {
 - 进程管理：崩溃自动重启（指数退避，最多 3 次）；启动时 `kata-analyze` 的 `interval` 用于限流。
 - 线程模型：**专用线程 + mpsc**，不用 async。理由：GTP 是行协议，async 只会增加复杂度。分析线程和 AI 推进统一由 `app::Controller` 管理（TUI/GUI 共用）；GUI 侧用 `glib::timeout_add_local` 每 50 ms 调一次 `Controller::tick`，只有状态变化才重画。
 - 复盘分批：一次 query 最多 30 个 `analyzeTurns`，避免长棋谱内存峰值；TUI/GUI 显示进度条。
+- 拟人网：KataGo 启动时加 `-human-model b18c...-humanv0.bin.gz`（普通模型仍用 `-model`），
+  query 里 `includePolicy: true` + `overrideSettings.humanSLProfile=rank_*/preaz_*`；
+  AI 应手不取搜索第一选，而是按返回的 `humanPolicy` 概率抽点。
+- 强度：`--visits` 启动默认值可被 TUI `+/-` 或 GUI SpinButton 实时修改；Engine 用 AtomicU32
+  保存，下一次 query 生效，不需要重启进程。拟人开关换代时只递增会话 epoch，不阻塞正在跑的分析。
 
 ## 五、前端
 
@@ -197,8 +202,9 @@ pub struct Review {
   `controller.rs`（按键、按钮、定时器全部接到 `app::Controller`）
 - 主窗口 `GtkApplicationWindow` + `AdwHeaderBar`
 - 棋盘用 `gtk::DrawingArea` + Cairo：19 条线、星位、棋子（径向渐变）、最后一手标记、候选点半透明圆 + 胜率
-- 侧栏是固定宽 `GtkBox` + 卡片：胜率、局面、预测/变化、讲解、操作按钮、棋谱下拉、状态 + 语言
-- 快捷键与 TUI 相同（`hjkl`/Enter/`t`/`v`/`a`/`A`/`b`/`u`/`n`/`p`/`g`/`G`/`q`）；
+- 侧栏是固定宽 `GtkBox` + 卡片：胜率、局面、AI 强度/拟人网、预测/变化、讲解、操作按钮、
+  棋谱下拉 + 重命名/删除、状态 + 语言
+- 快捷键与 TUI 相同（`hjkl`/Enter/`t`/`v`/`a`/`A`/`b`/`u`/`n`/`p`/`g`/`G`/`q`/`V`/`c`）；
   菜单（打开/保存/引擎设置）尚未做
 - 原生 Wayland，无需 XWayland
 

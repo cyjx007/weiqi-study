@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11" }
-adw = { package = "libadwaita", version = "0.9" }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 app = { path = "../app" }
 goban = { path = "../goban" }
 sgf = { path = "../sgf" }

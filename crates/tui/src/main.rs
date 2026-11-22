@@ -108,9 +108,10 @@ fn event_loop(
     image: &mut Option<ImageBoard>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut dirty = true;
+    let mut overlay: Option<ui::Overlay> = None;
     loop {
         if dirty {
-            terminal.draw(|frame| ui::draw(frame, &ctrl.app, image))?;
+            terminal.draw(|frame| ui::draw(frame, &ctrl.app, image, overlay.as_ref()))?;
             dirty = false;
         }
 
@@ -122,14 +123,69 @@ fn event_loop(
                         return Ok(());
                     }
 
-                    if ctrl.app.show_games {
+                    if ctrl.app.preview_active() {
                         match key.code {
-                            KeyCode::Esc | KeyCode::Char('L') => ctrl.app.toggle_games(),
-                            KeyCode::Up | KeyCode::Char('k') => ctrl.app.move_game_cursor(-1),
-                            KeyCode::Down | KeyCode::Char('j') => ctrl.app.move_game_cursor(1),
-                            KeyCode::Enter => ctrl.open_selected_game(),
+                            KeyCode::Right | KeyCode::Char('n') | KeyCode::Char(']') => {
+                                ctrl.preview_next()
+                            }
+                            KeyCode::Left | KeyCode::Char('p') | KeyCode::Char('[') => {
+                                ctrl.preview_prev()
+                            }
+                            KeyCode::Char('c') => ctrl.commit_preview(),
+                            KeyCode::Esc => ctrl.exit_preview(),
                             KeyCode::Char('q') => return Ok(()),
                             _ => {}
+                        }
+                    } else if ctrl.app.show_games {
+                        if let Some(prompt) = overlay.as_mut() {
+                            match prompt {
+                                ui::Overlay::ConfirmDelete => match key.code {
+                                    KeyCode::Char('d') | KeyCode::Char('y') => {
+                                        let _ = ctrl.app.delete_selected_game();
+                                        overlay = None;
+                                    }
+                                    KeyCode::Esc | KeyCode::Char('n') => overlay = None,
+                                    _ => {}
+                                },
+                                ui::Overlay::Rename(text) => match key.code {
+                                    KeyCode::Enter => {
+                                        let name = text.clone();
+                                        if ctrl.app.rename_selected_game(&name).is_ok() {
+                                            overlay = None;
+                                        }
+                                    }
+                                    KeyCode::Esc => overlay = None,
+                                    KeyCode::Backspace => {
+                                        text.pop();
+                                    }
+                                    KeyCode::Char(c) => text.push(c),
+                                    _ => {}
+                                },
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Esc | KeyCode::Char('L') => {
+                                    ctrl.app.toggle_games();
+                                    overlay = None;
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => ctrl.app.move_game_cursor(-1),
+                                KeyCode::Down | KeyCode::Char('j') => ctrl.app.move_game_cursor(1),
+                                KeyCode::Enter => ctrl.open_selected_game(),
+                                KeyCode::Char('d') => overlay = Some(ui::Overlay::ConfirmDelete),
+                                KeyCode::Char('r') => {
+                                    if let Some(entry) = ctrl.app.selected_game() {
+                                        let name = entry
+                                            .path
+                                            .file_stem()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        overlay = Some(ui::Overlay::Rename(name));
+                                    }
+                                }
+                                KeyCode::Char('q') => return Ok(()),
+                                _ => {}
+                            }
                         }
                     } else {
                         match key.code {
@@ -153,6 +209,7 @@ fn event_loop(
                             }
                             KeyCode::Char('t') => ctrl.start_play(),
                             KeyCode::Char('v') => ctrl.toggle_ai(),
+                            KeyCode::Char('V') => ctrl.start_preview(),
                             KeyCode::Char('u') => {
                                 ctrl.app.prev_move();
                                 ctrl.app.status = strings(ctrl.app.lang).undone.to_string();
@@ -164,6 +221,11 @@ fn event_loop(
                             KeyCode::Char('a') => ctrl.analyze(),
                             KeyCode::Char('A') => ctrl.review(),
                             KeyCode::Char('b') => ctrl.app.next_blunder(),
+                            KeyCode::Char('+') | KeyCode::Char('=') => ctrl.adjust_visits(20),
+                            KeyCode::Char('-') => ctrl.adjust_visits(-20),
+                            KeyCode::Char('m') => ctrl.toggle_human(),
+                            KeyCode::Char('[') => ctrl.cycle_human_rank(-1),
+                            KeyCode::Char(']') => ctrl.cycle_human_rank(1),
                             _ => {}
                         }
                     }

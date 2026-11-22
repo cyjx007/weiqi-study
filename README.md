@@ -81,15 +81,23 @@ weiqi-gui
 ```
 
 The GUI uses the mouse: click an intersection to play, hover to preview. Buttons mirror the TUI
-keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved game, and `EN/中文`
-switches the interface language. Keyboard shortcuts are the same as the TUI.
+keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved game, and the
+`Rename` / `Delete` buttons manage the selected file. A strength card sets visits and toggles the
+humanv0 net/rank; `Variation` previews the engine line and `Use` commits it. `EN/中文` switches
+the interface language. Keyboard shortcuts are the same as the TUI.
 
 The Nix package installs `packaging/weiqi-study.desktop`, so `weiqi-gui` appears in the
 application launcher.
 
 Every game is saved automatically as SGF under `$XDG_DATA_HOME/weiqi-study/games` (usually
 `~/.local/share/weiqi-study/games`). Press `L` in the TUI to reopen any of them, review, or
-continue playing.
+continue playing. Deleting a game moves it to `games/.trash/` instead of erasing it, so a
+mis-click can be recovered by hand.
+
+`m` switches the engine to the humanv0 human-like net (if `KATAGO_HUMAN_MODEL` or the Steam
+copy is found). The AI then samples its move from KataGo's `humanPolicy` instead of taking the
+top search move; `[`/`]` select ranks from 20k to 9d. This is separate from `--visits`: visits
+control how much normal search the analysis does, while the human net controls the style.
 
 TUI keys:
 
@@ -105,7 +113,11 @@ TUI keys:
 | `a` | analyse the current position |
 | `A` | full-game review (builds a blunder list) |
 | `b` | jump to the next blunder |
-| `L` | game list: open a saved game (review or continue) |
+| `V` | preview the engine's top variation (then `n`/`p` step, `c` use, `Esc` exit) |
+| `+` / `-` | change analysis strength (visits) |
+| `m` | toggle the humanv0 human-like net |
+| `[` / `]` | cycle the human rank (when the human net is on) |
+| `L` | game list: open a saved game (review or continue); `d` delete to trash, `r` rename |
 | `i` | toggle the info panel (useful when the window is narrow) |
 | `?` | help |
 | `q` / `Esc` | quit |
@@ -127,6 +139,7 @@ Environment variables:
 | `KATAGO_BIN` | `katago` from `PATH` | Engine executable |
 | `KATAGO_MODEL` | auto-detected `*.bin.gz` | Neural network to load |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | Analysis config; generated on first use |
+| `KATAGO_HUMAN_MODEL` | auto-detected `*humanv0*.bin.gz` | Human SL network for `m`; set it if auto-detection misses |
 | `WEIQI_LANG` | from `LANG` | `zh` or `en` for the interface **and the commentary** |
 
 Command-line flags (`--help` is authoritative):
@@ -205,7 +218,7 @@ CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
 
 ## Notes
 
-- SGF: main line only; variation trees are ignored.
+- SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches.
 - Positions set up with `AB`/`AW` are treated as handicap games (White moves first).
 - Engine queries use Chinese rules; Japanese-rules records still review, but komi semantics differ.
 - The built-in area scorer does not judge life and death — it is a rough display only; real

@@ -1,6 +1,7 @@
 //! 棋谱持久化：`$XDG_DATA_HOME/weiqi-study/games/*.sgf`。
 //!
-//! 写入规则：先写同目录的 `.tmp`，`fsync` 后原子 rename；只新增，不删除。
+//! 写入规则：先写同目录的 `.tmp`，`fsync` 后原子 rename。
+//! 删除不真删：移到 `games/.trash/`，文件名带时间戳，可手动找回。
 
 use std::fs;
 use std::io::Write;
@@ -111,6 +112,65 @@ impl GameStore {
     pub fn read(&self, path: &Path) -> Result<String, String> {
         fs::read_to_string(path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))
     }
+
+    /// 重命名一盘棋；只允许改 `games/` 里的文件名，不允许换目录。
+    pub fn rename(&self, path: &Path, name: &str) -> Result<PathBuf, String> {
+        if !path.starts_with(&self.dir) {
+            return Err("只能重命名本工具保存的棋谱".to_string());
+        }
+        let stem = sanitize_name(name)?;
+        let target = self.dir.join(if stem.ends_with(".sgf") {
+            stem
+        } else {
+            format!("{stem}.sgf")
+        });
+        if target == path {
+            return Ok(target);
+        }
+        if target.exists() {
+            return Err(format!("{} 已存在", target.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+        }
+        fs::rename(path, &target)
+            .map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
+        Ok(target)
+    }
+
+    /// 把棋谱移到 `games/.trash/`（带时间戳），不直接删除。
+    pub fn trash(&self, path: &Path) -> Result<PathBuf, String> {
+        if !path.starts_with(&self.dir) || path.starts_with(self.dir.join(".trash")) {
+            return Err("只能删除本工具保存的棋谱".to_string());
+        }
+        let trash = self.dir.join(".trash");
+        fs::create_dir_all(&trash).map_err(|e| format!("创建回收站失败：{e}"))?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("game.sgf");
+        let target = trash.join(format!("{name}.{}", unix_now()));
+        fs::rename(path, &target)
+            .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
+        Ok(target)
+    }
+}
+
+/// 文件名只留一层：去掉路径分隔符、控制字符，限制长度。
+fn sanitize_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("名字不能为空".to_string());
+    }
+    if name.contains(['/', '\\', '\0']) {
+        return Err("名字不能包含路径分隔符".to_string());
+    }
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(120)
+        .collect();
+    if name.is_empty() {
+        return Err("名字不能为空".to_string());
+    }
+    Ok(name)
 }
 
 fn data_home() -> PathBuf {
@@ -177,6 +237,54 @@ mod tests {
         std::fs::write(&a, "x").unwrap();
         let b = store.create().unwrap();
         assert_ne!(a, b);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn rename_moves_file_and_rejects_bad_names() {
+        let store = temp_store();
+        let path = store.create().unwrap();
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+
+        let renamed = store.rename(&path, "opening study").unwrap();
+        assert_eq!(renamed.file_name().and_then(|n| n.to_str()), Some("opening study.sgf"));
+        assert!(renamed.exists());
+        assert!(!path.exists());
+        assert_eq!(store.list().len(), 1);
+
+        assert!(store.rename(&renamed, "../escape").is_err());
+        assert!(store.rename(&renamed, "  ").is_err());
+
+        let other = store.create().unwrap();
+        std::fs::write(&other, "x").unwrap();
+        assert!(store.rename(&other, "opening study").is_err(), "同名应拒绝");
+
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn trash_moves_file_out_of_list() {
+        let store = temp_store();
+        let path = store.create().unwrap();
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+        assert_eq!(store.list().len(), 1);
+
+        let trashed = store.trash(&path).unwrap();
+        assert!(trashed.starts_with(store.dir().join(".trash")));
+        assert!(trashed.exists());
+        assert!(!path.exists());
+        assert!(store.list().is_empty(), "回收站里的棋谱不应出现在列表");
+
+        // 外部文件不能借这个接口删掉
+        let outside = std::env::temp_dir().join(format!(
+            "weiqi-outside-{}-{}.sgf",
+            std::process::id(),
+            unix_now()
+        ));
+        std::fs::write(&outside, "x").unwrap();
+        assert!(store.trash(&outside).is_err());
+        let _ = std::fs::remove_file(&outside);
+
         let _ = std::fs::remove_dir_all(store.dir());
     }
 }

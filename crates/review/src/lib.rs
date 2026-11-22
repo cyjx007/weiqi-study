@@ -665,6 +665,7 @@ mod tests {
                 pv: vec![Move::Play(Point::new(15, 3))],
                 visits: 100,
             }],
+            human_policy: None,
         }
     }
 

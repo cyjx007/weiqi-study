@@ -12,6 +12,7 @@ pub use controller::Controller;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use i18n::{strings, Lang};
 use storage::{GameEntry, GameStore};
@@ -51,6 +52,19 @@ pub enum AppEvent {
     Review(Result<Review, String>),
 }
 
+/// 拟人网可选段位（KataGo humanv0 的 profile 名）。
+pub const HUMAN_RANKS: [&str; 9] = [
+    "rank_20k",
+    "rank_15k",
+    "rank_10k",
+    "rank_5k",
+    "rank_1k",
+    "rank_1d",
+    "rank_3d",
+    "rank_5d",
+    "rank_9d",
+];
+
 pub struct App {
     pub size: u8,
     pub komi: f32,
@@ -64,6 +78,10 @@ pub struct App {
     pub ai_enabled: bool,
     /// 人执哪一方
     pub human: Color,
+    /// 拟人网模式（用 humanPolicy 按概率选点）
+    pub human_enabled: bool,
+    /// `HUMAN_RANKS` 的索引
+    pub human_rank: usize,
     /// 最近一手的即时点评
     pub last_comment: Option<String>,
     pub lang: Lang,
@@ -80,6 +98,18 @@ pub struct App {
     game: Game,
     evals: HashMap<usize, TurnEval>,
     failed_pos: Option<usize>,
+    /// 拟人网选点的随机种子；测试可以固定它
+    ai_seed: u64,
+    /// 引擎推荐变化的临时预览（不动主线）
+    preview: Option<Preview>,
+}
+
+/// 从 `base` 开始预览 `pv` 的前 `step` 手；`game` 是预览到当前步的棋盘。
+struct Preview {
+    base: usize,
+    pv: Vec<Move>,
+    step: usize,
+    game: Game,
 }
 
 impl App {
@@ -98,6 +128,8 @@ impl App {
             config,
             ai_enabled: false,
             human: Color::Black,
+            human_enabled: false,
+            human_rank: 3,
             last_comment: None,
             lang: Lang::from_env(),
             store: GameStore::open(),
@@ -112,6 +144,8 @@ impl App {
             game: Game::new(size, komi),
             evals: HashMap::new(),
             failed_pos: None,
+            ai_seed: seed(),
+            preview: None,
         }
     }
 
@@ -176,6 +210,7 @@ impl App {
 
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
+        self.preview = None;
         let mut probe = self.snapshot();
         probe.play(mv).map_err(|e| format!("{e}"))?;
         self.moves.truncate(self.pos);
@@ -202,6 +237,7 @@ impl App {
 
     /// 开始一盘人机对局：空盘，你执黑，AI 执白。
     pub fn start_play(&mut self) {
+        self.preview = None;
         self.setup.clear();
         self.moves.clear();
         self.pos = 0;
@@ -234,6 +270,7 @@ impl App {
     /// 外部文件**永远不原地改写**：先复制到 `games/`，之后的自动保存只写副本。
     /// 已经在 `games/` 里的文件直接续写。
     pub fn open_sgf_file(&mut self, path: PathBuf, sg: &SgfGame) -> Result<(), String> {
+        self.preview = None;
         self.size = sg.size;
         self.komi = sg.komi.unwrap_or(7.5);
         self.setup = sg.setup.clone();
@@ -320,7 +357,123 @@ impl App {
         };
     }
 
+    pub fn human_model_available(&self) -> bool {
+        self.config
+            .engine
+            .human_model
+            .as_ref()
+            .is_some_and(|p| p.exists())
+    }
+
+    pub fn human_profile(&self) -> &'static str {
+        HUMAN_RANKS[self.human_rank.min(HUMAN_RANKS.len() - 1)]
+    }
+
+    /// 调整每次分析的 visits（10–5000），下一次分析立即生效。
+    pub fn set_visits(&mut self, visits: u32) {
+        let visits = visits.clamp(10, 5000);
+        self.config.engine.visits = visits;
+        self.engine.set_visits(visits);
+        self.status = i18n::fill(strings(self.lang).strength_set, visits);
+    }
+
+    /// 开关拟人网；切换后清掉普通模型的评估，避免 AI 用旧结果选点。
+    pub fn toggle_human(&mut self) {
+        let st = strings(self.lang);
+        if !self.human_model_available() {
+            self.status = st.no_human_model.to_string();
+            return;
+        }
+        self.human_enabled = !self.human_enabled;
+        let profile = self.human_enabled.then(|| self.human_profile().to_string());
+        self.engine.set_human_profile(profile);
+        self.evals.clear();
+        self.failed_pos = None;
+        self.review = None;
+        self.last_comment = None;
+        self.status = if self.human_enabled {
+            i18n::fill(st.human_on, self.human_profile())
+        } else {
+            st.human_off.to_string()
+        };
+    }
+
+    /// 切换拟人段位（`delta` 为 ±1，循环）。
+    pub fn cycle_human_rank(&mut self, delta: i32) {
+        let st = strings(self.lang);
+        if !self.human_model_available() {
+            self.status = st.no_human_model.to_string();
+            return;
+        }
+        let n = HUMAN_RANKS.len() as i32;
+        let idx = (self.human_rank as i32 + delta).rem_euclid(n) as usize;
+        self.set_human_rank(idx);
+    }
+
+    /// 直接选中某个拟人段位（下拉框用）。
+    pub fn set_human_rank(&mut self, idx: usize) {
+        let st = strings(self.lang);
+        if !self.human_model_available() {
+            self.status = st.no_human_model.to_string();
+            return;
+        }
+        if idx >= HUMAN_RANKS.len() {
+            return;
+        }
+        self.human_rank = idx;
+        if self.human_enabled {
+            self.engine
+                .set_human_profile(Some(self.human_profile().to_string()));
+            self.evals.clear();
+            self.failed_pos = None;
+        }
+        self.status = i18n::fill(st.human_rank_set, self.human_profile());
+    }
+
+    /// 当前选中的棋谱（棋谱列表里光标所指）。
+    pub fn selected_game(&self) -> Option<&GameEntry> {
+        self.games.get(self.game_cursor)
+    }
+
+    /// 重命名选中的棋谱；当前打开的棋谱会跟着改路径。
+    pub fn rename_selected_game(&mut self, name: &str) -> Result<(), String> {
+        let Some(entry) = self.selected_game().cloned() else {
+            return Err(strings(self.lang).no_games.to_string());
+        };
+        let new_path = self.store.rename(&entry.path, name)?;
+        if self.current_file.as_deref() == Some(entry.path.as_path()) {
+            self.current_file = Some(new_path.clone());
+        }
+        self.refresh_games();
+        let label = new_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        self.status = i18n::fill(strings(self.lang).renamed, label);
+        Ok(())
+    }
+
+    /// 删除选中的棋谱：移到 `games/.trash/`，并清掉当前文件的自动保存目标。
+    pub fn delete_selected_game(&mut self) -> Result<(), String> {
+        let Some(entry) = self.selected_game().cloned() else {
+            return Err(strings(self.lang).no_games.to_string());
+        };
+        let trashed = self.store.trash(&entry.path)?;
+        if self.current_file.as_deref() == Some(entry.path.as_path()) {
+            self.current_file = None;
+        }
+        self.refresh_games();
+        self.game_cursor = self.game_cursor.min(self.games.len().saturating_sub(1));
+        let label = trashed
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        self.status = i18n::fill(strings(self.lang).deleted, label);
+        Ok(())
+    }
+
     pub fn prev_move(&mut self) {
+        self.preview = None;
         if self.pos > 0 {
             self.pos -= 1;
             if let Err(e) = self.rebuild() {
@@ -330,6 +483,7 @@ impl App {
     }
 
     pub fn next_move(&mut self) {
+        self.preview = None;
         if self.pos < self.moves.len() {
             self.pos += 1;
             if let Err(e) = self.rebuild() {
@@ -347,6 +501,7 @@ impl App {
     }
 
     pub fn jump_to_turn(&mut self, turn: u16) {
+        self.preview = None;
         self.pos = (turn as usize).min(self.moves.len());
         if let Err(e) = self.rebuild() {
             self.status = e;
@@ -376,6 +531,136 @@ impl App {
             self.jump_to_turn(turn);
             self.status = i18n::fill(strings(self.lang).jump_turn, turn);
         }
+    }
+
+    /// 当前展示的棋盘：预览变化时是预览局面，否则是主线局面。
+    pub fn display_game(&self) -> &Game {
+        self.preview
+            .as_ref()
+            .map(|p| &p.game)
+            .unwrap_or(&self.game)
+    }
+
+    pub fn display_pos(&self) -> usize {
+        self.preview
+            .as_ref()
+            .map(|p| p.base + p.step)
+            .unwrap_or(self.pos)
+    }
+
+    pub fn display_to_move(&self) -> Color {
+        self.display_game().position().to_move
+    }
+
+    pub fn preview_active(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    /// (已走步数, 变化总手数)
+    pub fn preview_progress(&self) -> Option<(usize, usize)> {
+        self.preview.as_ref().map(|p| (p.step, p.pv.len()))
+    }
+
+    /// 用当前分析的第一候选 PV 进入变化预览，不修改主线。
+    pub fn start_preview(&mut self) {
+        let Some(analysis) = self.analysis() else {
+            self.status = strings(self.lang).no_variation.to_string();
+            return;
+        };
+        let pv: Vec<Move> = analysis
+            .candidates
+            .first()
+            .map(|c| c.pv.iter().take(12).copied().collect())
+            .unwrap_or_default();
+        if pv.is_empty() {
+            self.status = strings(self.lang).no_variation.to_string();
+            return;
+        }
+        let base = self.pos;
+        self.preview = Some(Preview {
+            base,
+            step: 0,
+            pv,
+            game: self.game.clone(),
+        });
+        self.status = i18n::fill(strings(self.lang).variation_start, self.preview_len());
+    }
+
+    fn preview_len(&self) -> usize {
+        self.preview.as_ref().map(|p| p.pv.len()).unwrap_or(0)
+    }
+
+    fn preview_status(&self) -> String {
+        match self.preview_progress() {
+            Some((step, total)) => {
+                format!("{} {step}/{total}", strings(self.lang).variation)
+            }
+            None => String::new(),
+        }
+    }
+
+    pub fn preview_next(&mut self) {
+        let Some(p) = self.preview.as_mut() else {
+            return;
+        };
+        if p.step >= p.pv.len() {
+            return;
+        }
+        let mv = p.pv[p.step];
+        let mut game = p.game.clone();
+        match game.play(mv) {
+            Ok(()) => {
+                p.step += 1;
+                p.game = game;
+                self.status = self.preview_status();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    pub fn preview_prev(&mut self) {
+        let Some(p) = self.preview.as_mut() else {
+            return;
+        };
+        if p.step == 0 {
+            return;
+        }
+        let step = p.step - 1;
+        let mut game = self.game.clone();
+        for mv in p.pv.iter().take(step) {
+            if game.play(*mv).is_err() {
+                return;
+            }
+        }
+        p.step = step;
+        p.game = game;
+        self.status = self.preview_status();
+    }
+
+    /// 采用预览到的变化：截断主线并落子，之后照常自动保存。
+    pub fn commit_preview(&mut self) {
+        let Some(p) = self.preview.take() else {
+            return;
+        };
+        if p.step == 0 {
+            return;
+        }
+        let step = p.step;
+        self.moves.truncate(p.base);
+        self.moves.extend(p.pv.iter().take(step).copied());
+        self.pos = self.moves.len();
+        if let Err(e) = self.rebuild() {
+            self.status = e;
+            return;
+        }
+        self.evals.retain(|&k, _| k <= self.pos);
+        self.review = None;
+        self.autosave();
+        self.status = i18n::fill(strings(self.lang).variation_commit, step);
+    }
+
+    pub fn exit_preview(&mut self) {
+        self.preview = None;
     }
 
     /// 当前该做的动作：分析当前局面、让 AI 落子，或者什么都不做。
@@ -417,8 +702,16 @@ impl App {
         if !self.ai_enabled || self.to_move() == self.human {
             return None;
         }
+        let analysis = self.analysis()?;
+        if self.human_enabled {
+            if let Some(policy) = &analysis.human_policy {
+                if let Some(mv) = self.sample_human_policy(policy) {
+                    return Some(mv);
+                }
+            }
+        }
         let candidates: Vec<&engine::Candidate> =
-            self.analysis()?.candidates.iter().take(3).collect();
+            analysis.candidates.iter().take(3).collect();
         if candidates.is_empty() {
             return None;
         }
@@ -437,8 +730,55 @@ impl App {
             .map(|c| c.mv)
     }
 
-    /// 给"你"的下一步预测（当前局面的前三个候选）。
+    /// 按 humanPolicy 概率抽一手；最后一位是 pass。
+    fn sample_human_policy(&self, policy: &[f32]) -> Option<Move> {
+        let size = self.size as usize;
+        let cells = size * size;
+        if policy.len() < cells {
+            return None;
+        }
+        let total: f64 = policy
+            .iter()
+            .take(cells + 1)
+            .filter(|p| **p > 0.0)
+            .map(|p| *p as f64)
+            .sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut roll = (mix64(self.ai_seed ^ (self.pos as u64).wrapping_mul(0x9E37_79B9))
+            % 1_000_000) as f64
+            / 1_000_000.0
+            * total;
+        let mut last = None;
+        for (i, p) in policy.iter().take(cells + 1).enumerate() {
+            if *p <= 0.0 {
+                continue;
+            }
+            last = Some(i);
+            roll -= *p as f64;
+            if roll < 0.0 {
+                return Some(if i == cells {
+                    Move::Pass
+                } else {
+                    Move::Play(Point::new((i % size) as u8, (i / size) as u8))
+                });
+            }
+        }
+        last.map(|i| {
+            if i == cells {
+                Move::Pass
+            } else {
+                Move::Play(Point::new((i % size) as u8, (i / size) as u8))
+            }
+        })
+    }
+
+    /// 给"你"的下一步预测（当前局面的前三个候选）；变化预览时不显示。
     pub fn prediction(&self) -> Vec<(Move, f32)> {
+        if self.preview_active() {
+            return Vec::new();
+        }
         self.analysis()
             .map(|a| {
                 a.candidates
@@ -512,6 +852,9 @@ impl App {
     }
 
     pub fn candidate_rank(&self, p: Point) -> Option<usize> {
+        if self.preview_active() {
+            return None;
+        }
         self.analysis()?
             .candidates
             .iter()
@@ -527,6 +870,13 @@ pub fn move_text(mv: Move, size: u8) -> String {
         Move::Play(p) => engine::gtp_coord(p, size),
         Move::Pass => "pass".to_string(),
     }
+}
+
+fn seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15)
 }
 
 fn mix64(mut x: u64) -> u64 {
@@ -587,6 +937,7 @@ mod tests {
                     visits: 50,
                 },
             ],
+            human_policy: None,
         }
     }
 
@@ -691,6 +1042,24 @@ mod tests {
         assert!(matches!(app.next_action(), Action::AiMove(_)));
     }
 
+    /// 端到端：拟人网返回 humanPolicy（默认跳过，需要本机 humanv0 模型）。
+    #[test]
+    #[ignore = "需要本机 KataGo + humanv0 网络"]
+    fn human_model_returns_a_policy() {
+        let mut config = AppConfig::default();
+        config.engine.visits = 1;
+        assert!(
+            config.engine.human_model.is_some(),
+            "本机应能找到 humanv0 网络"
+        );
+        let engine = engine::Engine::new(config.engine.clone());
+        engine.set_human_profile(Some("rank_5k".to_string()));
+        let eval = engine.analyze_position(&goban::Game::new(9, 7.5)).unwrap();
+        let policy = eval.human_policy.expect("humanPolicy 应该存在");
+        assert_eq!(policy.len(), 9 * 9 + 1);
+        assert!(policy.iter().any(|p| *p > 0.0));
+    }
+
     /// 端到端：真的起 KataGo，走 6 手人机对局（默认跳过，需要本机引擎）。
     #[test]
     #[ignore = "需要本机 KataGo + 网络"]
@@ -780,6 +1149,146 @@ mod tests {
 
         let _ = std::fs::remove_file(&external);
         let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn renames_and_trashes_the_current_game() {
+        let mut app = demo();
+        start(&mut app);
+        app.cursor = Point::new(2, 2);
+        app.play_at_cursor().unwrap();
+        let old = app.current_file.clone().unwrap();
+        app.refresh_games();
+        app.game_cursor = 0;
+
+        app.rename_selected_game("my study").unwrap();
+        let renamed = app.current_file.clone().unwrap();
+        assert_eq!(
+            renamed.file_name().and_then(|n| n.to_str()),
+            Some("my study.sgf")
+        );
+        assert!(!old.exists());
+        assert_eq!(app.games.len(), 1);
+
+        app.delete_selected_game().unwrap();
+        assert!(app.current_file.is_none());
+        assert!(app.games.is_empty());
+        let trash: Vec<_> = std::fs::read_dir(app.store.dir().join(".trash"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(trash.len(), 1, "删除应进入回收站而不是真删");
+
+        let _ = std::fs::remove_dir_all(app.store.dir());
+    }
+
+    #[test]
+    fn visits_are_shared_with_the_engine() {
+        let mut app = demo();
+        app.set_visits(333);
+        assert_eq!(app.config.engine.visits, 333);
+        assert_eq!(app.engine.visits(), 333);
+        app.set_visits(1);
+        assert_eq!(app.engine.visits(), 10, "visits 下限 10");
+    }
+
+    #[test]
+    fn human_mode_requires_a_model() {
+        let mut app = demo();
+        app.config.engine.human_model = None;
+        app.toggle_human();
+        assert!(!app.human_enabled);
+        assert_eq!(app.status, strings(app.lang).no_human_model);
+    }
+
+    #[test]
+    fn human_rank_cycles() {
+        let mut app = demo();
+        app.human_rank = 0;
+        app.cycle_human_rank(-1);
+        assert_eq!(app.human_profile(), "rank_9d");
+        app.cycle_human_rank(1);
+        assert_eq!(app.human_profile(), "rank_20k");
+    }
+
+    #[test]
+    fn human_policy_drives_the_ai_move() {
+        let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.ai_enabled = true;
+        app.human = Color::Black; // 轮白，AI
+        app.human_enabled = true;
+        app.human_rank = 3;
+
+        let mut policy = vec![0.0f32; 9 * 9 + 1];
+        policy[4 * 9 + 4] = 1.0; // E5
+        let mut e = eval(3, Color::White, 0.5, Move::Play(Point::new(0, 0)));
+        e.human_policy = Some(policy);
+        app.evals.insert(3, e);
+        assert_eq!(app.ai_choice(), Some(Move::Play(Point::new(4, 4))));
+
+        // 最后一位是 pass
+        let mut policy = vec![0.0f32; 9 * 9 + 1];
+        policy[9 * 9] = 1.0;
+        let mut e = eval(3, Color::White, 0.5, Move::Play(Point::new(0, 0)));
+        e.human_policy = Some(policy);
+        app.evals.insert(3, e);
+        assert_eq!(app.ai_choice(), Some(Move::Pass));
+    }
+
+    #[test]
+    fn previews_and_commits_a_variation() {
+        let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.evals.insert(
+            3,
+            TurnEval {
+                turn: 3,
+                to_move: Color::White,
+                winrate_black: 0.5,
+                score_black: 0.0,
+                candidates: vec![engine::Candidate {
+                    mv: Move::Play(Point::new(4, 4)),
+                    winrate_black: 0.5,
+                    score_black: 0.0,
+                    pv: vec![Move::Play(Point::new(4, 4)), Move::Play(Point::new(2, 6))],
+                    visits: 100,
+                }],
+                human_policy: None,
+            },
+        );
+
+        app.start_preview();
+        assert!(app.preview_active());
+        assert_eq!(app.preview_progress(), Some((0, 2)));
+        assert_eq!(app.display_pos(), 3);
+        app.preview_next();
+        assert_eq!(app.display_pos(), 4);
+        assert_eq!(
+            app.display_game().position().board.at(Point::new(4, 4)),
+            Some(Color::White)
+        );
+        app.preview_next();
+        assert_eq!(app.display_pos(), 5);
+        app.preview_prev();
+        assert_eq!(app.display_pos(), 4);
+
+        app.commit_preview();
+        assert!(!app.preview_active());
+        assert_eq!(app.pos(), 4);
+        assert_eq!(app.total_moves(), 4);
+        assert_eq!(
+            app.game().position().board.at(Point::new(4, 4)),
+            Some(Color::White)
+        );
+    }
+
+    #[test]
+    fn preview_without_analysis_is_refused() {
+        let mut app = demo();
+        app.start_preview();
+        assert!(!app.preview_active());
+        assert_eq!(app.status, strings(app.lang).no_variation);
     }
 
     #[test]

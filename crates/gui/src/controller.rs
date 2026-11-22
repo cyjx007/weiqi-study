@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
+use app::i18n::strings;
 use app::{App, AppConfig, Controller};
 use gtk::{gdk, glib};
 
@@ -50,6 +51,13 @@ pub fn build_ui(application: &adw::Application) {
     let undo_btn = panels.undo_btn.clone();
     let prev_btn = panels.prev_btn.clone();
     let next_btn = panels.next_btn.clone();
+    let rename_btn = panels.rename_btn.clone();
+    let delete_btn = panels.delete_btn.clone();
+    let variation_btn = panels.variation_btn.clone();
+    let commit_btn = panels.commit_btn.clone();
+    let visits = panels.visits.clone();
+    let human_switch = panels.human_switch.clone();
+    let rank = panels.rank.clone();
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     body.append(&area);
@@ -137,9 +145,40 @@ pub fn build_ui(application: &adw::Application) {
                     }
                     let _ = ui.ctrl.play_at_cursor();
                 }
-                gdk::Key::u => ui.ctrl.app.prev_move(),
-                gdk::Key::n => ui.ctrl.app.next_move(),
-                gdk::Key::p => ui.ctrl.app.prev_move(),
+                gdk::Key::u => {
+                    if ui.ctrl.app.preview_active() {
+                        ui.ctrl.preview_prev();
+                    } else {
+                        ui.ctrl.app.prev_move();
+                    }
+                }
+                gdk::Key::n => {
+                    if ui.ctrl.app.preview_active() {
+                        ui.ctrl.preview_next();
+                    } else {
+                        ui.ctrl.app.next_move();
+                    }
+                }
+                gdk::Key::p => {
+                    if ui.ctrl.app.preview_active() {
+                        ui.ctrl.preview_prev();
+                    } else {
+                        ui.ctrl.app.prev_move();
+                    }
+                }
+                gdk::Key::V => ui.ctrl.start_preview(),
+                gdk::Key::c => {
+                    if ui.ctrl.app.preview_active() {
+                        ui.ctrl.commit_preview();
+                    }
+                }
+                gdk::Key::Escape => {
+                    if ui.ctrl.app.preview_active() {
+                        ui.ctrl.exit_preview();
+                    } else {
+                        return glib::Propagation::Proceed;
+                    }
+                }
                 gdk::Key::g => ui.ctrl.app.goto_start(),
                 gdk::Key::G => ui.ctrl.app.goto_end(),
                 gdk::Key::t => ui.ctrl.start_play(),
@@ -223,6 +262,115 @@ pub fn build_ui(application: &adw::Application) {
     }
     {
         let ui = ui.clone();
+        let window_d = window.clone();
+        delete_btn.connect_clicked(move |_| {
+            let (heading, body, cancel_label, ok_label) = {
+                let ui = ui.borrow();
+                let s = strings(ui.ctrl.app.lang);
+                (
+                    s.delete.to_string(),
+                    s.trash_body.to_string(),
+                    s.cancel.to_string(),
+                    s.ok.to_string(),
+                )
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading(heading)
+                .body(body)
+                .build();
+            dialog.add_response("cancel", &cancel_label);
+            dialog.add_response("delete", &ok_label);
+            dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+            let ui_c = ui.clone();
+            dialog.choose(
+                Some(&window_d),
+                None::<&gtk::gio::Cancellable>,
+                move |response| {
+                    if response == "delete" {
+                        if let Ok(mut ui) = ui_c.try_borrow_mut() {
+                            let _ = ui.ctrl.app.delete_selected_game();
+                            reload_games(&mut ui);
+                            refresh(&mut ui);
+                        }
+                    }
+                },
+            );
+        });
+    }
+    {
+        let ui = ui.clone();
+        let window_r = window.clone();
+        rename_btn.connect_clicked(move |_| {
+            let (title, initial, cancel_label, ok_label) = {
+                let ui = ui.borrow();
+                let s = strings(ui.ctrl.app.lang);
+                let initial = ui
+                    .ctrl
+                    .app
+                    .selected_game()
+                    .and_then(|g| g.path.file_stem())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                (s.rename.to_string(), initial, s.cancel.to_string(), s.ok.to_string())
+            };
+
+            let win = gtk::Window::builder()
+                .title(title)
+                .modal(true)
+                .default_width(360)
+                .build();
+            win.set_transient_for(Some(&window_r));
+
+            let entry = gtk::Entry::new();
+            entry.set_text(&initial);
+            entry.set_hexpand(true);
+            let cancel = gtk::Button::with_label(&cancel_label);
+            let ok = gtk::Button::with_label(&ok_label);
+            ok.add_css_class("suggested-action");
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            row.set_halign(gtk::Align::End);
+            row.append(&cancel);
+            row.append(&ok);
+            let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+            root.set_margin_top(14);
+            root.set_margin_bottom(14);
+            root.set_margin_start(14);
+            root.set_margin_end(14);
+            root.append(&entry);
+            root.append(&row);
+            win.set_child(Some(&root));
+
+            {
+                let win = win.clone();
+                cancel.connect_clicked(move |_| win.close());
+            }
+            {
+                let win = win.clone();
+                let ui = ui.clone();
+                let entry = entry.clone();
+                ok.connect_clicked(move |_| {
+                    if let Ok(mut ui) = ui.try_borrow_mut() {
+                        let name = entry.text().to_string();
+                        if ui.ctrl.app.rename_selected_game(&name).is_ok() {
+                            reload_games(&mut ui);
+                            refresh(&mut ui);
+                            win.close();
+                        } else {
+                            refresh(&mut ui);
+                        }
+                    }
+                });
+            }
+            {
+                let ok = ok.clone();
+                entry.connect_activate(move |_| ok.emit_clicked());
+            }
+            win.present();
+        });
+    }
+    {
+        let ui = ui.clone();
         lang_btn.connect_clicked(move |_| {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
@@ -252,6 +400,76 @@ pub fn build_ui(application: &adw::Application) {
                 reload_games(&mut ui);
             }
             refresh(&mut ui);
+        });
+    }
+
+    {
+        let ui = ui.clone();
+        variation_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            ui.ctrl.start_preview();
+            refresh(&mut ui);
+        });
+    }
+    {
+        let ui = ui.clone();
+        commit_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            ui.ctrl.commit_preview();
+            refresh(&mut ui);
+        });
+    }
+
+    // AI 强度 / 拟人网
+    {
+        let ui = ui.clone();
+        visits.connect_value_changed(move |spin| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            if ui.panels.is_updating_controls() {
+                return;
+            }
+            let value = spin.value() as u32;
+            if value != ui.ctrl.app.config.engine.visits {
+                ui.ctrl.set_visits(value);
+                refresh(&mut ui);
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        human_switch.connect_active_notify(move |switch| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            if ui.panels.is_updating_controls() {
+                return;
+            }
+            if switch.is_active() != ui.ctrl.app.human_enabled {
+                ui.ctrl.toggle_human();
+                refresh(&mut ui);
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        rank.connect_selected_notify(move |dropdown| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            if ui.panels.is_updating_controls() {
+                return;
+            }
+            let idx = dropdown.selected() as usize;
+            if idx != ui.ctrl.app.human_rank {
+                ui.ctrl.set_human_rank(idx);
+                refresh(&mut ui);
+            }
         });
     }
 

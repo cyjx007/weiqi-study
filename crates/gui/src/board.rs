@@ -114,7 +114,7 @@ pub fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<
     // 否则 arc() 会自动从那个点连一条线过来（就是那条斜线）。
     cr.new_path();
 
-    let board = &app.game().position().board;
+    let board = &app.display_game().position().board;
     // 候选
     for (rank, (mv, _)) in app.prediction().iter().enumerate() {
         if let goban::Move::Play(p) = mv {
@@ -140,7 +140,7 @@ pub fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<
     }
 
     // 最后一手
-    if let Some(goban::Move::Play(p)) = app.game().position().last_move {
+    if let Some(goban::Move::Play(p)) = app.display_game().position().last_move {
         let x = g.ox + p.x as f64 * g.cell;
         let y = g.oy + p.y as f64 * g.cell;
         cr.set_source_rgba(0.85, 0.15, 0.15, 0.9);
