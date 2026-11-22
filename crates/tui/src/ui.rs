@@ -408,10 +408,17 @@ mod tests {
 
     #[test]
     fn games_overlay_empty_message() {
+        use app::i18n::Lang;
         let mut app = test_app();
         app.show_games = true;
-        let s = compact(render_to_string(&app, 110, 40));
-        assert!(s.contains("还没有保存的棋谱") || s.contains("No saved"));
+
+        app.lang = Lang::Zh;
+        let zh = compact(render_to_string(&app, 110, 40));
+        assert!(zh.contains("还没有保存的棋谱"));
+
+        app.lang = Lang::En;
+        let en = compact(render_to_string(&app, 110, 40));
+        assert!(en.contains("Nosavedgamesyet"));
     }
 
     #[test]
