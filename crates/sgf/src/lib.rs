@@ -52,11 +52,9 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                         }
                     }
                 }
-                "RU" => {
-                    if out.rules.is_none() {
-                        if let Some(v) = values.first() {
-                            out.rules = Some(v.trim().to_string());
-                        }
+                "RU" if out.rules.is_none() => {
+                    if let Some(v) = values.first() {
+                        out.rules = Some(v.trim().to_string());
                     }
                 }
                 _ => {}
@@ -70,16 +68,16 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
             match ident.as_str() {
                 "AB" => {
                     for v in values {
-                        if let Some(p) = parse_coord(v, out.size) {
-                            out.setup.push((Color::Black, p));
-                        }
+                        let p = parse_coord(v, out.size)
+                            .map_err(|e| format!("AB 摆子坐标非法 [{v}]：{e}"))?;
+                        out.setup.push((Color::Black, p));
                     }
                 }
                 "AW" => {
                     for v in values {
-                        if let Some(p) = parse_coord(v, out.size) {
-                            out.setup.push((Color::White, p));
-                        }
+                        let p = parse_coord(v, out.size)
+                            .map_err(|e| format!("AW 摆子坐标非法 [{v}]：{e}"))?;
+                        out.setup.push((Color::White, p));
                     }
                 }
                 "B" | "W" => {
@@ -88,23 +86,23 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     } else {
                         Color::White
                     };
+                    let raw = values.first().map(String::as_str).unwrap_or("");
+                    let mv = parse_move(raw, out.size).map_err(|e| {
+                        format!("第 {} 手坐标非法 [{raw}]：{e}", out.moves.len() + 1)
+                    })?;
                     let expected = if out.setup.is_empty() {
-                        if out.moves.len() % 2 == 0 {
+                        if out.moves.len().is_multiple_of(2) {
                             Color::Black
                         } else {
                             Color::White
                         }
-                    } else if out.moves.len() % 2 == 0 {
+                    } else if out.moves.len().is_multiple_of(2) {
                         Color::White
                     } else {
                         Color::Black
                     };
                     // 轮次对不上的（残缺棋谱）跳过，避免整盘解析失败
                     if color == expected {
-                        let mv = values
-                            .first()
-                            .map(|v| parse_move(v, out.size))
-                            .unwrap_or(Move::Pass);
                         out.moves.push(mv);
                     }
                 }
@@ -220,36 +218,33 @@ fn skip_tree(chars: &[char], i: &mut usize) {
     }
 }
 
-fn parse_coord(s: &str, size: u8) -> Option<Point> {
+fn parse_coord(s: &str, size: u8) -> Result<Point, String> {
     let b: Vec<char> = s.chars().collect();
     if b.len() != 2 {
-        return None;
+        return Err(format!("坐标长度应为 2，实际 {}（{s:?}）", b.len()));
     }
-    let x = (b[0] as u8).checked_sub(b'a')?;
-    let y = (b[1] as u8).checked_sub(b'a')?;
+    let x = (b[0] as u8)
+        .checked_sub(b'a')
+        .ok_or_else(|| format!("横坐标不是小写字母：{}", b[0]))?;
+    let y = (b[1] as u8)
+        .checked_sub(b'a')
+        .ok_or_else(|| format!("纵坐标不是小写字母：{}", b[1]))?;
     if x >= size || y >= size {
-        return None;
+        return Err(format!("坐标超出 {} 路棋盘", size));
     }
-    Some(Point::new(x, y))
+    Ok(Point::new(x, y))
 }
 
-fn parse_move(s: &str, size: u8) -> Move {
-    if s.is_empty() || s == "tt" {
-        return Move::Pass;
+fn parse_move(s: &str, size: u8) -> Result<Move, String> {
+    // SGF 空坐标是 Pass；19 路及以下 `tt` 也是约定俗成的 Pass
+    if s.is_empty() || (s == "tt" && size <= 19) {
+        return Ok(Move::Pass);
     }
-    match parse_coord(s, size) {
-        Some(p) => Move::Play(p),
-        None => Move::Pass,
-    }
+    parse_coord(s, size).map(Move::Play)
 }
 
 /// 把局面写回 SGF（只写主线，带摆子和贴目）。
-pub fn write_game(
-    size: u8,
-    komi: f32,
-    setup: &[(Color, Point)],
-    moves: &[Move],
-) -> String {
+pub fn write_game(size: u8, komi: f32, setup: &[(Color, Point)], moves: &[Move]) -> String {
     fn coord(p: Point) -> String {
         let mut s = String::new();
         s.push((b'a' + p.x) as char);
@@ -283,7 +278,11 @@ pub fn write_game(
         Color::White
     };
     for (i, mv) in moves.iter().enumerate() {
-        let color = if i % 2 == 0 { first } else { first.opposite() };
+        let color = if i.is_multiple_of(2) {
+            first
+        } else {
+            first.opposite()
+        };
         out.push(';');
         out.push(color.sgf_char());
         out.push('[');
@@ -298,7 +297,7 @@ pub fn write_game(
 
 /// SGF 坐标 -> 0-based Point（给测试和外部工具复用）
 pub fn point_from_sgf(s: &str, size: u8) -> Option<Point> {
-    parse_coord(s, size)
+    parse_coord(s, size).ok()
 }
 
 #[cfg(test)]
@@ -342,10 +341,44 @@ mod tests {
     }
 
     #[test]
+    fn writes_and_reparses_two_passes() {
+        let moves = vec![Move::Play(Point::new(2, 2)), Move::Pass, Move::Pass];
+        let text = write_game(9, 7.5, &[], &moves);
+        let back = parse(&text).unwrap();
+        assert_eq!(back.moves, moves);
+    }
+
+    #[test]
     fn handles_pass() {
         let src = "(;SZ[9];B[];W[ee])";
         let g = parse(src).unwrap();
         assert_eq!(g.moves[0], Move::Pass);
+    }
+
+    #[test]
+    fn tt_is_pass_on_19_or_smaller() {
+        let g = parse("(;SZ[19];B[tt];W[dd])").unwrap();
+        assert_eq!(g.moves[0], Move::Pass);
+        let g = parse("(;SZ[9];B[tt])").unwrap();
+        assert_eq!(g.moves[0], Move::Pass);
+    }
+
+    #[test]
+    fn rejects_invalid_move_coordinates() {
+        let err = parse("(;SZ[9];B[zz])").unwrap_err();
+        assert!(err.contains("坐标非法"), "{err}");
+        let err = parse("(;SZ[9];B[Z9])").unwrap_err();
+        assert!(err.contains("坐标非法"), "{err}");
+        let err = parse("(;SZ[9];B[abc])").unwrap_err();
+        assert!(err.contains("坐标非法"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_setup_coordinates() {
+        let err = parse("(;SZ[9]AB[zz])").unwrap_err();
+        assert!(err.contains("AB"), "{err}");
+        let err = parse("(;SZ[9]AW[Z9])").unwrap_err();
+        assert!(err.contains("AW"), "{err}");
     }
 
     #[test]

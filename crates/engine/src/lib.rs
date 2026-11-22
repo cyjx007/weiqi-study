@@ -186,20 +186,29 @@ pub fn gtp_coord(p: Point, size: u8) -> String {
     format!("{}{}", col, size - p.y)
 }
 
-pub fn parse_gtp_move(s: &str, size: u8) -> Move {
+pub fn parse_gtp_move(s: &str, size: u8) -> Result<Move, String> {
+    let s = s.trim();
     if s.eq_ignore_ascii_case("pass") {
-        return Move::Pass;
+        return Ok(Move::Pass);
+    }
+    if s.eq_ignore_ascii_case("resign") {
+        return Err("引擎返回 resign".to_string());
     }
     let b = s.as_bytes();
     if b.len() < 2 {
-        return Move::Pass;
+        return Err(format!("GTP 坐标太短：{s:?}"));
     }
-    let col = GTP_COLS.iter().position(|&c| c == b[0].to_ascii_uppercase());
-    let row = s[1..].parse::<u8>().ok();
-    match (col, row) {
-        (Some(x), Some(r)) if r >= 1 && r <= size => Move::Play(Point::new(x as u8, size - r)),
-        _ => Move::Pass,
+    let col = GTP_COLS
+        .iter()
+        .position(|&c| c == b[0].to_ascii_uppercase())
+        .ok_or_else(|| format!("GTP 列非法：{s:?}"))?;
+    let row = s[1..]
+        .parse::<u8>()
+        .map_err(|_| format!("GTP 行号非法：{s:?}"))?;
+    if row < 1 || row > size || col >= size as usize {
+        return Err(format!("GTP 坐标超出 {size} 路棋盘：{s:?}"));
     }
+    Ok(Move::Play(Point::new(col as u8, size - row)))
 }
 
 /// 引擎句柄：每个前端持有自己的实例，内部只有一个常驻会话。
@@ -252,10 +261,7 @@ impl Engine {
     }
 
     fn human_state(&self) -> HumanState {
-        self.human
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.human.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 开关拟人网 / 换段位。不在这里抢 session 锁：正在跑的分析可能占着它很久；
@@ -313,11 +319,7 @@ impl Engine {
         if human.is_some() {
             match &self.cfg.human_model {
                 Some(p) if p.exists() => {}
-                _ => {
-                    return Err(
-                        "拟人模式需要 humanv0 网络（设 KATAGO_HUMAN_MODEL）".to_string()
-                    )
-                }
+                _ => return Err("拟人模式需要 humanv0 网络（设 KATAGO_HUMAN_MODEL）".to_string()),
             }
         }
 
@@ -471,10 +473,7 @@ impl AnalysisSession {
         let total = turns.len();
         let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
         while evals.len() < total {
-            let line = match self
-                .rx
-                .recv_timeout(std::time::Duration::from_secs(90))
-            {
+            let line = match self.rx.recv_timeout(std::time::Duration::from_secs(90)) {
                 Ok(line) => line,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     return Err("KataGo 分析超时（90s 无输出）".to_string())
@@ -486,8 +485,8 @@ impl AnalysisSession {
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = serde_json::from_str(&line)
-                .map_err(|e| format!("解析 JSON 失败: {e}: {line}"))?;
+            let value: Value =
+                serde_json::from_str(&line).map_err(|e| format!("解析 JSON 失败: {e}: {line}"))?;
             if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
                 return Err(format!("KataGo 报错: {err}"));
             }
@@ -529,28 +528,23 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
             let mv = m
                 .get("move")
                 .and_then(|x| x.as_str())
-                .map(|s| parse_gtp_move(s, game.size()))
-                .unwrap_or(Move::Pass);
+                .ok_or("moveInfo 缺少 move")?;
+            let mv = parse_gtp_move(mv, game.size())?;
             let cwr = m.get("winrate").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
-            let csc = m
-                .get("scoreLead")
-                .and_then(|x| x.as_f64())
-                .unwrap_or(0.0) as f32;
+            let csc = m.get("scoreLead").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
             let (cwr_b, csc_b) = if to_move == Color::Black {
                 (cwr, csc)
             } else {
                 (1.0 - cwr, -csc)
             };
-            let pv = m
-                .get("pv")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str())
-                        .map(|s| parse_gtp_move(s, game.size()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let pv = match m.get("pv").and_then(|x| x.as_array()) {
+                Some(a) => a
+                    .iter()
+                    .filter_map(|s| s.as_str())
+                    .map(|s| parse_gtp_move(s, game.size()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                None => Vec::new(),
+            };
             let visits = m.get("visits").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
             candidates.push(Candidate {
                 mv,
@@ -562,14 +556,11 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
         }
     }
 
-    let human_policy = v
-        .get("humanPolicy")
-        .and_then(|x| x.as_array())
-        .map(|a| {
-            a.iter()
-                .map(|x| x.as_f64().unwrap_or(-1.0) as f32)
-                .collect::<Vec<f32>>()
-        });
+    let human_policy = v.get("humanPolicy").and_then(|x| x.as_array()).map(|a| {
+        a.iter()
+            .map(|x| x.as_f64().unwrap_or(-1.0) as f32)
+            .collect::<Vec<f32>>()
+    });
 
     Ok(TurnEval {
         turn,
@@ -589,9 +580,98 @@ mod tests {
     fn gtp_roundtrip() {
         assert_eq!(gtp_coord(Point::new(15, 3), 19), "Q16");
         assert_eq!(gtp_coord(Point::new(3, 15), 19), "D4");
-        assert_eq!(parse_gtp_move("Q16", 19), Move::Play(Point::new(15, 3)));
-        assert_eq!(parse_gtp_move("pass", 19), Move::Pass);
+        assert_eq!(
+            parse_gtp_move("Q16", 19).unwrap(),
+            Move::Play(Point::new(15, 3))
+        );
+        assert_eq!(parse_gtp_move("pass", 19).unwrap(), Move::Pass);
         // 跳过 I
         assert_eq!(gtp_coord(Point::new(8, 18), 19), "J1");
+        assert!(parse_gtp_move("I5", 19).is_err());
+        assert!(parse_gtp_move("Z99", 19).is_err());
+        assert!(parse_gtp_move("Q16", 9).is_err());
+        assert!(parse_gtp_move("", 19).is_err());
+        assert!(parse_gtp_move("resign", 19).is_err());
+    }
+
+    /// 假 KataGo：不依赖 GPU/模型，验证协议解析与错误路径。
+    fn fake_engine(script: &str) -> (Engine, std::path::PathBuf) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "weiqi-fake-engine-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("katago");
+        std::fs::File::create(&bin)
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+        let model = dir.join("model.bin.gz");
+        let config = dir.join("analysis.cfg");
+        std::fs::write(&model, "fake").unwrap();
+        std::fs::write(&config, "fake").unwrap();
+        let engine = Engine::new(EngineConfig {
+            katago: bin,
+            model,
+            config,
+            human_model: None,
+            visits: 10,
+            chunk: 30,
+        });
+        (engine, dir)
+    }
+
+    #[test]
+    fn fake_engine_parses_analysis_json() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *analyzeTurns*) echo '{"id":"x","turnNumber":0,"rootInfo":{"winrate":0.5,"scoreLead":0.0},"moveInfos":[{"move":"D4","winrate":0.5,"scoreLead":0.0,"pv":["D4","E5"],"visits":1}]}' ;;
+  esac
+done
+"#,
+        );
+        let eval = engine
+            .analyze_position(&Game::new(9, 7.5))
+            .expect("假引擎应返回结果");
+        assert_eq!(eval.turn, 0);
+        assert_eq!(eval.candidates[0].mv, Move::Play(Point::new(3, 5))); // D4 on 9x9
+        assert_eq!(eval.candidates[0].pv.len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fake_engine_invalid_json_is_an_error() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+read -r line
+echo 'not json'
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(err.contains("解析 JSON"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fake_engine_exit_is_an_error() {
+        let (engine, dir) = fake_engine("#!/bin/sh\nexit 1\n");
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(
+            err.contains("意外退出") || err.contains("写入 query"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
