@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "app"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "engine",
@@ -208,7 +208,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "engine"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "goban",
  "serde_json",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "goban"
-version = "0.3.2"
+version = "0.3.3"
 
 [[package]]
 name = "gobject-sys"
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "review"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "engine",
  "goban",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "sgf"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "goban",
 ]
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "weiqi-gui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "app",
  "engine",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "weiqi-review-cli"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "engine",
  "goban",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "weiqi-tui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "app",
  "engine",

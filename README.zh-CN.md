@@ -122,7 +122,7 @@ TUI 按键：
 | `KATAGO_BIN` | `PATH` 里的 `katago` | 引擎可执行文件 |
 | `KATAGO_MODEL` | 自动探测 `*.bin.gz` | 要加载的神经网络 |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | 分析配置；首次运行时生成 |
-| `WEIQI_LANG` | 跟随 `LANG` | `zh` / `en`，界面语言；讲评文字目前固定中文 |
+| `WEIQI_LANG` | 跟随 `LANG` | `zh` / `en`，界面**和讲评**的语言 |
 
 命令行参数（以 `--help` 为准）：
 
@@ -201,7 +201,7 @@ CI 会先装 GTK4 和 libadwaita，再跑 `cargo test --workspace` 和
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`
 - 第一次分析时启动 KataGo，之后整个会话复用同一个进程（不再重复加载模型）；
   关掉 TUI 或窗口时引擎随之退出
-- TUI 界面支持中/英（`WEIQI_LANG`），讲评文字目前固定中文
+- 界面和讲评都支持中/英（`WEIQI_LANG`，默认跟随 `LANG`）；`go-review` 同样跟随
 - 每落一子自动保存棋谱，工具本身不删除任何棋谱
 
 ## 许可

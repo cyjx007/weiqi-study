@@ -124,7 +124,7 @@ Environment variables:
 | `KATAGO_BIN` | `katago` from `PATH` | Engine executable |
 | `KATAGO_MODEL` | auto-detected `*.bin.gz` | Neural network to load |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | Analysis config; generated on first use |
-| `WEIQI_LANG` | from `LANG` | `zh` or `en` for the interface; commentary text is Chinese for now |
+| `WEIQI_LANG` | from `LANG` | `zh` or `en` for the interface **and the commentary** |
 
 Command-line flags (`--help` is authoritative):
 
@@ -208,7 +208,7 @@ CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
   evaluation comes from KataGo's `scoreLead`.
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests
   skip the model load. Closing the TUI or the GUI ends the engine process.
-- The TUI interface is English or Chinese (`WEIQI_LANG`); the written commentary is Chinese-only for now.
+- The interface and the written commentary are English or Chinese (`WEIQI_LANG`, default from `LANG`); `go-review` follows the same setting.
 - Games are saved automatically after every move; nothing is deleted by the tool.
 
 ## License
