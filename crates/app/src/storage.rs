@@ -133,7 +133,7 @@ fn unix_now() -> u64 {
 
 fn format_time(secs: u64) -> String {
     match Local.timestamp_opt(secs as i64, 0).single() {
-        Some(t) => t.format("%m-%d %H:%M").to_string(),
+        Some(t) => t.format("%m-%d %H:%M:%S").to_string(),
         None => secs.to_string(),
     }
 }

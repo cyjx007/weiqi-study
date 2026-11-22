@@ -28,6 +28,7 @@ struct Ui {
     updating_games: bool,
 
     winrate: gtk::ProgressBar,
+    winrate_text: gtk::Label,
     turn: gtk::Label,
     score: gtk::Label,
     moves: gtk::Label,
@@ -55,6 +56,7 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(application: &adw::Application) {
+    install_css();
     let config = AppConfig::default();
     let mut app = App::new(19, 7.5, config.clone());
     app.refresh_games();
@@ -102,45 +104,80 @@ fn build_ui(application: &adw::Application) {
     let prev_btn = gtk::Button::with_label("‹");
     let next_btn = gtk::Button::with_label("›");
 
-    let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let side = gtk::Box::new(gtk::Orientation::Vertical, 10);
     side.set_size_request(340, -1);
-    side.set_margin_top(12);
-    side.set_margin_bottom(12);
-    side.set_margin_start(12);
-    side.set_margin_end(12);
+    side.set_margin_top(14);
+    side.set_margin_bottom(14);
+    side.set_margin_start(14);
+    side.set_margin_end(14);
+
+    // 头部卡片：轮到谁 + 大号胜率
+    let head = card();
     let sec_winrate = section("");
+    turn.add_css_class("turn-label");
+    let winrate_text = gtk::Label::new(Some("50.0%"));
+    winrate_text.add_css_class("winrate-big");
+    winrate_text.set_xalign(0.0);
+    winrate.set_show_text(false);
+    winrate.add_css_class("winrate-bar");
+    head.append(&sec_winrate);
+    head.append(&turn);
+    head.append(&winrate_text);
+    head.append(&winrate);
+    side.append(&head);
+
+    // 局面
+    let stats = card();
     let sec_position = section("");
+    stats.append(&sec_position);
+    stats.append(&score);
+    stats.append(&moves);
+    side.append(&stats);
+
+    // 预测
+    let predict_card = card();
     let sec_predict = section("");
+    predict_card.append(&sec_predict);
+    predict_card.append(&cand);
+    side.append(&predict_card);
+
+    // 讲解（占满剩余高度）
+    let comment_card = card();
+    comment_card.set_vexpand(true);
     let sec_comment = section("");
-    side.append(&sec_winrate);
-    side.append(&winrate);
-    side.append(&sec_position);
-    side.append(&turn);
-    side.append(&score);
-    side.append(&moves);
-    side.append(&sec_predict);
-    side.append(&cand);
-    side.append(&sec_comment);
+    comment_card.append(&sec_comment);
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_child(Some(&comment));
     scroll.set_vexpand(true);
     scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    side.append(&scroll);
+    comment_card.append(&scroll);
+    side.append(&comment_card);
+
+    // 操作
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    actions.add_css_class("actions");
     actions.append(&new_btn);
     actions.append(&analyse_btn);
     actions.append(&review_btn);
     actions.append(&undo_btn);
     side.append(&actions);
+
+    // 棋谱 + 翻手
+    let games_card = card();
     let nav = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     nav.append(&prev_btn);
     nav.append(&next_btn);
     nav.append(&games);
-    side.append(&nav);
-    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    games_card.append(&nav);
+    side.append(&games_card);
+
+    // 底部状态 + 语言
+    let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    status.add_css_class("status-label");
+    status.set_hexpand(true);
+    lang_btn.add_css_class("pill");
     footer.append(&status);
     footer.append(&lang_btn);
-    status.set_hexpand(true);
     side.append(&footer);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -169,6 +206,7 @@ fn build_ui(application: &adw::Application) {
         game_count: 0,
         updating_games: false,
         winrate,
+        winrate_text,
         turn,
         score,
         moves,
@@ -403,6 +441,37 @@ fn build_ui(application: &adw::Application) {
     }
 }
 
+fn card() -> gtk::Box {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    b.add_css_class("panel-card");
+    b
+}
+
+fn install_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(
+        r#"
+        .panel-card {
+            background-color: alpha(currentColor, 0.055);
+            border-radius: 12px;
+            padding: 12px;
+        }
+        .section-title { font-size: 0.8em; font-weight: 700; opacity: 0.6; }
+        .turn-label { font-size: 1.25em; font-weight: 700; }
+        .winrate-big { font-size: 1.7em; font-weight: 800; }
+        .winrate-bar { min-height: 8px; border-radius: 4px; }
+        .status-label { font-size: 0.85em; opacity: 0.65; }
+        "#,
+    );
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
 fn label(text: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(text));
     l.set_xalign(0.0);
@@ -412,6 +481,7 @@ fn label(text: &str) -> gtk::Label {
 fn section(text: &str) -> gtk::Label {
     let l = gtk::Label::new(None);
     l.set_xalign(0.0);
+    l.add_css_class("section-title");
     l.set_markup(&format!("<b>{text}</b>"));
     l
 }
@@ -484,14 +554,7 @@ fn reload_games(ui: &mut Ui) {
         ui.app
             .games
             .iter()
-            .map(|g| {
-                let name = g
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                format!("{}  {}", g.label, name)
-            })
+            .map(|g| g.label.clone())
             .collect()
     };
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -516,8 +579,7 @@ fn refresh(ui: &mut Ui) {
 
     let wr = ui.app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
     ui.winrate.set_fraction(wr.clamp(0.0, 1.0) as f64);
-    ui.winrate
-        .set_text(Some(&format!("{:.1}%", wr * 100.0)));
+    ui.winrate_text.set_text(&format!("{:.1}%", wr * 100.0));
 
     let who = if !ui.app.ai_enabled {
         s.review.to_string()
@@ -678,15 +740,20 @@ fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<goba
     // 坐标
     cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     cr.set_font_size(g.cell * 0.36);
-    for i in 0..n as i32 {
-        let label = format!("{}", i + 1);
+    const COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
+    // 横轴：A–T（跳过 I），和 GTP/讲解里的 Q5、R5 对应
+    for i in 0..n as usize {
+        let label = (COLS[i] as char).to_string();
         let ext = cr.text_extents(&label).map(|e| e.width()).unwrap_or(0.0);
         let x = g.ox + i as f64 * g.cell - ext / 2.0;
         cr.move_to(x, g.oy - g.cell * 0.45);
         cr.show_text(&label).ok();
         cr.move_to(x, g.oy + g.board + g.cell * 0.85);
         cr.show_text(&label).ok();
-
+    }
+    // 纵轴：19 在上、1 在下
+    for i in 0..n as usize {
+        let label = (n as usize - i).to_string();
         let ext = cr.text_extents(&label).map(|e| e.width()).unwrap_or(0.0);
         let y = g.oy + i as f64 * g.cell + g.cell * 0.15;
         cr.move_to(g.ox - g.cell * 0.55 - ext, y);
