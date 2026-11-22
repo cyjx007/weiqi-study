@@ -1,4 +1,4 @@
-//! 围棋规则核心：棋盘、提子、位置超级劫、面积数子。
+//! 围棋规则核心：棋盘、提子、劫争规则、面积数子。
 //!
 //! 本 crate 不做 IO，也不认识 SGF / GTP 字符串——坐标转换只在 `sgf` / `engine` 里。
 
@@ -65,6 +65,28 @@ pub enum Move {
     Pass,
 }
 
+/// 劫争规则。中国规则默认用位置超级劫（PSK），比较盘面、不比较行棋方。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum KoRule {
+    /// 只禁止立即提回（单劫）。
+    Simple,
+    /// 盘面重复即禁止；不把下一手方纳入比较。
+    #[default]
+    PositionalSuperko,
+    /// 盘面 + 下一手方重复才禁止。
+    SituationalSuperko,
+}
+
+impl KoRule {
+    pub fn name_zh(self) -> &'static str {
+        match self {
+            KoRule::Simple => "单劫",
+            KoRule::PositionalSuperko => "位置超级劫",
+            KoRule::SituationalSuperko => "情境超级劫",
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IllegalMove {
     OutOfBounds,
@@ -79,7 +101,7 @@ impl fmt::Display for IllegalMove {
             IllegalMove::OutOfBounds => "越界",
             IllegalMove::Occupied => "该点已有子",
             IllegalMove::Suicide => "自杀",
-            IllegalMove::Superko => "违规（位置超级劫）",
+            IllegalMove::Superko => "重复局面（劫争规则）",
         };
         f.write_str(s)
     }
@@ -126,17 +148,14 @@ impl Board {
 
     pub fn stones(&self) -> impl Iterator<Item = (Point, Color)> + '_ {
         let size = self.size;
-        self.cells
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, cell)| {
-                cell.map(|c| {
-                    (
-                        Point::new((i % size as usize) as u8, (i / size as usize) as u8),
-                        c,
-                    )
-                })
+        self.cells.iter().enumerate().filter_map(move |(i, cell)| {
+            cell.map(|c| {
+                (
+                    Point::new((i % size as usize) as u8, (i / size as usize) as u8),
+                    c,
+                )
             })
+        })
     }
 
     fn idx(&self, p: Point) -> usize {
@@ -268,27 +287,36 @@ fn splitmix64(mut x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-pub fn hash_position(pos: &Position) -> u64 {
+/// 只哈希盘面（位置超级劫用）。
+pub fn hash_board(pos: &Position) -> u64 {
     let size = pos.board.size() as u64;
     let mut h = 0u64;
     for (p, c) in pos.board.stones() {
         let key = (p.y as u64 * size + p.x as u64) * 2 + c.index() as u64 + 1;
         h ^= splitmix64(key);
     }
+    h
+}
+
+/// 哈希盘面 + 下一手方（情境超级劫用）。
+pub fn hash_position(pos: &Position) -> u64 {
+    let mut h = hash_board(pos);
     if pos.to_move == Color::White {
         h ^= splitmix64(0x51ED_2701);
     }
     h
 }
 
-/// 整盘棋：带历史的局面栈，支持撤销和位置超级劫。
+/// 整盘棋：带历史的局面栈，支持撤销和可配置的劫争规则。
 #[derive(Clone, Debug)]
 pub struct Game {
     size: u8,
     komi: f32,
     setup: Vec<(Color, Point)>,
+    ko: KoRule,
     positions: Vec<Position>,
-    hashes: Vec<u64>,
+    board_hashes: Vec<u64>,
+    situational_hashes: Vec<u64>,
     moves: Vec<Move>,
 }
 
@@ -298,6 +326,19 @@ impl Game {
     }
 
     pub fn with_setup(size: u8, komi: f32, setup: Vec<(Color, Point)>) -> Self {
+        Self::with_setup_and_rule(size, komi, setup, KoRule::default())
+    }
+
+    pub fn with_rule(size: u8, komi: f32, ko: KoRule) -> Self {
+        Self::with_setup_and_rule(size, komi, Vec::new(), ko)
+    }
+
+    pub fn with_setup_and_rule(
+        size: u8,
+        komi: f32,
+        setup: Vec<(Color, Point)>,
+        ko: KoRule,
+    ) -> Self {
         let mut pos = Position::new(size);
         for (c, p) in &setup {
             pos.board.set(*p, Some(*c));
@@ -308,25 +349,47 @@ impl Game {
         } else {
             Color::White
         };
-        let h = hash_position(&pos);
+        let board_hash = hash_board(&pos);
+        let situational = hash_position(&pos);
         Game {
             size,
             komi,
             setup,
+            ko,
             positions: vec![pos],
-            hashes: vec![h],
+            board_hashes: vec![board_hash],
+            situational_hashes: vec![situational],
             moves: Vec::new(),
         }
     }
 
+    pub fn ko_rule(&self) -> KoRule {
+        self.ko
+    }
+
     pub fn play(&mut self, mv: Move) -> Result<(), IllegalMove> {
         let next = self.position().try_play(mv)?;
-        let h = hash_position(&next);
-        if self.hashes.contains(&h) {
-            return Err(IllegalMove::Superko);
+        let board_hash = hash_board(&next);
+        let situational = hash_position(&next);
+        if mv != Move::Pass {
+            let repeated = match self.ko {
+                KoRule::Simple => {
+                    // 只禁止立即提回：和上一手之前的盘面比较
+                    self.positions
+                        .len()
+                        .checked_sub(2)
+                        .is_some_and(|i| self.board_hashes[i] == board_hash)
+                }
+                KoRule::PositionalSuperko => self.board_hashes.contains(&board_hash),
+                KoRule::SituationalSuperko => self.situational_hashes.contains(&situational),
+            };
+            if repeated {
+                return Err(IllegalMove::Superko);
+            }
         }
         self.positions.push(next);
-        self.hashes.push(h);
+        self.board_hashes.push(board_hash);
+        self.situational_hashes.push(situational);
         self.moves.push(mv);
         Ok(())
     }
@@ -336,7 +399,8 @@ impl Game {
             None
         } else {
             self.positions.pop();
-            self.hashes.pop();
+            self.board_hashes.pop();
+            self.situational_hashes.pop();
             self.moves.pop()
         }
     }
@@ -377,7 +441,7 @@ impl Game {
         } else {
             Color::White
         };
-        if turn % 2 == 0 {
+        if turn.is_multiple_of(2) {
             first
         } else {
             first.opposite()
@@ -389,53 +453,45 @@ impl Game {
         let board = &self.position().board;
         let mut black = 0u16;
         let mut white = 0u16;
-        let mut seen = vec![false; board.cells.len()];
-        for (p, c) in board.stones() {
+        let mut visited_empty = vec![false; board.cells.len()];
+        for (_, c) in board.stones() {
             match c {
                 Color::Black => black += 1,
                 Color::White => white += 1,
             }
-            seen[board.idx(p)] = true;
         }
         for y in 0..board.size() {
             for x in 0..board.size() {
                 let p = Point::new(x, y);
                 let i = board.idx(p);
-                if seen[i] {
+                if board.at(p).is_some() || visited_empty[i] {
                     continue;
                 }
-                // 洪水填充空区域，看边界颜色
-                let mut region = Vec::new();
-                let mut border_black = false;
-                let mut border_white = false;
+                // 只遍历空点；边界棋子只用来判断归属
+                let mut region = 0u16;
+                let mut touches_black = false;
+                let mut touches_white = false;
                 let mut stack = vec![p];
-                seen[i] = true;
+                visited_empty[i] = true;
                 while let Some(q) = stack.pop() {
-                    region.push(q);
+                    region += 1;
                     for n in board.neighbors(q) {
                         let ni = board.idx(n);
-                        if seen[ni] {
-                            continue;
-                        }
                         match board.cells[ni] {
                             None => {
-                                seen[ni] = true;
-                                stack.push(n);
+                                if !visited_empty[ni] {
+                                    visited_empty[ni] = true;
+                                    stack.push(n);
+                                }
                             }
-                            Some(Color::Black) => {
-                                seen[ni] = true;
-                                border_black = true;
-                            }
-                            Some(Color::White) => {
-                                seen[ni] = true;
-                                border_white = true;
-                            }
+                            Some(Color::Black) => touches_black = true,
+                            Some(Color::White) => touches_white = true,
                         }
                     }
                 }
-                match (border_black, border_white) {
-                    (true, false) => black += region.len() as u16,
-                    (false, true) => white += region.len() as u16,
+                match (touches_black, touches_white) {
+                    (true, false) => black += region,
+                    (false, true) => white += region,
                     _ => {}
                 }
             }
@@ -535,12 +591,76 @@ mod tests {
     }
 
     #[test]
-    fn area_score_corner() {
+    fn two_passes_are_legal() {
+        let mut g = Game::new(9, 7.5);
+        assert!(g.play(Move::Pass).is_ok());
+        assert!(g.play(Move::Pass).is_ok());
+        assert!(g.play(Move::Pass).is_ok());
+        assert_eq!(g.moves(), &[Move::Pass, Move::Pass, Move::Pass]);
+    }
+
+    #[test]
+    fn hash_board_ignores_to_move() {
+        let mut a = Position::new(9);
+        a.board.set(p(2, 2), Some(Color::Black));
+        let mut b = a.clone();
+        b.to_move = Color::White;
+        assert_eq!(hash_board(&a), hash_board(&b));
+        assert_ne!(hash_position(&a), hash_position(&b));
+    }
+
+    #[test]
+    fn simple_ko_still_rejects_immediate_recapture() {
+        let mut g = Game::with_rule(9, 7.5, KoRule::Simple);
+        let seq = [
+            Move::Play(p(1, 2)),
+            Move::Play(p(2, 2)),
+            Move::Play(p(2, 3)),
+            Move::Play(p(1, 1)),
+            Move::Play(p(3, 2)),
+            Move::Play(p(3, 1)),
+            Move::Play(p(5, 5)),
+            Move::Play(p(2, 0)),
+        ];
+        for mv in seq {
+            g.play(mv).unwrap();
+        }
+        assert!(g.play(Move::Play(p(2, 1))).is_ok());
+        assert_eq!(g.play(Move::Play(p(2, 2))), Err(IllegalMove::Superko));
+    }
+
+    #[test]
+    fn area_score_counts_black_and_white_territory() {
+        let g = Game::with_setup(
+            5,
+            0.0,
+            vec![
+                (Color::Black, p(0, 1)),
+                (Color::Black, p(1, 0)),
+                (Color::White, p(4, 3)),
+                (Color::White, p(3, 4)),
+            ],
+        );
+        let s = g.area_score();
+        // 两个角各 1 目 + 2 子；中间空区同时接触黑白，中立
+        assert_eq!(s.black, 3);
+        assert_eq!(s.white, 3);
+    }
+
+    #[test]
+    fn area_score_empty_board_is_zero() {
+        let g = Game::new(9, 0.0);
+        let s = g.area_score();
+        assert_eq!((s.black, s.white), (0, 0));
+    }
+
+    #[test]
+    fn area_score_one_stone_owns_the_empty_board() {
         let mut g = Game::new(9, 0.0);
         g.play(Move::Play(p(0, 0))).unwrap();
         let s = g.area_score();
-        // 角上一子 + 整块空者归黑？9 路盘被这一子分割不现实，只测不会 panic
-        assert!(s.black >= 1);
+        assert_eq!(s.black, 81, "1 子 + 80 空点（没有白棋）");
+        assert_eq!(s.white, 0);
     }
 
     #[test]
