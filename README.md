@@ -145,6 +145,8 @@ Key invariants:
 - SGF and GTP coordinate strings exist only in `sgf` and `engine`; the core works on
   `Point { x, y }`.
 - `review` is deterministic: no clock, no randomness, so its output can be snapshot-tested.
+- Explanations are derived, not generated: tactical facts come from the board, consequences and
+  recommendations come from the engine's principal variation.
 - Failure modes are explicit: a missing engine, network, or config produces an error; an
   analysis error is shown in the status line and is not retried automatically.
 

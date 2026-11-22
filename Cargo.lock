@@ -10,7 +10,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "engine",
  "goban",
@@ -126,7 +126,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "goban",
  "serde_json",
@@ -156,7 +156,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "goban"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "hashbrown"
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "review"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "engine",
  "goban",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "sgf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "goban",
 ]
@@ -573,7 +573,7 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "weiqi-review-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "engine",
  "goban",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "weiqi-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "app",
  "engine",
