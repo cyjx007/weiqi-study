@@ -152,7 +152,7 @@ SGF ──> sgf（主线、摆子）
         review（确定性的讲评模板）
           │
           ├──> go-review   文本表格 + 讲评
-          └──> app + tui   棋盘、预测、讲解、引擎应手
+          └──> app（Controller）+ tui/gui  棋盘、预测、讲解、引擎应手
 ```
 
 几条硬约定：

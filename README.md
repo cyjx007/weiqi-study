@@ -154,7 +154,7 @@ SGF ──> sgf (main line, setup stones)
         review (deterministic commentary templates)
           │
           ├──> go-review   (text table + explanations)
-          └──> app + tui   (board, prediction, commentary, engine replies)
+          └──> app (Controller) + tui/gui  (board, prediction, commentary, engine replies)
 ```
 
 Key invariants:
