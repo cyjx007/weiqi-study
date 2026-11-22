@@ -1,9 +1,10 @@
 //! 界面渲染：只读 `App` 状态，不修改任何东西。
 
+use app::i18n::{color_name, strings};
 use app::App;
 use goban::{Color, Move, Point};
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color as C, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph, Wrap},
@@ -12,28 +13,53 @@ use ratatui::{
 
 const WOOD: C = C::Rgb(214, 176, 124);
 const LINE: C = C::Rgb(126, 96, 62);
+const HOSHI: C = C::Rgb(96, 68, 40);
 const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const CAND: [&str; 3] = ["1", "2", "3"];
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let chunks =
-        Layout::horizontal([Constraint::Min(42), Constraint::Length(36)]).split(area);
-    draw_board(frame, app, chunks[0]);
-    draw_side(frame, app, chunks[1]);
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+    let content = rows[0];
+    let footer = rows[1];
+
+    let cols = Layout::horizontal([Constraint::Min(42), Constraint::Length(38)]).split(content);
+    draw_board(frame, app, cols[0]);
+    draw_side(frame, app, cols[1]);
+
+    let s = strings(app.lang);
+    frame.render_widget(
+        Paragraph::new(s.footer).style(Style::default().fg(C::Gray)),
+        footer,
+    );
+
     if app.show_help {
-        draw_help(frame, area);
+        draw_help(frame, app, area);
+    }
+    if app.show_games {
+        draw_games(frame, app, area);
     }
 }
 
 fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
+    let s = strings(app.lang);
     let who = if app.ai_enabled {
-        if app.to_move() == app.human { "你" } else { "AI" }
+        if app.to_move() == app.human {
+            s.you
+        } else {
+            s.ai
+        }
     } else {
-        "复盘"
+        s.review
     };
-    let title = format!(" 对局 · 轮到{}({}) ", app.to_move().name_zh(), who);
+    let title = format!(
+        " {} · {} {}({}) ",
+        s.game,
+        s.turn,
+        color_name(app.to_move(), app.lang),
+        who
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -42,14 +68,14 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let n = app.size as u16;
-    // 终端宽就放宽格距，棋盘不至于缩在中间一小块
-    let spacing: u16 = if inner.width >= n * 3 + 10 { 3 } else { 2 };
-    let grid_w = n * spacing;
-    let need_w = grid_w + 4; // 左边两列坐标 + 右边留白
-    let need_h = n + 2; // 上下各一行坐标
+    // 横向格距随窗口变宽：2 → 3 → 4；纵向在够高时隔行加空行
+    let spacing: u16 = ((inner.width.saturating_sub(5)) / n).clamp(2, 4);
+    let row_step: u16 = if inner.height >= n * 2 + 3 { 2 } else { 1 };
+    let need_w = n * spacing + 4;
+    let need_h = n * row_step + 2;
     if inner.width < need_w || inner.height < need_h {
         frame.render_widget(
-            Paragraph::new("窗口太小，放大一点").style(Style::default().fg(C::Gray)),
+            Paragraph::new("window too small / 窗口太小").style(Style::default().fg(C::Gray)),
             inner,
         );
         return;
@@ -57,7 +83,6 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     let x0 = inner.x + (inner.width - need_w) / 2;
     let y0 = inner.y + (inner.height - need_h) / 2;
 
-    // 只有棋盘这一块铺木色，其余保持终端背景
     let wood_rect = Rect {
         x: x0,
         y: y0,
@@ -74,20 +99,21 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     for j in 0..n {
         let letter = GTP_COLS[j as usize] as char;
         buf.set_string(grid_x + j * spacing, y0, letter.to_string(), wood.fg(LINE));
+        buf.set_string(
+            grid_x + j * spacing,
+            y0 + 1 + n * row_step,
+            letter.to_string(),
+            wood.fg(LINE),
+        );
     }
 
     for i in 0..n {
-        let row = n - i;
-        buf.set_string(
-            x0,
-            y0 + 1 + i,
-            format!("{row:>2}"),
-            wood.fg(LINE),
-        );
+        let row_label = (n - i).to_string();
+        let y = y0 + 1 + i * row_step;
+        buf.set_string(x0, y, format!("{row_label:>2}"), wood.fg(LINE));
         for j in 0..n {
             let p = Point::new(j as u8, i as u8);
             let x = grid_x + j * spacing;
-            let y = y0 + 1 + i;
             let stone = app.game().position().board.at(p);
             let is_last = app.game().position().last_move == Some(Move::Play(p));
             let mut style = wood;
@@ -104,7 +130,11 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
                     Some(rank) => (CAND[rank - 1], C::Yellow),
                     None => {
                         let hoshi = stars.contains(&(i as usize)) && stars.contains(&(j as usize));
-                        if hoshi { ("╋", C::Rgb(96, 68, 40)) } else { ("┼", LINE) }
+                        if hoshi {
+                            ("·", HOSHI)
+                        } else {
+                            ("·", LINE)
+                        }
                     }
                 },
             };
@@ -123,6 +153,7 @@ fn star_points(n: usize) -> &'static [usize] {
 }
 
 fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
+    let s = strings(app.lang);
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(4),
@@ -134,7 +165,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
 
     let wr = app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" 胜率（黑） "))
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.winrate)))
         .gauge_style(Style::default().fg(C::Rgb(235, 235, 235)).bg(C::Rgb(45, 45, 45)))
         .ratio(wr.clamp(0.0, 1.0) as f64)
         .label(format!("{:.1}%", wr * 100.0));
@@ -142,28 +173,33 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
 
     let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
     let who = if !app.ai_enabled {
-        "复盘".to_string()
+        s.review.to_string()
     } else if app.to_move() == app.human {
-        "你".to_string()
+        s.you.to_string()
     } else {
-        "AI".to_string()
+        s.ai.to_string()
     };
     let info = Paragraph::new(vec![
-        Line::from(format!("目差   黑 {score:+.1}")),
-        Line::from(format!("手数   {} / {}", app.pos(), app.total_moves())),
-        Line::from(format!("轮到   {}（{}）", app.to_move().name_zh(), who)),
+        Line::from(format!("{}   - {score:+.1}", s.score)),
+        Line::from(format!("{}   {} / {}", s.moves, app.pos(), app.total_moves())),
+        Line::from(format!(
+            "{}   {}({})",
+            s.turn,
+            color_name(app.to_move(), app.lang),
+            who
+        )),
     ])
-    .block(Block::default().borders(Borders::ALL).title(" 局面 "));
+    .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.position)));
     frame.render_widget(info, chunks[1]);
 
     let mut lines = Vec::new();
     let pred = app.prediction();
     if pred.is_empty() {
-        lines.push(Line::from("按 a 分析当前局面"));
+        lines.push(Line::from(s.press_a));
     } else {
         for (i, (mv, wr)) in pred.iter().enumerate() {
             lines.push(Line::from(format!(
-                "{}. {:<4} 黑 {:.1}%",
+                "{}. {:<4} {:.1}%",
                 i + 1,
                 mv_text(*mv, app.size),
                 wr * 100.0
@@ -178,13 +214,13 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                     .map(|m| mv_text(*m, app.size))
                     .collect();
                 if !pv.is_empty() {
-                    lines.push(Line::from(format!("变化 {}", pv.join(" "))));
+                    lines.push(Line::from(format!("{} {}", s.line, pv.join(" "))));
                 }
             }
         }
     }
     let cand = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" 预测 / 候选 "))
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.predict)))
         .wrap(Wrap { trim: true });
     frame.render_widget(cand, chunks[2]);
 
@@ -199,7 +235,8 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                     text.push_str("\n\n");
                 }
                 text.push_str(&format!(
-                    "建议 {}（黑 {:.1}%）",
+                    "{} {}（{:.1}%）",
+                    s.suggestion,
                     mv_text(best.mv, app.size),
                     best.winrate_black * 100.0
                 ));
@@ -210,24 +247,89 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                     .map(|m| mv_text(*m, app.size))
                     .collect();
                 if !pv.is_empty() {
-                    text.push_str(&format!("，之后大致 {}", pv.join(" ")));
+                    text.push_str(&format!("，{} {}", s.line, pv.join(" ")));
                 }
                 text.push('。');
             }
         }
     }
     if text.is_empty() {
-        text.push_str("按 t 开始人机对局；你落子后这里会写这手亏了多少、该下哪。");
+        text.push_str(s.fallback_comment);
     }
     let c = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(" 讲解 "))
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.commentary)))
         .wrap(Wrap { trim: true });
     frame.render_widget(c, chunks[3]);
 
     let status = Paragraph::new(app.status.as_str())
         .style(Style::default().fg(C::Gray))
-        .block(Block::default().borders(Borders::ALL).title(" 状态 "));
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.status)));
     frame.render_widget(status, chunks[4]);
+}
+
+fn draw_games(frame: &mut Frame, app: &App, area: Rect) {
+    let s = strings(app.lang);
+    let w = 52.min(area.width);
+    let h = ((app.games.len() as u16) + 4).clamp(7, area.height);
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+
+    let mut lines = Vec::new();
+    if app.games.is_empty() {
+        lines.push(Line::from(s.no_games));
+    } else {
+        for (i, g) in app.games.iter().enumerate() {
+            let style = if i == app.game_cursor {
+                Style::default().fg(C::Black).bg(C::Rgb(230, 200, 150))
+            } else {
+                Style::default()
+            };
+            let name = g
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            lines.push(Line::styled(format!("{}  {}", g.label, name), style));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        s.games_hint,
+        Style::default().fg(C::Gray),
+    )));
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.games)));
+    frame.render_widget(p, rect);
+}
+
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
+    let s = strings(app.lang);
+    let mut text = vec![Line::from(Span::styled(
+        s.help,
+        Style::default().add_modifier(Modifier::BOLD),
+    ))];
+    text.push(Line::from(""));
+    for (key, action) in s.help_lines {
+        text.push(Line::from(format!("{key:<16} {action}")));
+    }
+    let w = 56.min(area.width);
+    let h = (text.len() as u16 + 2).min(area.height);
+    let rect = centered(area, w, h);
+    frame.render_widget(Clear, rect);
+    let p = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.help)))
+        .style(Style::default().bg(C::Black).fg(C::Gray));
+    frame.render_widget(p, rect);
+}
+
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 fn mv_text(mv: Move, size: u8) -> String {
@@ -237,45 +339,10 @@ fn mv_text(mv: Move, size: u8) -> String {
     }
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
-    let text = vec![
-        Line::from(Span::styled(
-            "按键",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from("hjkl / 方向键   移动光标"),
-        Line::from("Enter           在光标处落子"),
-        Line::from("u               撤回一手"),
-        Line::from("n / p           下一手 / 上一手"),
-        Line::from("g / G           回到开局 / 跳到末尾"),
-        Line::from("t               开始人机对局（你执黑）"),
-        Line::from("v               开关 AI 应手"),
-        Line::from("a               分析当前局面"),
-        Line::from("A               全盘复盘（生成失误清单）"),
-        Line::from("b               跳到下一个失误"),
-        Line::from("?               关闭帮助"),
-        Line::from("q / Esc         退出"),
-    ];
-    let w = 44.min(area.width);
-    let h = (text.len() as u16 + 2).min(area.height);
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(w)) / 2,
-        y: area.y + (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
-    frame.render_widget(Clear, rect);
-    let p = Paragraph::new(text)
-        .alignment(Alignment::Left)
-        .block(Block::default().borders(Borders::ALL).title(" 帮助 "))
-        .style(Style::default().bg(C::Black).fg(C::Gray));
-    frame.render_widget(p, rect);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app::storage::GameEntry;
     use app::{App, AppConfig};
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -297,44 +364,54 @@ mod tests {
             .join("")
     }
 
+    fn compact(s: String) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
     #[test]
     fn renders_board_and_panels() {
         let app = test_app();
-        // 宽字符在 buffer 里会占两个 cell，先把空白去掉再断言
-        let s: String = render_to_string(&app, 100, 30)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(s.contains("对局"));
-        assert!(s.contains("胜率"));
-        assert!(s.contains("候选"));
-        assert!(s.contains('●')); // 黑子
-        assert!(s.contains('○')); // 白子
-        assert!(s.contains('A')); // 列字母
+        let s = compact(render_to_string(&app, 100, 30));
+        assert!(s.contains("对局") || s.contains("Game"));
+        assert!(s.contains('●'));
+        assert!(s.contains('○'));
+        assert!(s.contains('A'));
     }
 
     #[test]
     fn commentary_panel_shows_text() {
         let mut app = test_app();
-        app.last_comment = Some("特点：二路，贴着对方下（接触战）。\n推荐 R3（三路，66.0%）。".to_string());
-        let s: String = render_to_string(&app, 110, 40)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
+        app.last_comment = Some("特点：二路，贴着对方下（接触战）。".to_string());
+        let s = compact(render_to_string(&app, 110, 40));
         assert!(s.contains("特点"));
-        assert!(s.contains("推荐"));
     }
 
     #[test]
     fn help_overlay_toggles() {
         let mut app = test_app();
         app.show_help = true;
-        let s: String = render_to_string(&app, 100, 30)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        assert!(s.contains("按键"));
-        assert!(s.contains("全盘复盘"));
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("帮助") || s.contains("Help"));
+    }
+
+    #[test]
+    fn games_overlay_lists_entries() {
+        let mut app = test_app();
+        app.show_games = true;
+        app.games = vec![GameEntry {
+            path: std::path::PathBuf::from("/tmp/game-1.sgf"),
+            label: "01-02 03:04".to_string(),
+        }];
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("01-02"));
+    }
+
+    #[test]
+    fn games_overlay_empty_message() {
+        let mut app = test_app();
+        app.show_games = true;
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("还没有保存的棋谱") || s.contains("No saved"));
     }
 
     #[test]

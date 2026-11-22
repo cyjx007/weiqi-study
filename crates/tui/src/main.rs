@@ -5,6 +5,7 @@ mod ui;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use app::i18n::{fill, strings};
 use app::{Action, App, AppConfig, AppEvent};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -31,10 +32,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "weiqi-tui — 本地围棋学习界面\n\n用法：weiqi-tui [棋谱.sgf] [--visits N]\n\n\
-                     t 开始人机对局，Enter 落子，a 分析当前局面，A 全盘复盘。\n\
-                     不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。\n\
-                     --visits 默认 120。"
+                    "weiqi-tui — local Go study board / 本地围棋学习界面\n\n\
+                     用法: weiqi-tui [game.sgf] [--visits N]\n\
+                     t 人机对局 / play the engine, Enter 落子, L 棋谱 / games, ? 帮助 / help\n\
+                     不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。"
                 );
                 return Ok(());
             }
@@ -52,15 +53,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => {
             let text = std::fs::read_to_string(&path)?;
             let sg = sgf::parse(&text)?;
-            App::from_sgf(&sg, config)?
+            let mut app = App::from_sgf(&sg, config)?;
+            app.open_sgf_file(std::path::PathBuf::from(path), &sg)?;
+            app.show_games = false;
+            app
         }
         None => {
-            // 没给棋谱：先找仓库里的示例，再退回空盘
             let demo = std::path::Path::new("samples/demo.sgf");
             if demo.exists() {
                 let text = std::fs::read_to_string(demo)?;
                 let sg = sgf::parse(&text)?;
-                App::from_sgf(&sg, config)?
+                let mut app = App::from_sgf(&sg, config)?;
+                app.open_sgf_file(demo.to_path_buf(), &sg)?;
+                app
             } else {
                 App::new(19, 7.5, config)
             }
@@ -87,48 +92,63 @@ fn event_loop(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                    match key.code {
-                        KeyCode::Char('c') if ctrl => return Ok(()),
-                        KeyCode::Char('q') => return Ok(()),
-                        KeyCode::Esc => {
-                            if app.show_help {
-                                app.show_help = false;
-                            } else {
-                                return Ok(());
-                            }
+                    if ctrl && key.code == KeyCode::Char('c') {
+                        return Ok(());
+                    }
+
+                    if app.show_games {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Char('L') => app.toggle_games(),
+                            KeyCode::Up | KeyCode::Char('k') => app.move_game_cursor(-1),
+                            KeyCode::Down | KeyCode::Char('j') => app.move_game_cursor(1),
+                            KeyCode::Enter => app.open_selected_game(),
+                            KeyCode::Char('q') => return Ok(()),
+                            _ => {}
                         }
-                        KeyCode::Char('?') => app.show_help = !app.show_help,
-                        KeyCode::Left | KeyCode::Char('h') => app.move_cursor(-1, 0),
-                        KeyCode::Right | KeyCode::Char('l') => app.move_cursor(1, 0),
-                        KeyCode::Up | KeyCode::Char('k') => app.move_cursor(0, -1),
-                        KeyCode::Down | KeyCode::Char('j') => app.move_cursor(0, 1),
-                        KeyCode::Enter => match app.play_at_cursor() {
-                            Ok(()) => {
-                                app.status = "落子".to_string();
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') => return Ok(()),
+                            KeyCode::Esc => {
+                                if app.show_help {
+                                    app.show_help = false;
+                                } else {
+                                    return Ok(());
+                                }
+                            }
+                            KeyCode::Char('?') => app.show_help = !app.show_help,
+                            KeyCode::Char('L') => app.toggle_games(),
+                            KeyCode::Left | KeyCode::Char('h') => app.move_cursor(-1, 0),
+                            KeyCode::Right | KeyCode::Char('l') => app.move_cursor(1, 0),
+                            KeyCode::Up | KeyCode::Char('k') => app.move_cursor(0, -1),
+                            KeyCode::Down | KeyCode::Char('j') => app.move_cursor(0, 1),
+                            KeyCode::Enter => match app.play_at_cursor() {
+                                Ok(()) => {
+                                    app.status = strings(app.lang).move_played.to_string();
+                                    spawn_analysis(&mut app, &tx);
+                                }
+                                Err(e) => app.status = e,
+                            },
+                            KeyCode::Char('t') => {
+                                app.start_play();
                                 spawn_analysis(&mut app, &tx);
                             }
-                            Err(e) => app.status = e,
-                        },
-                        KeyCode::Char('t') => {
-                            app.start_play();
-                            spawn_analysis(&mut app, &tx);
+                            KeyCode::Char('v') => {
+                                app.toggle_ai();
+                                pump(&mut app, &tx);
+                            }
+                            KeyCode::Char('u') => {
+                                app.prev_move();
+                                app.status = strings(app.lang).undone.to_string();
+                            }
+                            KeyCode::Char('n') => app.next_move(),
+                            KeyCode::Char('p') => app.prev_move(),
+                            KeyCode::Home | KeyCode::Char('g') => app.goto_start(),
+                            KeyCode::End | KeyCode::Char('G') => app.goto_end(),
+                            KeyCode::Char('a') => spawn_analysis(&mut app, &tx),
+                            KeyCode::Char('A') => spawn_review(&mut app, &tx),
+                            KeyCode::Char('b') => app.next_blunder(),
+                            _ => {}
                         }
-                        KeyCode::Char('v') => {
-                            app.toggle_ai();
-                            pump(&mut app, &tx);
-                        }
-                        KeyCode::Char('u') => {
-                            app.prev_move();
-                            app.status = "撤回一手".to_string();
-                        }
-                        KeyCode::Char('n') => app.next_move(),
-                        KeyCode::Char('p') => app.prev_move(),
-                        KeyCode::Home | KeyCode::Char('g') => app.goto_start(),
-                        KeyCode::End | KeyCode::Char('G') => app.goto_end(),
-                        KeyCode::Char('a') => spawn_analysis(&mut app, &tx),
-                        KeyCode::Char('A') => spawn_review(&mut app, &tx),
-                        KeyCode::Char('b') => app.next_blunder(),
-                        _ => {}
                     }
                 }
             }
@@ -148,7 +168,7 @@ fn pump(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
         Action::Analyze => spawn_analysis(app, tx),
         Action::AiMove(mv) => match app.play_move(mv) {
             Ok(()) => {
-                app.status = "AI 落子".to_string();
+                app.status = strings(app.lang).ai_played.to_string();
                 spawn_analysis(app, tx);
             }
             Err(e) => app.status = e,
@@ -158,12 +178,12 @@ fn pump(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
 
 fn spawn_analysis(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if app.busy {
-        app.status = "上一个分析还没结束".to_string();
+        app.status = strings(app.lang).busy.to_string();
         return;
     }
     let pos = app.pos();
     app.busy = true;
-    app.status = format!("分析中（{} visits）…", app.config.engine.visits);
+    app.status = fill(strings(app.lang).analyzing, app.config.engine.visits);
     let game = app.snapshot();
     let cfg = app.config.engine.clone();
     let tx = tx.clone();
@@ -175,11 +195,11 @@ fn spawn_analysis(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
 
 fn spawn_review(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
     if app.busy {
-        app.status = "上一个分析还没结束".to_string();
+        app.status = strings(app.lang).busy.to_string();
         return;
     }
     app.busy = true;
-    app.status = "全盘复盘中…".to_string();
+    app.status = strings(app.lang).reviewing.to_string();
     let game = match app.full_game() {
         Ok(g) => g,
         Err(e) => {
