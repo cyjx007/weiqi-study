@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use app::i18n::strings;
-use app::{App, AppConfig, Controller};
+use app::{App, AppConfig, Controller, VISIT_PRESETS};
 use gtk::{gdk, glib};
 
 use crate::board::{draw_board, point_at};
@@ -444,7 +444,23 @@ pub fn build_ui(application: &adw::Application) {
         });
     }
 
-    // AI 强度 / 拟人网
+    // 每步思考量：快捷档位 + 精确输入
+    {
+        let presets = ui.borrow().panels.presets.clone();
+        for (btn, value) in presets.into_iter().zip(VISIT_PRESETS) {
+            let ui = ui.clone();
+            btn.connect_clicked(move |_| {
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                if ui.panels.is_updating_controls() {
+                    return;
+                }
+                ui.ctrl.set_visits(value);
+                refresh(&mut ui);
+            });
+        }
+    }
     {
         let ui = ui.clone();
         visits.connect_value_changed(move |spin| {

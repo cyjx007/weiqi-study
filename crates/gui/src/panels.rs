@@ -1,8 +1,8 @@
 //! 侧栏与底部状态栏：控件构造、文案刷新、棋谱下拉同步。
 
 use adw::prelude::*;
-use app::i18n::{color_name, strings};
-use app::{move_text, App, HUMAN_RANKS};
+use app::i18n::{color_name, rank_label, strings};
+use app::{move_text, App, HUMAN_RANKS, VISIT_PRESETS};
 use gtk::gdk;
 
 pub struct Panels {
@@ -25,12 +25,15 @@ pub struct Panels {
     pub rename_btn: gtk::Button,
     pub delete_btn: gtk::Button,
     pub visits: gtk::SpinButton,
-    pub human_switch: gtk::Switch,
-    pub rank: gtk::DropDown,
+    pub presets: Vec<gtk::ToggleButton>,
+    pub human_switch: adw::SwitchRow,
+    pub rank: adw::ComboRow,
+    rank_model: gtk::StringList,
+    rank_zh: std::cell::Cell<Option<bool>>,
+    strength_label: gtk::Label,
+    visits_hint: gtk::Label,
     pub variation_btn: gtk::Button,
     pub commit_btn: gtk::Button,
-    strength_label: gtk::Label,
-    human_label: gtk::Label,
     updating_controls: bool,
     sec_winrate: gtk::Label,
     sec_position: gtk::Label,
@@ -103,29 +106,41 @@ impl Panels {
         stats.append(&moves);
         side.append(&stats);
 
-        // AI 强度：visits + 拟人网开关/段位
+        // 每步思考量：四个快捷档位 + 精确输入
         let strength_card = card();
         let strength_label = section("");
+        strength_card.append(&strength_label);
+
+        let presets_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        presets_row.set_homogeneous(true);
+        let mut presets = Vec::new();
+        for _ in 0..VISIT_PRESETS.len() {
+            let btn = gtk::ToggleButton::new();
+            presets_row.append(&btn);
+            presets.push(btn);
+        }
+        strength_card.append(&presets_row);
+
         let visits = gtk::SpinButton::with_range(10.0, 5000.0, 10.0);
         visits.set_hexpand(true);
         visits.set_numeric(true);
-        strength_card.append(&strength_label);
         strength_card.append(&visits);
 
-        let human_label = section("");
-        strength_card.append(&human_label);
-        let human_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let human_switch = gtk::Switch::new();
-        let ranks: Vec<&str> = HUMAN_RANKS
-            .iter()
-            .map(|r| r.strip_prefix("rank_").unwrap_or(r))
-            .collect();
-        let rank = gtk::DropDown::from_strings(&ranks);
-        rank.set_hexpand(true);
+        let visits_hint = label("");
+        visits_hint.add_css_class("dim-label");
+        visits_hint.set_wrap(true);
+        strength_card.append(&visits_hint);
+
+        // 像人一样下棋 + 模仿水平
+        let human_switch = adw::SwitchRow::new();
+        strength_card.append(&human_switch);
+
+        let rank_model = gtk::StringList::new(&[]);
+        let rank = adw::ComboRow::new();
+        rank.set_model(Some(&rank_model));
         rank.set_sensitive(false);
-        human_row.append(&human_switch);
-        human_row.append(&rank);
-        strength_card.append(&human_row);
+        strength_card.append(&rank);
+
         side.append(&strength_card);
 
         // 预测
@@ -204,12 +219,15 @@ impl Panels {
             rename_btn,
             delete_btn,
             visits,
+            presets,
             human_switch,
             rank,
+            rank_model,
+            rank_zh: std::cell::Cell::new(None),
             variation_btn,
             commit_btn,
             strength_label,
-            human_label,
+            visits_hint,
             updating_controls: false,
             sec_winrate,
             sec_position,
@@ -263,8 +281,16 @@ impl Panels {
         self.delete_btn.set_label(s.delete);
         self.strength_label
             .set_markup(&format!("<b>{}</b>", s.strength));
-        self.human_label
-            .set_markup(&format!("<b>{}</b>", s.human_net));
+        self.visits_hint.set_text(s.thinking_hint);
+        for (btn, text) in
+            self.presets
+                .iter()
+                .zip([s.preset_fast, s.preset_normal, s.preset_deep, s.preset_max])
+        {
+            btn.set_label(text);
+        }
+        self.human_switch.set_title(s.human_net);
+        self.rank.set_title(s.rank_title);
         self.variation_btn.set_label(s.variation);
         self.commit_btn.set_label(s.use_variation);
         self.commit_btn.set_sensitive(
@@ -275,12 +301,30 @@ impl Panels {
         if self.visits.value() as u32 != app.config.engine.visits {
             self.visits.set_value(app.config.engine.visits as f64);
         }
+        for (btn, preset) in self.presets.iter().zip(VISIT_PRESETS) {
+            btn.set_active(app.config.engine.visits == preset);
+        }
         let has_human = app.human_model_available();
         self.human_switch.set_sensitive(has_human);
+        // 禁用状态的控件不显示 tooltip，缺模型时直接把说明写进副标题
+        self.human_switch.set_subtitle(if has_human {
+            s.human_hint
+        } else {
+            s.no_human_model
+        });
         if self.human_switch.is_active() != app.human_enabled {
             self.human_switch.set_active(app.human_enabled);
         }
-        self.rank.set_sensitive(has_human);
+        self.rank.set_sensitive(has_human && app.human_enabled);
+        if self.rank_zh.get() != Some(app.lang.is_zh()) {
+            let labels: Vec<String> = HUMAN_RANKS
+                .iter()
+                .map(|r| rank_label(r, app.lang))
+                .collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            self.rank_model.splice(0, self.rank_model.n_items(), &refs);
+            self.rank_zh.set(Some(app.lang.is_zh()));
+        }
         if self.rank.selected() as usize != app.human_rank {
             self.rank.set_selected(app.human_rank as u32);
         }

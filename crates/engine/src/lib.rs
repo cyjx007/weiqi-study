@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use goban::{Color, Game, Move, Point};
+use goban::{Color, Game, KoRule, Move, Point};
 use serde_json::{json, Value};
 
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -449,7 +449,7 @@ impl AnalysisSession {
                 "id": format!("q{base}-{n}"),
                 "initialStones": setup_json,
                 "moves": moves_json,
-                "rules": "chinese",
+                "rules": katago_rules(game.ko_rule()),
                 "komi": game.komi(),
                 "boardXSize": size,
                 "boardYSize": size,
@@ -505,6 +505,15 @@ impl Drop for AnalysisSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// 本地劫规则 → KataGo 的 rules 名称。引擎侧只需要这个近似映射。
+fn katago_rules(ko: KoRule) -> &'static str {
+    match ko {
+        KoRule::Simple => "japanese",
+        KoRule::PositionalSuperko => "chinese",
+        KoRule::SituationalSuperko => "korean",
     }
 }
 
@@ -647,6 +656,31 @@ mod tests {
         let ev = eval_from_json(&v, &game, 0).unwrap();
         assert_eq!(ev.candidates.len(), 1);
         assert_eq!(ev.candidates[0].mv, Move::Play(Point::new(3, 5)));
+    }
+
+    #[test]
+    fn katago_rules_follow_ko_rule() {
+        assert_eq!(katago_rules(KoRule::Simple), "japanese");
+        assert_eq!(katago_rules(KoRule::PositionalSuperko), "chinese");
+        assert_eq!(katago_rules(KoRule::SituationalSuperko), "korean");
+    }
+
+    #[test]
+    fn query_sends_the_games_rules() {
+        // 假引擎只认 japanese；如果 query 还写死 chinese 就会返回 error
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"rules":"japanese"'*) echo '{"id":"x","turnNumber":0,"rootInfo":{"winrate":0.5,"scoreLead":0.0},"moveInfos":[]}' ;;
+    *) echo '{"error":"wrong rules"}' ;;
+  esac
+done"#,
+        );
+        let mut game = Game::with_rule(9, 7.5, KoRule::Simple);
+        game.play(Move::Play(Point::new(2, 2))).unwrap();
+        engine.analyze_position(&game).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 假 KataGo：不依赖 GPU/模型，验证协议解析与错误路径。

@@ -287,16 +287,16 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
             who
         )),
         Line::from(format!(
-            "{}   {} visits",
-            s.strength, app.config.engine.visits
+            "{}   {} {}",
+            s.strength, app.config.engine.visits, s.visits_unit
         )),
         Line::from(format!(
             "{}   {}",
             s.human_net,
             if app.human_enabled {
-                app.human_profile()
+                app::i18n::rank_label(app.human_profile(), app.lang)
             } else {
-                "-"
+                "-".to_string()
             }
         )),
         Line::from(format!("{}   {board_mode}", s.board_mode)),

@@ -239,17 +239,24 @@ fn zone_en(p: Point, size: u8) -> &'static str {
     }
 }
 
-fn score_phrase(english: bool, mover: Color, score: f32, winrate: f32) -> String {
-    let who = if english {
-        if mover == Color::Black {
-            "you (Black)"
-        } else {
-            "you (White)"
-        }
-    } else if mover == Color::Black {
-        "你（黑）"
-    } else {
-        "你（白）"
+fn score_phrase(
+    english: bool,
+    mover: Color,
+    human: Option<Color>,
+    score: f32,
+    winrate: f32,
+) -> String {
+    // 人机模式：只有人下的那手用"你"，AI 那手写"AI"；复盘模式（human=None）保持原文案
+    let is_ai = human.is_some() && human != Some(mover);
+    let who = match (english, is_ai, mover) {
+        (true, true, Color::Black) => "AI (Black)",
+        (true, true, Color::White) => "AI (White)",
+        (true, false, Color::Black) => "you (Black)",
+        (true, false, Color::White) => "you (White)",
+        (false, true, Color::Black) => "AI（黑）",
+        (false, true, Color::White) => "AI（白）",
+        (false, false, Color::Black) => "你（黑）",
+        (false, false, Color::White) => "你（白）",
     };
     if english {
         if score.abs() < 0.5 {
@@ -598,8 +605,9 @@ pub fn quick_comment(
     after_eval: &TurnEval,
     mover: Color,
     mv: Move,
-    size: u8,
+    human: Option<Color>,
 ) -> String {
+    let size = before.board.size();
     let wr_before = winrate_for(mover, before_eval.winrate_black);
     let wr_after = winrate_for(mover, after_eval.winrate_black);
     let loss = wr_before - wr_after;
@@ -610,12 +618,12 @@ pub fn quick_comment(
     lines.push(if english {
         format!(
             "Position: {}.",
-            score_phrase(true, mover, score_before, wr_before)
+            score_phrase(true, mover, human, score_before, wr_before)
         )
     } else {
         format!(
             "局面：{}。",
-            score_phrase(false, mover, score_before, wr_before)
+            score_phrase(false, mover, human, score_before, wr_before)
         )
     });
 
@@ -812,7 +820,7 @@ mod tests {
             &after,
             Color::Black,
             Move::Play(Point::new(0, 1)),
-            9,
+            None,
         );
         assert!(text.contains("局面："));
         assert!(text.contains("特点："));
@@ -820,9 +828,29 @@ mod tests {
     }
 
     #[test]
-    fn english_templates_use_english_terms() {
+    fn ai_move_is_not_called_you() {
         let mut pos = Position::new(9);
         pos.board.set(Point::new(1, 0), Some(Color::Black));
+        pos.board.set(Point::new(0, 0), Some(Color::White));
+        pos.to_move = Color::White;
+        let before = fake_eval(0, Color::White, 0.45);
+        let after = fake_eval(1, Color::Black, 0.50);
+        let text = quick_comment(
+            false,
+            &pos,
+            &before,
+            &after,
+            Color::White,
+            Move::Play(Point::new(0, 1)),
+            Some(Color::Black),
+        );
+        assert!(text.contains("AI（白）"), "{text}");
+        assert!(!text.contains("你（白）"), "{text}");
+    }
+
+    #[test]
+    fn english_templates_use_english_terms() {
+        let mut pos = Position::new(9);
         pos.board.set(Point::new(0, 0), Some(Color::White));
         pos.to_move = Color::Black;
         let before = fake_eval(0, Color::Black, 0.55);
@@ -834,7 +862,7 @@ mod tests {
             &after,
             Color::Black,
             Move::Play(Point::new(0, 1)),
-            9,
+            None,
         );
         assert!(text.contains("Position:"));
         assert!(text.contains("win rate"));

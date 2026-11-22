@@ -35,6 +35,39 @@ pub fn fill(template: &str, arg: impl std::fmt::Display) -> String {
     template.replacen("{}", &arg.to_string(), 1)
 }
 
+/// 段位的人类可读标签：`rank_5k` → `5k · 中级`。
+pub fn rank_label(rank: &str, lang: Lang) -> String {
+    let level = rank.strip_prefix("rank_").unwrap_or(rank);
+    let tag = if lang.is_zh() {
+        match level {
+            "20k" | "15k" => "入门",
+            "10k" => "初级",
+            "5k" => "中级",
+            "1k" => "高级",
+            "1d" => "初段",
+            "3d" | "5d" => "高段",
+            "9d" => "顶尖",
+            _ => "",
+        }
+    } else {
+        match level {
+            "20k" | "15k" => "beginner",
+            "10k" => "novice",
+            "5k" => "intermediate",
+            "1k" => "advanced",
+            "1d" => "1-dan",
+            "3d" | "5d" => "high dan",
+            "9d" => "top pro",
+            _ => "",
+        }
+    };
+    if tag.is_empty() {
+        level.to_string()
+    } else {
+        format!("{level} · {tag}")
+    }
+}
+
 pub fn color_name(c: Color, lang: Lang) -> &'static str {
     match (c, lang) {
         (Color::Black, Lang::Zh) => "黑",
@@ -105,6 +138,14 @@ pub struct Strings {
     pub human_off: &'static str,
     pub human_rank_set: &'static str,
     pub no_human_model: &'static str,
+    pub thinking_hint: &'static str,
+    pub human_hint: &'static str,
+    pub rank_title: &'static str,
+    pub visits_unit: &'static str,
+    pub preset_fast: &'static str,
+    pub preset_normal: &'static str,
+    pub preset_deep: &'static str,
+    pub preset_max: &'static str,
     pub variation: &'static str,
     pub variation_start: &'static str,
     pub variation_commit: &'static str,
@@ -147,7 +188,7 @@ const ZH: Strings = Strings {
     ready: "就绪",
     image_fallback: "图片协议不可用，已回退文本棋盘",
     image_board: "图片棋盘：{}",
-    analyzing: "分析中（{} visits）…",
+    analyzing: "分析中（每步 {} 次）…",
     busy: "上一个分析还没结束",
     analysis_done: "分析完成",
     analysis_failed: "分析失败：{}",
@@ -173,13 +214,21 @@ const ZH: Strings = Strings {
     cancel: "取消",
     ok: "确定",
     trash_body: "棋谱会移到 games/.trash，可以手动找回。",
-    strength: "AI 强度",
-    strength_set: "AI 强度：{} visits",
-    human_net: "拟人网",
-    human_on: "拟人网：开（{}）",
-    human_off: "拟人网：关",
-    human_rank_set: "拟人段位：{}",
+    strength: "每步思考量",
+    strength_set: "每步思考量：{} 次",
+    human_net: "像人一样下棋",
+    human_on: "像人一样下棋：开（模仿 {}）",
+    human_off: "像人一样下棋：关（普通 AI，总下最强手）",
+    human_rank_set: "模仿水平：{}",
     no_human_model: "未找到 humanv0 拟人网（设 KATAGO_HUMAN_MODEL）",
+    thinking_hint: "模拟多少次后续下法；越多越准，也越慢",
+    human_hint: "按人类常见下法选点，不总是下最强手",
+    rank_title: "模仿水平",
+    visits_unit: "次",
+    preset_fast: "快速",
+    preset_normal: "标准",
+    preset_deep: "认真",
+    preset_max: "深度",
     variation: "变化",
     variation_start: "变化预览：{} 手（n/p 翻动 · c 采用 · Esc 退出）",
     variation_commit: "已采用变化前 {} 手",
@@ -190,7 +239,7 @@ const ZH: Strings = Strings {
     rename_hint: "Enter 确认 · Esc 取消",
     new_game: "新棋谱：{}",
     games_hint: "↑↓ 选择 · Enter 打开 · d 删除 · r 重命名 · Esc 关闭",
-    footer: "hjkl 移动 · Enter 落子 · t 对局 · v AI · u 撤回 · n/p 翻手 · a 分析 · A 复盘 · b 失误 · V 变化 · +/- 强度 · m 拟人 · [/] 段位 · L 棋谱 · q 退出",
+    footer: "hjkl 移动 · Enter 落子 · t 对局 · v AI · u 撤回 · n/p 翻手 · a 分析 · A 复盘 · b 失误 · V 变化 · +/- 思考量 · m 像人 · [/] 水平 · L 棋谱 · q 退出",
     help_lines: &[
         ("hjkl / 方向键", "移动光标"),
         ("Enter", "在光标处落子"),
@@ -205,8 +254,8 @@ const ZH: Strings = Strings {
         ("V", "预览引擎推荐变化"),
         ("n / p（预览中）", "变化前进一步 / 退回一步"),
         ("c（预览中）", "采用变化并写回主线"),
-        ("+ / -", "调整分析强度（visits）"),
-        ("m", "开关拟人网 humanv0"),
+        ("+ / -", "调整每步思考量"),
+        ("m", "开关「像人一样下棋」"),
         ("[ / ]", "切换拟人段位"),
         ("L", "棋谱列表（打开/继续）"),
         ("?", "关闭帮助"),
@@ -242,7 +291,7 @@ const EN: Strings = Strings {
     ready: "Ready",
     image_fallback: "No image protocol detected; using the text board",
     image_board: "Image board: {}",
-    analyzing: "Analysing ({} visits)…",
+    analyzing: "Analysing ({} playouts)…",
     busy: "Previous analysis still running",
     analysis_done: "Analysis done",
     analysis_failed: "Analysis failed: {}",
@@ -268,13 +317,21 @@ const EN: Strings = Strings {
     cancel: "Cancel",
     ok: "OK",
     trash_body: "The game will be moved to games/.trash and can be recovered manually.",
-    strength: "AI strength",
-    strength_set: "AI strength: {} visits",
-    human_net: "Human net",
-    human_on: "Human net: on ({})",
-    human_off: "Human net: off",
-    human_rank_set: "Human rank: {}",
+    strength: "Thinking per move",
+    strength_set: "Thinking per move: {} playouts",
+    human_net: "Play like a human",
+    human_on: "Play like a human: on ({} style)",
+    human_off: "Play like a human: off (plain KataGo, always strongest)",
+    human_rank_set: "Playing level: {}",
     no_human_model: "No humanv0 network found (set KATAGO_HUMAN_MODEL)",
+    thinking_hint: "How many playouts per move; more is stronger but slower",
+    human_hint: "Picks human-like moves, not always the strongest",
+    rank_title: "Playing level",
+    visits_unit: "playouts",
+    preset_fast: "Fast",
+    preset_normal: "Normal",
+    preset_deep: "Careful",
+    preset_max: "Deep",
     variation: "Variation",
     variation_start: "Variation preview: {} moves (n/p step · c use · Esc exit)",
     variation_commit: "Used the first {} moves of the variation",
@@ -285,7 +342,7 @@ const EN: Strings = Strings {
     rename_hint: "Enter confirm · Esc cancel",
     new_game: "New game: {}",
     games_hint: "↑↓ select · Enter open · d delete · r rename · Esc close",
-    footer: "hjkl move · Enter play · t game · v AI · u undo · n/p prev/next · a analyse · A review · b blunder · V variation · +/- strength · m human · [/] rank · L games · q quit",
+    footer: "hjkl move · Enter play · t game · v AI · u undo · n/p prev/next · a analyse · A review · b blunder · V variation · +/- thinking · m human · [/] level · L games · q quit",
     help_lines: &[
         ("hjkl / arrows", "move the cursor"),
         ("Enter", "play at the cursor"),
@@ -300,8 +357,8 @@ const EN: Strings = Strings {
         ("V", "preview the engine's variation"),
         ("n / p (preview)", "step forward / back"),
         ("c (preview)", "use the variation and write it to the main line"),
-        ("+ / -", "change analysis strength (visits)"),
-        ("m", "toggle the humanv0 net"),
+        ("+ / -", "change thinking per move"),
+        ("m", "toggle \"play like a human\""),
         ("[ / ]", "cycle the human rank"),
         ("L", "game list (open / continue)"),
         ("?", "close help"),

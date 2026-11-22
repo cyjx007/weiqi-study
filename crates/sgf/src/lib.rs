@@ -51,13 +51,20 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
         for (ident, values) in props {
             match ident.as_str() {
                 "SZ" => {
-                    if let Some(v) = values.first() {
-                        if let Ok(n) = v.split(':').next().unwrap_or(v).parse::<u8>() {
-                            if (2..=25).contains(&n) {
-                                out.size = n;
-                            }
-                        }
+                    let Some(v) = values.first() else { continue };
+                    let (w, h) = match v.split_once(':') {
+                        Some((w, h)) => (w.trim(), h.trim()),
+                        None => (v.trim(), v.trim()),
+                    };
+                    let w: u8 = w.parse().map_err(|_| format!("SZ 不是数字：{v:?}"))?;
+                    let h: u8 = h.parse().map_err(|_| format!("SZ 不是数字：{v:?}"))?;
+                    if w != h {
+                        return Err(format!("不支持矩形棋盘 SZ[{v}]（当前只支持正方形）"));
                     }
+                    if !(2..=25).contains(&w) {
+                        return Err(format!("棋盘大小超出 2..=25：{v:?}"));
+                    }
+                    out.size = w;
                 }
                 "KM" => {
                     if out.komi.is_none() {
@@ -77,21 +84,26 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     }
 
     // 第二遍：摆子 + 落子
-    for props in &nodes {
+    for (node_idx, props) in nodes.iter().enumerate() {
         for (ident, values) in props {
             match ident.as_str() {
-                "AB" => {
-                    for v in values {
-                        let p = parse_coord(v, out.size)
-                            .map_err(|e| format!("AB 摆子坐标非法 [{v}]：{e}"))?;
-                        out.setup.push((Color::Black, p));
+                "AB" | "AW" => {
+                    if node_idx > 0 {
+                        // 中途摆子会改变此前棋步的合法性，不能当成开局摆子提前应用
+                        return Err(format!(
+                            "不支持中途摆子：第 {} 个节点的 {ident}",
+                            node_idx + 1
+                        ));
                     }
-                }
-                "AW" => {
+                    let color = if ident == "AB" {
+                        Color::Black
+                    } else {
+                        Color::White
+                    };
                     for v in values {
                         let p = parse_coord(v, out.size)
-                            .map_err(|e| format!("AW 摆子坐标非法 [{v}]：{e}"))?;
-                        out.setup.push((Color::White, p));
+                            .map_err(|e| format!("{ident} 摆子坐标非法 [{v}]：{e}"))?;
+                        out.setup.push((color, p));
                     }
                 }
                 "B" | "W" => {
@@ -212,17 +224,29 @@ fn parse_node(chars: &[char], i: &mut usize) -> Props {
 
 fn skip_tree(chars: &[char], i: &mut usize) {
     let mut depth = 0;
+    let mut in_value = false;
     while *i < chars.len() {
-        match chars[*i] {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    *i += 1;
-                    return;
-                }
+        let c = chars[*i];
+        if in_value {
+            // 属性值里的括号不是结构括号；反斜杠转义下一个字符
+            match c {
+                '\\' => *i += 1,
+                ']' => in_value = false,
+                _ => {}
             }
-            _ => {}
+        } else {
+            match c {
+                '[' => in_value = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        *i += 1;
+                        return;
+                    }
+                }
+                _ => {}
+            }
         }
         *i += 1;
     }
@@ -600,7 +624,7 @@ mod tests {
         );
     }
 
-    /// 文件里的 B/W 是事实：有摆子、或摆子出现在走子之后，都不能丢手。
+    /// 文件里的 B/W 是事实：有开局摆子也不能把第一手吞掉。
     #[test]
     fn declared_colors_are_preserved_with_setup() {
         // 让子棋：AW 摆白子，黑先
@@ -608,13 +632,50 @@ mod tests {
         assert_eq!(g.moves.len(), 2, "AW + 黑先不能丢第一手");
         assert_eq!(g.moves[0], Move::Play(Point::new(2, 2)));
 
-        // AB 出现在走子之后（标记提子），后续手不能被吞
-        let g = parse("(;SZ[9];B[cc];W[gg];AB[ee];B[dd])").unwrap();
-        assert_eq!(g.moves.len(), 3);
-        assert_eq!(g.moves[2], Move::Play(Point::new(3, 3)));
-
         // 真正的乱序（两个黑连着下）仍然丢弃第二个
         let g = parse("(;SZ[9];B[cc];B[dd];W[ee])").unwrap();
+        assert_eq!(g.moves.len(), 2);
+    }
+
+    #[test]
+    fn midgame_setup_is_rejected() {
+        // 中途 AB/AW 不能当成开局摆子提前应用
+        let err = parse("(;SZ[9];B[cc];W[gg];AB[ee];B[dd])").unwrap_err();
+        assert!(err.contains("不支持中途摆子"), "{err}");
+    }
+
+    #[test]
+    fn rejects_rectangular_board() {
+        let err = parse("(;SZ[19:13];B[dd])").unwrap_err();
+        assert!(err.contains("矩形"), "{err}");
+        let err = parse("(;SZ[13:19];B[dd])").unwrap_err();
+        assert!(err.contains("矩形"), "{err}");
+        // 宽高相同的写法可以接受
+        assert!(parse("(;SZ[9:9];B[dd])").is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_size() {
+        assert!(parse("(;SZ[abc];B[dd])").is_err());
+        assert!(parse("(;SZ[1];B[dd])").is_err());
+        assert!(parse("(;SZ[99];B[dd])").is_err());
+    }
+
+    #[test]
+    fn skips_variations_with_parens_in_comments() {
+        // 第二条变化分支的注释里有不配对括号：不能破坏深度计数
+        let src = "(;SZ[9];B[cc](;W[gg];B[dd])(;W[ee]C[a ( b];B[ff]))";
+        let g = parse(src).unwrap();
+        assert_eq!(g.moves.len(), 3, "主线三手，第二条变化被跳过");
+        assert_eq!(g.moves[1], Move::Play(Point::new(6, 6)));
+
+        let src = "(;SZ[9];B[cc](;W[gg])(;W[ee]C[a ) b];B[ff]))";
+        let g = parse(src).unwrap();
+        assert_eq!(g.moves.len(), 2);
+
+        // 转义的括号和方括号
+        let src = "(;SZ[9];B[cc](;W[gg])(;W[ee]C[x \\) y \\] z];B[ff]))";
+        let g = parse(src).unwrap();
         assert_eq!(g.moves.len(), 2);
     }
 }

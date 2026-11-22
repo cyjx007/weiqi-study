@@ -50,6 +50,9 @@ pub enum AppEvent {
 }
 
 /// 拟人网可选段位（KataGo humanv0 的 profile 名）。
+/// 每步思考量的四个快捷档位（visits）。
+pub const VISIT_PRESETS: [u32; 4] = [60, 120, 300, 600];
+
 pub const HUMAN_RANKS: [&str; 9] = [
     "rank_20k", "rank_15k", "rank_10k", "rank_5k", "rank_1k", "rank_1d", "rank_3d", "rank_5d",
     "rank_9d",
@@ -282,40 +285,49 @@ impl App {
     /// 外部文件**永远不原地改写**：先复制到 `games/`，之后的自动保存只写副本。
     /// 已经在 `games/` 里的文件直接续写。
     pub fn open_sgf_file(&mut self, path: PathBuf, sg: &SgfGame) -> Result<(), String> {
-        self.preview = None;
-        self.next_generation();
-        self.size = sg.size;
-        self.komi = sg.komi.unwrap_or(7.5);
-        self.ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
-        self.setup = sg.setup.clone();
-        self.moves = sg.moves.clone();
-        self.pos = self.moves.len();
-        self.evals.clear();
-        self.review = None;
-        self.last_comment = None;
-        self.failed_pos = None;
-        self.cursor = Point::new(self.size / 2, self.size / 2);
-        self.rebuild()?;
+        // 事务性：先在局部把棋局重放成功、把副本写好，再一次性提交。
+        // 任何一步失败都保持当前会话原样，避免"旧棋盘 + 新元数据"或覆盖旧文件。
+        let size = sg.size;
+        let komi = sg.komi.unwrap_or(7.5);
+        let ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+        let setup = sg.setup.clone();
+        let moves = sg.moves.clone();
+
+        let mut game = Game::with_setup_and_rule(size, komi, setup.clone(), ko);
+        for (i, mv) in moves.iter().enumerate() {
+            game.play(*mv)
+                .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
+        }
 
         let inside_store = path.starts_with(self.store.dir());
-        self.current_file = if inside_store {
+        let new_file = if inside_store {
             Some(path)
         } else {
             match self.store.create() {
                 Ok(copy) => {
-                    self.store.save(
-                        &copy,
-                        self.size,
-                        self.komi,
-                        &self.setup,
-                        &self.moves,
-                        self.ko,
-                    )?;
+                    self.store.save(&copy, size, komi, &setup, &moves, ko)?;
                     Some(copy)
                 }
                 Err(_) => None,
             }
         };
+
+        // 到这里才动 self
+        self.preview = None;
+        self.next_generation();
+        self.size = size;
+        self.komi = komi;
+        self.ko = ko;
+        self.setup = setup;
+        self.moves = moves;
+        self.pos = self.moves.len();
+        self.evals.clear();
+        self.review = None;
+        self.last_comment = None;
+        self.failed_pos = None;
+        self.cursor = Point::new(size / 2, size / 2);
+        self.game = game;
+        self.current_file = new_file;
         Ok(())
     }
 
@@ -846,7 +858,6 @@ impl App {
                             if let (Some(before), Some(after)) = (before, after) {
                                 let color = self.game.color_of_move(pos as u16);
                                 let mv = self.moves[pos - 1];
-                                let size = self.size;
                                 let comment =
                                     self.game.position_at(pos as u16 - 1).map(|pos_before| {
                                         review::quick_comment(
@@ -856,7 +867,11 @@ impl App {
                                             &after,
                                             color,
                                             mv,
-                                            size,
+                                            if self.human_enabled {
+                                                Some(self.human)
+                                            } else {
+                                                None
+                                            },
                                         )
                                     });
                                 self.last_comment = comment;
@@ -981,6 +996,28 @@ mod tests {
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
         assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn failed_open_keeps_current_state() {
+        let mut app = demo();
+        let before_moves = app.total_moves();
+        let before_game = app.game().clone();
+        let before_size = app.size;
+        let before_file = app.current_file.clone();
+
+        // 白棋下在已有黑子上：解析能过，重放必失败
+        let bad = sgf::parse("(;SZ[19]KM[7.5];B[cc];W[cc])").unwrap();
+        let err = app
+            .open_sgf_file(std::env::temp_dir().join("weiqi-bad.sgf"), &bad)
+            .unwrap_err();
+        assert!(err.contains("重放失败"), "{err}");
+
+        assert_eq!(app.size, before_size);
+        assert_eq!(app.total_moves(), before_moves);
+        assert_eq!(app.game().position(), before_game.position());
+        assert_eq!(app.game().moves(), before_game.moves());
+        assert_eq!(app.current_file, before_file);
     }
 
     #[test]
