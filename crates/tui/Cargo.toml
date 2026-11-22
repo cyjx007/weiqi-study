@@ -1,0 +1,17 @@
+[package]
+name = "weiqi-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "weiqi-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+app = { path = "../app" }
+goban = { path = "../goban" }
+sgf = { path = "../sgf" }
+engine = { path = "../engine" }
+review = { path = "../review" }

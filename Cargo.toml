@@ -5,7 +5,9 @@ members = [
     "crates/sgf",
     "crates/engine",
     "crates/review",
+    "crates/app",
     "crates/cli",
+    "crates/tui",
 ]
 
 [workspace.package]

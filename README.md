@@ -1,25 +1,22 @@
-# weiqi-study
+# weiqi-study — local Go study tools
 
-本地围棋学习工具（Rust）。M0 已可用：**给一盘 SGF，用本机 KataGo 出中文讲评**。
+[![ci](https://github.com/cyjx007/weiqi-study/actions/workflows/ci.yml/badge.svg)](https://github.com/cyjx007/weiqi-study/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-引擎和网络都不下载——直接用 Steam 上那个棋类合集里自带的 KataGo 和 b18c384nbt 权重。
+**Review your own games with KataGo, offline, on a laptop GPU.**
 
-## 快速开始
+English · [中文](README.zh-CN.md)
 
-```bash
-cd ~/go-study
+Two front-ends share one rules/analysis core:
 
-# 构建（Rust 工具链走 nix shell，不装进系统）
-./dev.sh build --release
+- `go-review` — feed it an SGF, get a per-move winrate/score table and a plain-language review
+  of your worst moves.
+- `weiqi-tui` — a terminal board: navigate the game, try variations, ask for the current
+  position's evaluation, run a full-game review and jump straight to blunders.
 
-# 复盘一盘棋
-./target/release/go-review samples/demo.sgf --visits 60
+Everything runs locally. No accounts, no uploads, no cloud engine.
 
-# 看所有手、只标大失误
-./target/release/go-review 你的棋谱.sgf --visits 200 --min-loss 8 --all
-```
-
-输出长这样：
+## What a review looks like
 
 ```
 19 路 · 贴目 7.5 · 共 40 手
@@ -27,6 +24,7 @@ cd ~/go-study
 手数  执  落点   胜率变化                    目差变化
 ─────────────────────────────────────────────────────────────
   15  黑  R17    38.6% →   4.6%  (-34.0)   -1.0 → -6.9
+  12  白  R10    65.5% →  55.7%   (-9.7)   +1.3 → +0.3
   ...
 
 整体：平均每手损失 4.8 个百分点。
@@ -39,50 +37,92 @@ cd ~/go-study
     目差 -1.0 → -6.9。
 ```
 
-## 参数
+The narrative is currently Chinese-only; the numbers are language-neutral.
 
-| 参数 | 作用 |
+## Requirements
+
+- **KataGo** with a neural net (`*.bin.gz`). Any KataGo 1.15+ binary works.
+  This repo defaults to a net that ships with a Steam board-game collection, but nothing
+  depends on it — point `KATAGO_MODEL` at any net you have.
+- A GPU is optional. KataGo's OpenCL backend is what makes it pleasant; CPU works too,
+  just slower.
+
+## Build
+
+```sh
+# with Nix
+nix shell nixpkgs#cargo nixpkgs#rustc -c cargo build --release
+
+# or use the wrapper
+./dev.sh build --release
+```
+
+Binaries land in `target/release/`.
+
+## Run
+
+```sh
+# review a game
+./target/release/go-review game.sgf --visits 120
+
+# terminal study board
+./target/release/weiqi-tui game.sgf
+```
+
+Configuration is by environment variable:
+
+| Variable | Default |
 | --- | --- |
-| `--visits N` | 每手推演次数，默认 120；60 够看趋势，200+ 适合细抠 |
-| `--min-loss P` | 只显示亏损 ≥ P 个百分点的手，默认 5 |
-| `--all` | 显示每一手（含下得好的） |
-| `--komi K` | 覆盖棋谱里的贴目 |
-| `--no-engine` | 只解析棋谱，不调引擎 |
+| `KATAGO_BIN` | `~/go-study/katago/bin/katago` |
+| `KATAGO_MODEL` | net from the Steam collection's `NinOneQi` directory |
+| `KATAGO_CFG` | `~/go-study/analysis.cfg` |
 
-环境变量：`KATAGO_BIN`、`KATAGO_MODEL`、`KATAGO_CFG`，默认值见 `crates/engine/src/lib.rs`。
+`--visits N` trades time for accuracy: 60 is fine for spotting trends, 200+ for serious review.
 
-## 原理
+### TUI keys
+
+| Key | Action |
+| --- | --- |
+| `hjkl` / arrows | move cursor |
+| `Enter` | play at cursor |
+| `u` | undo one move |
+| `n` / `p` | next / previous move |
+| `g` / `G` | jump to start / end |
+| `a` | analyse current position |
+| `A` | full-game review |
+| `b` | jump to next blunder |
+| `?` | help |
+| `q` / `Esc` | quit |
+
+## Architecture
 
 ```
-SGF → goban（规则/提子/超级劫） → 逐手 query
-      → KataGo analysis（OpenCL，1650 Ti） → review（模板讲评）
+crates/goban     rules: captures, suicide, positional superko, area scoring (no IO)
+crates/sgf       SGF reader (follows the main line, skips variations)
+crates/engine    KataGo process + analysis JSON -> black-perspective values
+crates/review    deterministic Chinese commentary templates
+crates/app       UI-independent state (navigation, play/undo, cached analysis)
+crates/cli       go-review binary
+crates/tui       weiqi-tui binary (ratatui)
 ```
 
-- 每手 60 visits 时约 **140 局面/分钟**；250 手整盘、120 visits 大约 3–4 分钟
-- 胜负/目差内部统一按**黑方视角**存，显示时按落子方翻转
-- 阶段划分默认按 19 路缩放：布局 1–50、中盘 51–150、官子 151+
+Two invariants keep the code honest:
 
-## 目录
+- Winrates and score leads are stored **from Black's point of view** and flipped exactly once,
+  at render time.
+- Coordinate strings (SGF/GTP) exist only in `sgf` and `engine`; the core works on
+  `Point { x, y }`.
 
-```
-crates/goban    规则（纯计算，无 IO）
-crates/sgf      SGF 解析（跟随主线，跳过分支）
-crates/engine   KataGo 进程 + analysis JSON
-crates/review   中文讲评模板（确定性输出）
-crates/cli      go-review 命令
-samples/        示例棋谱
-DESIGN.md       架构与设计约束
-```
+See [DESIGN.md](DESIGN.md) (Chinese) for the full design and the GTK4 plan.
 
-## 已知限制
+## Known limits
 
-- SGF 只跟**主线**，不读变化图
-- 贴目/规则写死中国规则提交给引擎（日本规则棋盘也能复盘，只是贴目语义略有差异）
-- 自带的面积数子（`goban::area_score`）不判死活，仅作粗略显示；真正的形势判断用引擎的 `scoreLead`
-- 目前只做了复盘；TUI / GTK4 前端在 `DESIGN.md` 的 M1 / M2
+- SGF: main line only; variation trees are ignored.
+- Analysis queries use Chinese rules; Japanese-rules games still review fine, komi semantics differ slightly.
+- The built-in area scorer does not judge life and death — it is a rough display only. Real
+  evaluation always comes from KataGo's `scoreLead`.
+- Each analysis spawns a fresh KataGo process, so there is a ~1.5 s model-load cost each time.
 
-## 下一步
+## License
 
-- M1：TUI（摆子、落子、实时胜率、候选点、点失误跳转）
-- M2：GTK4 学习窗口
-- M3：拟人网对照、错题本导出
+MIT

@@ -83,10 +83,33 @@ pub fn parse_gtp_move(s: &str, size: u8) -> Move {
     }
 }
 
-/// 整盘分析：一次拉起 KataGo，分批送 query，按 turn 收集结果。
+/// 整盘分析：0..=最后一手全部局面。
 pub fn analyze_game<F>(
     cfg: &EngineConfig,
     game: &Game,
+    progress: F,
+) -> Result<Vec<TurnEval>, String>
+where
+    F: FnMut(usize, usize),
+{
+    let turns: Vec<u16> = (0..=game.moves().len() as u16).collect();
+    analyze_turns(cfg, game, &turns, progress)
+}
+
+/// 只分析当前局面（实时看胜率/候选点时用）。
+pub fn analyze_position(cfg: &EngineConfig, game: &Game) -> Result<TurnEval, String> {
+    let turn = game.moves().len() as u16;
+    let mut evals = analyze_turns(cfg, game, &[turn], |_, _| {})?;
+    evals
+        .pop()
+        .ok_or_else(|| "没有拿到当前局面的分析结果".to_string())
+}
+
+/// 指定局面集合的分析：一次拉起 KataGo，分批送 query，按 turn 收集。
+pub fn analyze_turns<F>(
+    cfg: &EngineConfig,
+    game: &Game,
+    turns: &[u16],
     mut progress: F,
 ) -> Result<Vec<TurnEval>, String>
 where
@@ -102,9 +125,15 @@ where
         }
     }
 
-    let size = game.size();
-    let total = game.moves().len() + 1;
+    let mut turns: Vec<u16> = turns.to_vec();
+    turns.sort_unstable();
+    turns.dedup();
+    let total = turns.len();
+    if total == 0 {
+        return Ok(Vec::new());
+    }
 
+    let size = game.size();
     let moves_json: Vec<Value> = game
         .moves()
         .iter()
@@ -126,23 +155,19 @@ where
         .collect();
 
     let mut queries = Vec::new();
-    let mut start = 0usize;
-    while start < total {
-        let end = (start + cfg.chunk.max(1)).min(total);
-        let turns: Vec<usize> = (start..end).collect();
+    for chunk in turns.chunks(cfg.chunk.max(1)) {
         queries.push(json!({
-            "id": format!("chunk-{start}"),
+            "id": format!("chunk-{}", chunk.first().copied().unwrap_or(0)),
             "initialStones": setup_json,
             "moves": moves_json,
             "rules": "chinese",
             "komi": game.komi(),
             "boardXSize": size,
             "boardYSize": size,
-            "analyzeTurns": turns,
+            "analyzeTurns": chunk,
             "maxVisits": cfg.visits,
             "analysisPVLen": 6,
         }));
-        start = end;
     }
 
     let mut child = Command::new(&cfg.katago)

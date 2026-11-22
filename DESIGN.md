@@ -67,7 +67,7 @@ weiqi-study/               # 实际放在 ~/go-study
 │  ├─ sgf/                   # SGF 子集：SZ/KM/RU/B/W/AB/AW/C，只读主线
 │  ├─ engine/                # KataGo 进程管理 + 协议
 │  ├─ review/                # 讲评模板（纯函数）
-│  ├─ app/                   # AppState、Command、事件循环无关的粘合层
+│  ├─ app/                   # AppState（导航/落子/分析缓存），M1 已实现
 │  ├─ cli/   [bin go-review] # 批量复盘（M0 已实现）
 │  ├─ tui/   [bin weiqi-tui] # ratatui 前端
 │  └─ gui/   [bin weiqi-gui] # gtk4 + libadwaita 前端
@@ -224,7 +224,7 @@ GUI 二进制必须 `wrapGAppsHook4`，否则 NixOS 上找不到 GSettings schem
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **M0** ✅ | goban + sgf + review + cli | `go-review 棋谱.sgf` 输出中文讲评，规则单测全绿（2026-11-22 完成） |
-| **M1** | TUI | 能摆子、落子、撤销、看胜率/候选、跑整盘复盘 |
+| **M1** ✅ | TUI | 能摆子、落子、撤销、看胜率/候选、跑整盘复盘（2026-11-22 完成） |
 | **M2** | GUI | 打开 SGF、点棋盘落子、侧栏分析、点失误跳转 |
 | **M3** | 增强 | humanv0 拟人对照、开局库、错题本导出 Markdown |
 
