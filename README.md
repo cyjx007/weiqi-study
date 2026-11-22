@@ -91,6 +91,7 @@ TUI keys:
 | `A` | full-game review (builds a blunder list) |
 | `b` | jump to the next blunder |
 | `L` | game list: open a saved game (review or continue) |
+| `i` | toggle the info panel (useful when the window is narrow) |
 | `?` | help |
 | `q` / `Esc` | quit |
 
