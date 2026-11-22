@@ -379,6 +379,7 @@ pub fn build_ui(application: &adw::Application) {
                 entry.connect_activate(move |_| ok.emit_clicked());
             }
             win.present();
+            entry.grab_focus();
         });
     }
     {

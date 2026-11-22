@@ -59,9 +59,11 @@ impl Panels {
         let cand = label("");
         cand.set_wrap(true);
         cand.set_max_width_chars(30);
+        cand.add_css_class("cand-text");
         let comment = label("");
         comment.set_wrap(true);
         comment.set_max_width_chars(30);
+        comment.add_css_class("comment-text");
         comment.set_valign(gtk::Align::Start);
         let status = label("");
         status.add_css_class("dim-label");
@@ -160,6 +162,7 @@ impl Panels {
         // 预测
         let predict_card = card();
         predict_card.set_vexpand(true);
+        predict_card.set_size_request(-1, 130);
         let sec_predict = section("");
         predict_card.append(&sec_predict);
         predict_card.append(&cand);
@@ -174,6 +177,7 @@ impl Panels {
         // 讲解（占满剩余高度）
         let comment_card = card();
         comment_card.set_vexpand(true);
+        comment_card.set_size_request(-1, 180);
         let sec_comment = section("");
         comment_card.append(&sec_comment);
         let scroll = gtk::ScrolledWindow::new();
@@ -268,6 +272,7 @@ impl Panels {
         // 展开 AI 设置时内容会超过窗口高度，套一层纵向滚动；宽度仍然固定
         let scroller = gtk::ScrolledWindow::new();
         scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_overlay_scrolling(false);
         scroller.set_propagate_natural_width(false);
         scroller.set_hexpand(false);
         scroller.set_size_request(380, -1);
@@ -470,11 +475,13 @@ pub fn install_css() {
         .panel-card {
             background-color: alpha(currentColor, 0.055);
             border-radius: 12px;
-            padding: 10px;
+            padding: 8px;
         }
         .section-title { font-size: 0.8em; font-weight: 700; opacity: 0.6; }
-        .turn-label { font-size: 1.25em; font-weight: 700; }
-        .winrate-big { font-size: 1.7em; font-weight: 800; }
+        .turn-label { font-size: 1.15em; font-weight: 700; }
+        .winrate-big { font-size: 1.5em; font-weight: 800; }
+        .comment-text { font-size: 1.1em; }
+        .cand-text { font-size: 1.05em; }
         .winrate-bar { min-height: 8px; border-radius: 4px; }
         .status-label { font-size: 0.85em; opacity: 0.65; }
         "#,
