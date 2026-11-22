@@ -146,7 +146,8 @@ fn event_loop(
                     }
                 }
             }
-            dirty = true;
+            // 任何输入（按键、窗口尺寸变化）都可能改变界面
+            ctrl.invalidate();
         }
 
         dirty |= ctrl.tick();
