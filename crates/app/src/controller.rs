@@ -59,7 +59,7 @@ impl Controller {
                     self.analyze();
                 }
                 Err(e) => {
-                    self.app.status = e;
+                    self.app.fail_ai_move(e);
                     self.dirty = true;
                 }
             },
@@ -74,6 +74,7 @@ impl Controller {
             return;
         }
         let pos = self.app.pos();
+        let generation = self.app.generation();
         self.app.busy = true;
         self.app.status = fill(strings(self.app.lang).analyzing, self.app.config.engine.visits);
         let game = self.app.snapshot();
@@ -81,7 +82,11 @@ impl Controller {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = engine.analyze_position(&game);
-            let _ = tx.send(AppEvent::Analysis { pos, result });
+            let _ = tx.send(AppEvent::Analysis {
+                generation,
+                pos,
+                result,
+            });
         });
     }
 
@@ -104,12 +109,13 @@ impl Controller {
         };
         let engine = self.app.engine.clone();
         let english = !self.app.lang.is_zh();
+        let generation = self.app.generation();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = engine
                 .analyze_game(&game, |_, _| {})
                 .map(|evals| review::build(english, &game, &evals, 5.0));
-            let _ = tx.send(AppEvent::Review(result));
+            let _ = tx.send(AppEvent::Review { generation, result });
         });
     }
 
@@ -264,6 +270,7 @@ mod tests {
 
         let tx = ctrl.sender();
         tx.send(AppEvent::Analysis {
+            generation: ctrl.app.generation(),
             pos: 0,
             result: Ok(eval(0, Color::Black, 0.5, Move::Play(Point::new(2, 2)))),
         })

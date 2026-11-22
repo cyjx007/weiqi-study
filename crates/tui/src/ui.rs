@@ -43,7 +43,8 @@ pub fn draw(
     if docked {
         let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(side_w)]).split(content);
         draw_board(frame, app, cols[0], image);
-        draw_side(frame, app, cols[1]);
+        let mode = image.as_ref().map(|i| i.protocol_name()).unwrap_or("text");
+        draw_side(frame, app, cols[1], mode);
     } else {
         draw_board(frame, app, content, image);
         if app.show_info {
@@ -55,7 +56,8 @@ pub fn draw(
                 height: content.height,
             };
             frame.render_widget(Clear, rect);
-            draw_side(frame, app, rect);
+            let mode = image.as_ref().map(|i| i.protocol_name()).unwrap_or("text");
+            draw_side(frame, app, rect, mode);
         }
     }
 
@@ -230,11 +232,11 @@ fn star_points(n: usize) -> &'static [usize] {
     }
 }
 
-fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
     let s = strings(app.lang);
     let chunks = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(7),
+        Constraint::Length(8),
         Constraint::Length(7),
         Constraint::Min(5),
         Constraint::Length(3),
@@ -276,6 +278,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                 "-"
             }
         )),
+        Line::from(format!("{}   {board_mode}", s.board_mode)),
     ])
     .block(Block::default().borders(Borders::ALL).title(format!(" {} ", s.position)));
     frame.render_widget(info, chunks[1]);

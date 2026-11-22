@@ -387,19 +387,34 @@ pub fn build_ui(application: &adw::Application) {
     {
         let ui = ui.clone();
         games.connect_selected_notify(move |_| {
-            let Ok(mut ui) = ui.try_borrow_mut() else {
-                return;
+            // 不要在 DropDown 的 selected-notify 里同步重建棋局/刷新控件：
+            // GTK 此时正在关闭 popover，重入很容易让它卡在 frame 循环里。
+            // 先取出 index，等主循环空闲再做。
+            let idx = {
+                let Ok(ui) = ui.try_borrow() else {
+                    return;
+                };
+                if ui.panels.is_updating_games() {
+                    return;
+                }
+                let idx = ui.panels.games.selected() as usize;
+                if idx >= ui.ctrl.app.games.len() {
+                    return;
+                }
+                idx
             };
-            if ui.panels.is_updating_games() {
-                return;
-            }
-            let idx = ui.panels.games.selected() as usize;
-            if idx < ui.ctrl.app.games.len() {
+            let ui = ui.clone();
+            glib::idle_add_local_once(move || {
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                if ui.panels.is_updating_games() {
+                    return;
+                }
                 ui.ctrl.app.game_cursor = idx;
                 ui.ctrl.open_selected_game();
-                reload_games(&mut ui);
-            }
-            refresh(&mut ui);
+                refresh(&mut ui);
+            });
         });
     }
 
@@ -459,17 +474,30 @@ pub fn build_ui(application: &adw::Application) {
     {
         let ui = ui.clone();
         rank.connect_selected_notify(move |dropdown| {
-            let Ok(mut ui) = ui.try_borrow_mut() else {
-                return;
+            let idx = {
+                let Ok(ui) = ui.try_borrow() else {
+                    return;
+                };
+                if ui.panels.is_updating_controls() {
+                    return;
+                }
+                let idx = dropdown.selected() as usize;
+                if idx == ui.ctrl.app.human_rank {
+                    return;
+                }
+                idx
             };
-            if ui.panels.is_updating_controls() {
-                return;
-            }
-            let idx = dropdown.selected() as usize;
-            if idx != ui.ctrl.app.human_rank {
+            let ui = ui.clone();
+            glib::idle_add_local_once(move || {
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                if ui.panels.is_updating_controls() {
+                    return;
+                }
                 ui.ctrl.set_human_rank(idx);
                 refresh(&mut ui);
-            }
+            });
         });
     }
 

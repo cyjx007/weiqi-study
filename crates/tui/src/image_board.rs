@@ -67,11 +67,12 @@ impl ImageBoard {
             return Ok(None);
         }
         // 不支持图片的终端不会回任何响应，别让启动卡 2 秒：
-        // auto 只等 300ms，显式 --mode image 给 1s（远端终端可能慢）。
-        let timeout = if mode == Mode::Image {
-            Duration::from_millis(1000)
+        // 先看环境变量判断是不是常见图形终端；是的话等满 2s（Kitty 在
+        // 大窗口/首次查询时可能 >300ms），否则 auto 只等 500ms。
+        let timeout = if mode == Mode::Image || likely_image_terminal() {
+            Duration::from_millis(2000)
         } else {
-            Duration::from_millis(300)
+            Duration::from_millis(500)
         };
         let picker = match Picker::from_query_stdio_with_options(QueryStdioOptions {
             timeout,
@@ -85,6 +86,14 @@ impl ImageBoard {
                 };
             }
         };
+        // 有些终端不回答 CSI 16t（字体像素尺寸），ratatui-image 会退回
+        // Halfblocks；环境变量已经明确是 kitty/iTerm2/sixel 时按环境强制协议。
+        let mut picker = picker;
+        if picker.protocol_type() == ProtocolType::Halfblocks {
+            if let Some(proto) = env_protocol() {
+                picker.set_protocol_type(proto);
+            }
+        }
         if picker.protocol_type() == ProtocolType::Halfblocks {
             return match mode {
                 Mode::Image => Err(
@@ -130,6 +139,38 @@ impl ImageBoard {
             );
         }
     }
+}
+
+/// 终端环境变量给出的协议提示（查询没拿到字体尺寸时兜底）。
+fn env_protocol() -> Option<ProtocolType> {
+    if std::env::var_os("KITTY_WINDOW_ID").is_some()
+        || std::env::var("TERM").is_ok_and(|t| t.to_ascii_lowercase().contains("kitty"))
+    {
+        return Some(ProtocolType::Kitty);
+    }
+    if std::env::var_os("WEZTERM_EXECUTABLE").is_some()
+        || std::env::var("TERM").is_ok_and(|t| t.to_ascii_lowercase().contains("wezterm"))
+    {
+        // WezTerm 支持 kitty graphics
+        return Some(ProtocolType::Kitty);
+    }
+    if std::env::var_os("ITERM_SESSION_ID").is_some()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "iTerm.app")
+    {
+        return Some(ProtocolType::Iterm2);
+    }
+    if std::env::var("TERM").is_ok_and(|t| {
+        let t = t.to_ascii_lowercase();
+        t.contains("sixel") || t.contains("foot") || t.contains("mlterm")
+    }) {
+        return Some(ProtocolType::Sixel);
+    }
+    None
+}
+
+/// 常见支持图片协议的终端；用来决定 auto 查询等多久。
+fn likely_image_terminal() -> bool {
+    env_protocol().is_some()
 }
 
 /// 影响棋盘画面的状态；任何一项变化都要重新生成图片。

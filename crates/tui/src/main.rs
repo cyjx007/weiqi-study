@@ -27,7 +27,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--visits" => {
+            "--visits" | "-visits" => {
                 visits = Some(
                     args.next()
                         .ok_or("--visits 需要数字")?
@@ -35,18 +35,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|_| "--visits 不是数字")?,
                 );
             }
-            "--mode" => {
+            "--mode" | "-mode" => {
                 let value = args.next().ok_or("--mode 需要 auto|image|text")?;
                 mode = Mode::parse(&value)?;
             }
-            "-h" | "--help" => {
+            "-V" | "--version" | "-version" => {
+                println!("weiqi-tui {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-h" | "--help" | "-help" => {
                 println!(
-                    "weiqi-tui — local Go study board / 本地围棋学习界面\n\n\
+                    "weiqi-tui {} — local Go study board / 本地围棋学习界面\n\n\
                      用法: weiqi-tui [game.sgf] [--visits N] [--mode auto|image|text]\n\
                      --mode  棋盘渲染：auto 探测 kitty/sixel/iTerm2（失败回退文本）,\n\
                               image 强制图片（不支持则报错）, text 强制文本点阵\n\
                      t 人机对局 / play the engine, Enter 落子, L 棋谱 / games, ? 帮助 / help\n\
-                     不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。"
+                     不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。",
+                    env!("CARGO_PKG_VERSION")
                 );
                 return Ok(());
             }

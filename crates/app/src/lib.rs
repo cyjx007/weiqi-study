@@ -46,10 +46,15 @@ pub enum Action {
 #[derive(Debug)]
 pub enum AppEvent {
     Analysis {
+        /// 起这次分析的棋局版本；切棋谱/换拟人设置后旧结果会被丢弃
+        generation: u64,
         pos: usize,
         result: Result<TurnEval, String>,
     },
-    Review(Result<Review, String>),
+    Review {
+        generation: u64,
+        result: Result<Review, String>,
+    },
 }
 
 /// 拟人网可选段位（KataGo humanv0 的 profile 名）。
@@ -100,6 +105,8 @@ pub struct App {
     failed_pos: Option<usize>,
     /// 拟人网选点的随机种子；测试可以固定它
     ai_seed: u64,
+    /// 棋局/引擎设置版本；旧的分析结果回来时按这个丢弃
+    generation: u64,
     /// 引擎推荐变化的临时预览（不动主线）
     preview: Option<Preview>,
 }
@@ -145,6 +152,7 @@ impl App {
             evals: HashMap::new(),
             failed_pos: None,
             ai_seed: seed(),
+            generation: 0,
             preview: None,
         }
     }
@@ -174,6 +182,17 @@ impl App {
 
     pub fn pos(&self) -> usize {
         self.pos
+    }
+
+    /// 棋局/引擎设置版本；分析线程带着它回来，过期的结果直接丢弃。
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// 换了棋局或引擎设置：旧分析作废，允许立刻发起新的分析。
+    fn next_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.busy = false;
     }
 
     pub fn total_moves(&self) -> usize {
@@ -238,6 +257,7 @@ impl App {
     /// 开始一盘人机对局：空盘，你执黑，AI 执白。
     pub fn start_play(&mut self) {
         self.preview = None;
+        self.next_generation();
         self.setup.clear();
         self.moves.clear();
         self.pos = 0;
@@ -271,6 +291,7 @@ impl App {
     /// 已经在 `games/` 里的文件直接续写。
     pub fn open_sgf_file(&mut self, path: PathBuf, sg: &SgfGame) -> Result<(), String> {
         self.preview = None;
+        self.next_generation();
         self.size = sg.size;
         self.komi = sg.komi.unwrap_or(7.5);
         self.setup = sg.setup.clone();
@@ -386,6 +407,7 @@ impl App {
             return;
         }
         self.human_enabled = !self.human_enabled;
+        self.next_generation();
         let profile = self.human_enabled.then(|| self.human_profile().to_string());
         self.engine.set_human_profile(profile);
         self.evals.clear();
@@ -419,6 +441,7 @@ impl App {
             return;
         }
         if self.human_enabled {
+            self.next_generation();
             self.engine
                 .set_human_profile(Some(self.human_profile().to_string()));
             self.evals.clear();
@@ -643,6 +666,7 @@ impl App {
             return;
         }
         let step = p.step;
+        self.next_generation();
         self.moves.truncate(p.base);
         self.moves.extend(p.pv.iter().take(step).copied());
         self.pos = self.moves.len();
@@ -682,6 +706,8 @@ impl App {
         }
         match self.ai_choice() {
             Some(mv) => Action::AiMove(mv),
+            // 已经有分析但没有合法候选：不要再无限触发分析
+            None if self.analysis().is_some() => Action::None,
             None => Action::Analyze,
         }
     }
@@ -707,8 +733,12 @@ impl App {
                 }
             }
         }
-        let candidates: Vec<&engine::Candidate> =
-            analysis.candidates.iter().take(3).collect();
+        let candidates: Vec<&engine::Candidate> = analysis
+            .candidates
+            .iter()
+            .take(3)
+            .filter(|c| self.is_legal(c.mv))
+            .collect();
         if candidates.is_empty() {
             return None;
         }
@@ -734,12 +764,21 @@ impl App {
         if policy.len() < cells {
             return None;
         }
-        let total: f64 = policy
-            .iter()
-            .take(cells + 1)
-            .filter(|p| **p > 0.0)
-            .map(|p| *p as f64)
-            .sum();
+        let mut choices: Vec<(usize, f32)> = Vec::new();
+        for (i, p) in policy.iter().take(cells + 1).enumerate() {
+            if *p <= 0.0 {
+                continue;
+            }
+            let mv = if i == cells {
+                Move::Pass
+            } else {
+                Move::Play(Point::new((i % size) as u8, (i / size) as u8))
+            };
+            if self.is_legal(mv) {
+                choices.push((i, *p));
+            }
+        }
+        let total: f64 = choices.iter().map(|(_, p)| *p as f64).sum();
         if total <= 0.0 {
             return None;
         }
@@ -748,14 +787,11 @@ impl App {
             / 1_000_000.0
             * total;
         let mut last = None;
-        for (i, p) in policy.iter().take(cells + 1).enumerate() {
-            if *p <= 0.0 {
-                continue;
-            }
-            last = Some(i);
+        for (i, p) in &choices {
+            last = Some(*i);
             roll -= *p as f64;
             if roll < 0.0 {
-                return Some(if i == cells {
+                return Some(if *i == cells {
                     Move::Pass
                 } else {
                     Move::Play(Point::new((i % size) as u8, (i / size) as u8))
@@ -769,6 +805,12 @@ impl App {
                 Move::Play(Point::new((i % size) as u8, (i / size) as u8))
             }
         })
+    }
+
+    /// 这手在当前局面是否合法（防止旧分析/引擎 bug 让自动应手卡死）。
+    fn is_legal(&self, mv: Move) -> bool {
+        let mut game = self.game.clone();
+        game.play(mv).is_ok()
     }
 
     /// 给"你"的下一步预测（当前局面的前三个候选）；变化预览时不显示。
@@ -789,7 +831,14 @@ impl App {
 
     pub fn apply(&mut self, ev: AppEvent) {
         match ev {
-            AppEvent::Analysis { pos, result } => {
+            AppEvent::Analysis {
+                generation,
+                pos,
+                result,
+            } => {
+                if generation != self.generation {
+                    return;
+                }
                 self.busy = false;
                 match result {
                     Ok(t) => {
@@ -827,14 +876,21 @@ impl App {
                     }
                 }
             }
-            AppEvent::Review(Ok(r)) => {
-                self.review = Some(r);
-                self.busy = false;
-                self.status = strings(self.lang).review_done.to_string();
-            }
-            AppEvent::Review(Err(e)) => {
-                self.busy = false;
-                self.status = i18n::fill(strings(self.lang).review_failed, e);
+            AppEvent::Review { generation, result } => {
+                if generation != self.generation {
+                    return;
+                }
+                match result {
+                    Ok(r) => {
+                        self.review = Some(r);
+                        self.busy = false;
+                        self.status = strings(self.lang).review_done.to_string();
+                    }
+                    Err(e) => {
+                        self.busy = false;
+                        self.status = i18n::fill(strings(self.lang).review_failed, e);
+                    }
+                }
             }
         }
     }
@@ -842,6 +898,12 @@ impl App {
     /// 当前局面是否因为分析失败而卡住（避免自动重试死循环）
     pub fn last_failed_pos(&self) -> Option<usize> {
         self.failed_pos
+    }
+
+    /// AI 应手落子失败（通常是旧分析结果/非法候选）：停在当前局面，别再每帧重试。
+    pub fn fail_ai_move(&mut self, message: String) {
+        self.failed_pos = Some(self.pos);
+        self.status = message;
     }
 
     pub fn to_move(&self) -> Color {
@@ -1073,7 +1135,12 @@ mod tests {
                 Action::Analyze => {
                     let result = app.engine.analyze_position(&app.snapshot());
                     let pos = app.pos();
-                    app.apply(AppEvent::Analysis { pos, result });
+                    let generation = app.generation();
+                    app.apply(AppEvent::Analysis {
+                        generation,
+                        pos,
+                        result,
+                    });
                 }
                 Action::AiMove(mv) => {
                     app.play_move(mv).unwrap();
@@ -1295,10 +1362,59 @@ mod tests {
     }
 
     #[test]
+    fn stale_analysis_after_switching_games_is_ignored() {
+        let mut app = demo();
+        let old_generation = app.generation();
+        start(&mut app); // 新局 → generation +1
+        assert_ne!(app.generation(), old_generation);
+
+        app.busy = true; // 假装新局的分析正在跑
+        app.apply(AppEvent::Analysis {
+            generation: old_generation,
+            pos: 0,
+            result: Ok(eval(0, Color::Black, 0.5, Move::Play(Point::new(2, 2)))),
+        });
+        assert!(app.analysis().is_none(), "旧棋局的结果不能写进新棋局");
+        assert!(app.busy, "旧结果也不能把新分析标记成空闲");
+    }
+
+    #[test]
+    fn opening_a_game_resets_busy_for_the_new_analysis() {
+        let mut app = demo();
+        app.store = test_store();
+        app.busy = true;
+        let path = app.store.create().unwrap();
+        let sg = sgf::parse("(;SZ[9];B[aa])").unwrap();
+        app.open_sgf_file(path, &sg).unwrap();
+        assert!(!app.busy);
+        assert_eq!(app.total_moves(), 1);
+    }
+
+    #[test]
+    fn illegal_candidates_do_not_spin_the_ai() {
+        let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.ai_enabled = true;
+        app.human = Color::Black; // 轮白，AI
+        let mut e = eval(3, Color::White, 0.5, Move::Play(Point::new(2, 2)));
+        e.candidates.truncate(1);
+        e.candidates[0].mv = Move::Play(Point::new(2, 2)); // 已被黑子占住
+        e.candidates[0].pv = vec![Move::Play(Point::new(2, 2))];
+        app.evals.insert(3, e);
+        assert_eq!(app.ai_choice(), None, "非法候选不能交给 AI");
+        assert_eq!(
+            app.next_action(),
+            Action::None,
+            "有分析但没有合法候选时不能每帧重新触发分析"
+        );
+    }
+
+    #[test]
     fn failed_analysis_does_not_retry_forever() {
         let mut app = demo();
         start(&mut app);
         app.apply(AppEvent::Analysis {
+            generation: app.generation(),
             pos: 0,
             result: Err("boom".to_string()),
         });
@@ -1317,6 +1433,7 @@ mod tests {
             .insert(0, eval(0, Color::Black, 0.70, Move::Play(Point::new(6, 6))));
         // 黑下完之后胜率掉到 40%
         app.apply(AppEvent::Analysis {
+            generation: app.generation(),
             pos: 1,
             result: Ok(eval(1, Color::White, 0.60, Move::Play(Point::new(6, 6)))),
         });
