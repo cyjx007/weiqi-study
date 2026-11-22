@@ -374,6 +374,7 @@ impl App {
         let visits = visits.clamp(10, 5000);
         self.config.engine.visits = visits;
         self.engine.set_visits(visits);
+        self.failed_pos = None;
         self.status = i18n::fill(strings(self.lang).strength_set, visits);
     }
 
