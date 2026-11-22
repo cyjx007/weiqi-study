@@ -247,22 +247,29 @@ impl Panels {
     /// 按当前 `App` 状态刷新所有文字；棋谱数量变化时顺带重建下拉框。
     pub fn refresh(&mut self, app: &mut App) {
         let s = strings(app.lang);
-        self.sec_winrate.set_markup(&format!("<b>{}</b>", s.winrate));
-        self.sec_position.set_markup(&format!("<b>{}</b>", s.position));
-        self.sec_predict.set_markup(&format!("<b>{}</b>", s.predict));
-        self.sec_comment.set_markup(&format!("<b>{}</b>", s.commentary));
+        self.sec_winrate
+            .set_markup(&format!("<b>{}</b>", s.winrate));
+        self.sec_position
+            .set_markup(&format!("<b>{}</b>", s.position));
+        self.sec_predict
+            .set_markup(&format!("<b>{}</b>", s.predict));
+        self.sec_comment
+            .set_markup(&format!("<b>{}</b>", s.commentary));
         self.new_btn.set_label(s.new_game_btn);
         self.analyse_btn.set_label(s.analyse_btn);
         self.review_btn.set_label(s.review_btn);
         self.undo_btn.set_label(s.undo_btn);
         self.rename_btn.set_label(s.rename);
         self.delete_btn.set_label(s.delete);
-        self.strength_label.set_markup(&format!("<b>{}</b>", s.strength));
-        self.human_label.set_markup(&format!("<b>{}</b>", s.human_net));
+        self.strength_label
+            .set_markup(&format!("<b>{}</b>", s.strength));
+        self.human_label
+            .set_markup(&format!("<b>{}</b>", s.human_net));
         self.variation_btn.set_label(s.variation);
         self.commit_btn.set_label(s.use_variation);
-        self.commit_btn
-            .set_sensitive(app.preview_active() && app.preview_progress().is_some_and(|(s, _)| s > 0));
+        self.commit_btn.set_sensitive(
+            app.preview_active() && app.preview_progress().is_some_and(|(s, _)| s > 0),
+        );
 
         self.updating_controls = true;
         if self.visits.value() as u32 != app.config.engine.visits {
@@ -300,12 +307,19 @@ impl Panels {
         ));
         let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
         self.score.set_text(&format!("{}: {score:+.1}", s.score));
-        self.moves
-            .set_text(&format!("{}: {} / {}", s.moves, app.display_pos(), app.total_moves()));
+        self.moves.set_text(&format!(
+            "{}: {} / {}",
+            s.moves,
+            app.display_pos(),
+            app.total_moves()
+        ));
 
         let mut cand = String::new();
         if let Some((step, total)) = app.preview_progress() {
-            cand.push_str(&format!("{} {step}/{total}\n{}", s.variation, s.variation_hint));
+            cand.push_str(&format!(
+                "{} {step}/{total}\n{}",
+                s.variation, s.variation_hint
+            ));
         }
         for (i, (mv, wr)) in app.prediction().iter().enumerate() {
             cand.push_str(&format!(

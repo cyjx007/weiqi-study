@@ -23,6 +23,8 @@
           packages = [
             pkgs.cargo
             pkgs.rustc
+            pkgs.clippy
+            pkgs.rustfmt
             pkgs.katago
             pkgs.pkg-config
             pkgs.gtk4

@@ -58,7 +58,12 @@ pub fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<
     let pad = g.cell * 1.35;
 
     rgb(cr, WOOD);
-    cr.rectangle(g.ox - pad, g.oy - pad, g.board + 2.0 * pad, g.board + 2.0 * pad);
+    cr.rectangle(
+        g.ox - pad,
+        g.oy - pad,
+        g.board + 2.0 * pad,
+        g.board + 2.0 * pad,
+    );
     cr.fill().ok();
 
     // 网格
@@ -91,8 +96,8 @@ pub fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<
     cr.set_font_size(g.cell * 0.36);
     const COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
     // 横轴：A–T（跳过 I），和 GTP/讲解里的 Q5、R5 对应
-    for i in 0..n as usize {
-        let label = (COLS[i] as char).to_string();
+    for (i, col) in COLS.iter().enumerate().take(n as usize) {
+        let label = (*col as char).to_string();
         let ext = cr.text_extents(&label).map(|e| e.width()).unwrap_or(0.0);
         let x = g.ox + i as f64 * g.cell - ext / 2.0;
         cr.move_to(x, g.oy - g.cell * 0.45);

@@ -189,7 +189,7 @@ Key invariants:
 ## Project layout
 
 ```text
-crates/goban     rules only: captures, suicide, positional superko, area scoring
+crates/goban     rules only: captures, suicide, configurable ko (PSK default), area scoring
 crates/sgf       SGF reader: follows the main line, skips variations
 crates/engine    KataGo process management and analysis JSON parsing
 crates/review    commentary templates (pure, deterministic)
@@ -218,7 +218,8 @@ CI installs GTK4 and libadwaita, then runs `cargo test --workspace` and
 
 ## Notes
 
-- SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches.
+- SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. `PL` (explicit next player) is not read; handicap setups default to White to move.
+- Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal.
 - Positions set up with `AB`/`AW` are treated as handicap games (White moves first).
 - Engine queries use Chinese rules; Japanese-rules records still review, but komi semantics differ.
 - The built-in area scorer does not judge life and death — it is a rough display only; real

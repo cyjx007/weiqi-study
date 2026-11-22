@@ -103,16 +103,20 @@ pub struct Position {                               // 可落子的局面
     pub ko: Option<Point>,                          // 简单劫
 }
 
-pub struct Game {                                   // 整盘棋：历史 + 超级劫
-    initial: Position,
+pub enum KoRule { Simple, PositionalSuperko, SituationalSuperko }
+
+pub struct Game {                                   // 整盘棋：历史 + 可配置劫争
+    ko: KoRule,                                     // 默认 PositionalSuperko
+    positions: Vec<Position>,
+    board_hashes: Vec<u64>,                         // 只哈希盘面（PSK）
+    situational_hashes: Vec<u64>,                   // 盘面 + 行棋方（SSK）
     moves: Vec<Move>,                               // Move::Play(Point) | Move::Pass
-    history: Vec<u64>,                              // Zobrist，位置超级劫
 }
 
 impl Game {
-    pub fn play(&self, mv: Move) -> Result<Game, IllegalMove>;
-    pub fn undo(&self) -> Option<Game>;
-    pub fn score_area(&self) -> AreaScore;          // 中国规则，死子由调用方传入
+    pub fn play(&mut self, mv: Move) -> Result<(), IllegalMove>; // Pass 不受 superko 限制
+    pub fn undo(&mut self) -> Option<Move>;
+    pub fn area_score(&self) -> AreaScore;          // 中国规则，不做死活判定
 }
 ```
 
@@ -236,8 +240,8 @@ GUI 二进制必须 `wrapGAppsHook4`，否则 NixOS 上找不到 GSettings schem
 |---|---|---|
 | **M0** ✅ | goban + sgf + review + cli | `go-review 棋谱.sgf` 输出中文讲评，规则单测全绿（2026-11-22 完成） |
 | **M1** ✅ | TUI | 能摆子、落子、撤销、看胜率/候选、跑整盘复盘（2026-11-22 完成） |
-| **M2** | GUI | 打开 SGF、点棋盘落子、侧栏分析、点失误跳转 |
-| **M3** | 增强 | humanv0 拟人对照、开局库、错题本导出 Markdown |
+| **M2** ✅ | GUI | 打开 SGF、点棋盘落子、侧栏分析、棋谱管理（2026-11-22 完成） |
+| **M3** ✅ | 增强 | humanv0 拟人对照、图片棋盘、变化预览、AI 强度（2026-11-22 完成）；开局库/错题本未做 |
 
 先做 M0，它是其余一切的地基；M1 和 M2 共用 app/core，不会白写。
 

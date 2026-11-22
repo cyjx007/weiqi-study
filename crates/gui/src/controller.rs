@@ -312,7 +312,12 @@ pub fn build_ui(application: &adw::Application) {
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
-                (s.rename.to_string(), initial, s.cancel.to_string(), s.ok.to_string())
+                (
+                    s.rename.to_string(),
+                    initial,
+                    s.cancel.to_string(),
+                    s.ok.to_string(),
+                )
             };
 
             let win = gtk::Window::builder()

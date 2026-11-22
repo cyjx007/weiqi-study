@@ -81,11 +81,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    eprintln!(
-        "分析 {} 手（每手 {} visits）…",
-        sg.moves.len(),
-        cfg.visits
-    );
+    eprintln!("分析 {} 手（每手 {} visits）…", sg.moves.len(), cfg.visits);
     let started = Instant::now();
     let engine = engine::Engine::new(cfg);
     let evals = engine.analyze_game(&game, |done, total| {

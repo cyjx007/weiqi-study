@@ -22,17 +22,9 @@ use goban::{Color, Game, Move, Point};
 use review::Review;
 use sgf::SgfGame;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AppConfig {
     pub engine: EngineConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        AppConfig {
-            engine: EngineConfig::default(),
-        }
-    }
 }
 
 /// 前端每轮问一次「现在该干什么」，避免把待机判断散落在 UI 循环里。
@@ -59,14 +51,7 @@ pub enum AppEvent {
 
 /// 拟人网可选段位（KataGo humanv0 的 profile 名）。
 pub const HUMAN_RANKS: [&str; 9] = [
-    "rank_20k",
-    "rank_15k",
-    "rank_10k",
-    "rank_5k",
-    "rank_1k",
-    "rank_1d",
-    "rank_3d",
-    "rank_5d",
+    "rank_20k", "rank_15k", "rank_10k", "rank_5k", "rank_1k", "rank_1d", "rank_3d", "rank_5d",
     "rank_9d",
 ];
 
@@ -249,7 +234,10 @@ impl App {
             return;
         };
         let setup = self.setup.clone();
-        if let Err(e) = self.store.save(&path, self.size, self.komi, &setup, &self.moves) {
+        if let Err(e) = self
+            .store
+            .save(&path, self.size, self.komi, &setup, &self.moves)
+        {
             self.status = e;
         }
     }
@@ -310,7 +298,8 @@ impl App {
         } else {
             match self.store.create() {
                 Ok(copy) => {
-                    self.store.save(&copy, self.size, self.komi, &self.setup, &self.moves)?;
+                    self.store
+                        .save(&copy, self.size, self.komi, &self.setup, &self.moves)?;
                     Some(copy)
                 }
                 Err(_) => None,
@@ -359,7 +348,11 @@ impl App {
                     self.show_games = false;
                     self.status = i18n::fill(
                         strings(self.lang).game_loaded,
-                        entry.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                        entry
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?"),
                     );
                 }
                 Err(e) => self.status = e,
@@ -465,10 +458,7 @@ impl App {
             self.current_file = Some(new_path.clone());
         }
         self.refresh_games();
-        let label = new_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let label = new_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         self.status = i18n::fill(strings(self.lang).renamed, label);
         Ok(())
     }
@@ -484,10 +474,7 @@ impl App {
         }
         self.refresh_games();
         self.game_cursor = self.game_cursor.min(self.games.len().saturating_sub(1));
-        let label = trashed
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let label = trashed.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         self.status = i18n::fill(strings(self.lang).deleted, label);
         Ok(())
     }
@@ -555,10 +542,7 @@ impl App {
 
     /// 当前展示的棋盘：预览变化时是预览局面，否则是主线局面。
     pub fn display_game(&self) -> &Game {
-        self.preview
-            .as_ref()
-            .map(|p| &p.game)
-            .unwrap_or(&self.game)
+        self.preview.as_ref().map(|p| &p.game).unwrap_or(&self.game)
     }
 
     pub fn display_pos(&self) -> usize {
@@ -852,10 +836,8 @@ impl App {
                                 let color = self.game.color_of_move(pos as u16);
                                 let mv = self.moves[pos - 1];
                                 let size = self.size;
-                                let comment = self
-                                    .game
-                                    .position_at(pos as u16 - 1)
-                                    .map(|pos_before| {
+                                let comment =
+                                    self.game.position_at(pos as u16 - 1).map(|pos_before| {
                                         review::quick_comment(
                                             !self.lang.is_zh(),
                                             pos_before,
@@ -1065,10 +1047,8 @@ mod tests {
     fn human_cannot_move_on_ai_turn() {
         let mut app = demo();
         start(&mut app);
-        app.evals.insert(
-            0,
-            eval(0, Color::Black, 1.0, Move::Play(Point::new(2, 2))),
-        );
+        app.evals
+            .insert(0, eval(0, Color::Black, 1.0, Move::Play(Point::new(2, 2))));
         app.cursor = Point::new(2, 2);
         app.play_at_cursor().unwrap(); // 人（黑）
         assert!(app.play_at_cursor().is_err()); // 现在轮到 AI
@@ -1092,12 +1072,14 @@ mod tests {
         start(&mut app);
         // 空盘、轮到人：没有评估 → 要求分析
         assert_eq!(app.next_action(), Action::Analyze);
-        app.evals.insert(0, eval(0, Color::Black, 0.5, Move::Play(Point::new(2, 2))));
+        app.evals
+            .insert(0, eval(0, Color::Black, 0.5, Move::Play(Point::new(2, 2))));
         assert_eq!(app.next_action(), Action::None);
         // 人落子后轮到 AI，有评估 → 直接要求 AI 落子
         app.cursor = Point::new(2, 2);
         app.play_at_cursor().unwrap();
-        app.evals.insert(1, eval(1, Color::White, 0.55, Move::Play(Point::new(4, 4))));
+        app.evals
+            .insert(1, eval(1, Color::White, 0.55, Move::Play(Point::new(4, 4))));
         assert!(matches!(app.next_action(), Action::AiMove(_)));
     }
 
@@ -1359,6 +1341,14 @@ mod tests {
     fn move_text_uses_gtp_coordinates() {
         assert_eq!(move_text(Move::Play(Point::new(15, 3)), 19), "Q16");
         assert_eq!(move_text(Move::Pass, 19), "pass");
+    }
+
+    #[test]
+    fn replays_sgf_with_two_passes() {
+        let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[];W[])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        assert_eq!(app.total_moves(), 4);
+        assert_eq!(app.pos(), 4);
     }
 
     #[test]

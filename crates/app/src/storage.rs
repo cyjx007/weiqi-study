@@ -71,8 +71,8 @@ impl GameStore {
         let text = sgf::write_game(size, komi, setup, moves);
         let tmp = path.with_extension("sgf.tmp");
         {
-            let mut file = fs::File::create(&tmp)
-                .map_err(|e| format!("创建 {} 失败：{e}", tmp.display()))?;
+            let mut file =
+                fs::File::create(&tmp).map_err(|e| format!("创建 {} 失败：{e}", tmp.display()))?;
             file.write_all(text.as_bytes())
                 .map_err(|e| format!("写入 {} 失败：{e}", tmp.display()))?;
             file.sync_all()
@@ -97,7 +97,11 @@ impl GameStore {
             let secs = entry
                 .metadata()
                 .and_then(|m| m.modified())
-                .map(|t| t.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+                .map(|t| {
+                    t.duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                })
                 .unwrap_or(0);
             out.push(GameEntry {
                 path,
@@ -128,10 +132,12 @@ impl GameStore {
             return Ok(target);
         }
         if target.exists() {
-            return Err(format!("{} 已存在", target.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
+            return Err(format!(
+                "{} 已存在",
+                target.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+            ));
         }
-        fs::rename(path, &target)
-            .map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
+        fs::rename(path, &target).map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
         Ok(target)
     }
 
@@ -162,11 +168,7 @@ fn sanitize_name(name: &str) -> Result<String, String> {
     if name.contains(['/', '\\', '\0']) {
         return Err("名字不能包含路径分隔符".to_string());
     }
-    let name: String = name
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(120)
-        .collect();
+    let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
     if name.is_empty() {
         return Err("名字不能为空".to_string());
     }
@@ -206,11 +208,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "weiqi-store-test-{}-{}",
-            std::process::id(),
-            n
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("weiqi-store-test-{}-{}", std::process::id(), n));
         GameStore::at(dir)
     }
 
@@ -247,7 +246,10 @@ mod tests {
         std::fs::write(&path, "(;SZ[9])").unwrap();
 
         let renamed = store.rename(&path, "opening study").unwrap();
-        assert_eq!(renamed.file_name().and_then(|n| n.to_str()), Some("opening study.sgf"));
+        assert_eq!(
+            renamed.file_name().and_then(|n| n.to_str()),
+            Some("opening study.sgf")
+        );
         assert!(renamed.exists());
         assert!(!path.exists());
         assert_eq!(store.list().len(), 1);

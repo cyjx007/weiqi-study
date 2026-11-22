@@ -161,7 +161,7 @@ TUI 按键：
 SGF ──> sgf（主线、摆子）
           │
           ▼
-        goban（规则：提子、自杀、位置超级劫）
+        goban（规则：提子、自杀、可配置劫争，默认位置超级劫）
           │
           ▼
         engine（KataGo analysis JSON，分批提交）
@@ -184,7 +184,7 @@ SGF ──> sgf（主线、摆子）
 ## 目录结构
 
 ```text
-crates/goban     规则：提子、自杀、位置超级劫、面积数子
+crates/goban     规则：提子、自杀、可配置劫争（默认位置超级劫）、面积数子
 crates/sgf       SGF 读取：跟随主线，跳过变化
 crates/engine    KataGo 进程管理与 analysis JSON 解析
 crates/review    讲评模板（纯函数、确定性）
@@ -213,7 +213,8 @@ CI 会先装 GTK4 和 libadwaita，再跑 `cargo test --workspace` 和
 
 ## 注意
 
-- SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支
+- SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。`PL`（指定下一手方）未读，让子棋默认白先
+- SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
 - 用 `AB`/`AW` 摆出来的局面按让子棋处理（白先）
 - 提交给引擎的规则固定为中国规则；日本规则棋谱也能复盘，只是贴目语义略有差异
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`

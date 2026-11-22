@@ -76,7 +76,10 @@ impl Controller {
         let pos = self.app.pos();
         let generation = self.app.generation();
         self.app.busy = true;
-        self.app.status = fill(strings(self.app.lang).analyzing, self.app.config.engine.visits);
+        self.app.status = fill(
+            strings(self.app.lang).analyzing,
+            self.app.config.engine.visits,
+        );
         let game = self.app.snapshot();
         let engine = self.app.engine.clone();
         let tx = self.tx.clone();
@@ -293,7 +296,10 @@ mod tests {
         assert!(ctrl.app.busy, "落子后应自动起一次分析");
         assert_eq!(
             ctrl.app.status,
-            fill(strings(ctrl.app.lang).analyzing, ctrl.app.config.engine.visits)
+            fill(
+                strings(ctrl.app.lang).analyzing,
+                ctrl.app.config.engine.visits
+            )
         );
     }
 
