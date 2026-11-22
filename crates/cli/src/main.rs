@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use engine::EngineConfig;
-use goban::{Game, KoRule};
+use goban::Game;
 
 fn main() {
     if let Err(e) = run() {
@@ -60,7 +60,7 @@ fn run() -> Result<(), String> {
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读不了 {path}：{e}"))?;
     let sg = sgf::parse(&text)?;
     let komi = komi.or(sg.komi).unwrap_or(7.5);
-    let ko = KoRule::from_rules(sg.rules.as_deref());
+    let ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
     let mut game = Game::with_setup_and_rule(sg.size, komi, sg.setup.clone(), ko);
     for (i, mv) in sg.moves.iter().enumerate() {
         game.play(*mv).map_err(|e| {

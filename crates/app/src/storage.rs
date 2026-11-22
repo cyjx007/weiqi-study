@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, TimeZone};
-use goban::{Color, Move, Point};
+use goban::{Color, KoRule, Move, Point};
 
 #[derive(Clone, Debug)]
 pub struct GameEntry {
@@ -67,8 +67,9 @@ impl GameStore {
         komi: f32,
         setup: &[(Color, Point)],
         moves: &[Move],
+        ko: KoRule,
     ) -> Result<(), String> {
-        let text = sgf::write_game(size, komi, setup, moves);
+        let text = sgf::write_game(size, komi, setup, moves, ko);
         let tmp = path.with_extension("sgf.tmp");
         {
             let mut file =
@@ -218,7 +219,9 @@ mod tests {
         let store = temp_store();
         let path = store.create().unwrap();
         let moves = vec![Move::Play(Point::new(15, 3)), Move::Play(Point::new(3, 15))];
-        store.save(&path, 19, 7.5, &[], &moves).unwrap();
+        store
+            .save(&path, 19, 7.5, &[], &moves, KoRule::default())
+            .unwrap();
         assert!(path.exists());
         assert!(!path.with_extension("sgf.tmp").exists());
         let listed = store.list();

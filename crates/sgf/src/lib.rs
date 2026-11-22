@@ -3,7 +3,7 @@
 //! 支持：`SZ` `KM` `RU` `B` `W` `AB` `AW`。
 //! 分支规则按 SGF 规范：第一个子分支就是主线。
 
-use goban::{Color, Move, Point};
+use goban::{Color, KoRule, Move, Point};
 
 #[derive(Clone, Debug, Default)]
 pub struct SgfGame {
@@ -31,6 +31,18 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
         size: 19,
         ..Default::default()
     };
+
+    // 先确定第一手颜色：SGF 的 B/W 是文件里的事实，不能用"有没有摆子"去猜。
+    // 摆子只影响轮次校验的起点，不影响文件已经写明的颜色。
+    let first_color = nodes
+        .iter()
+        .flat_map(|props| props.iter())
+        .find_map(|(ident, _)| match ident.as_str() {
+            "B" => Some(Color::Black),
+            "W" => Some(Color::White),
+            _ => None,
+        })
+        .unwrap_or(Color::Black);
 
     // 第一遍：读盘面参数（根节点在前）
     // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
@@ -89,16 +101,10 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
                     } else {
                         Color::White
                     };
-                    let expected = if out.setup.is_empty() {
-                        if out.moves.len().is_multiple_of(2) {
-                            Color::Black
-                        } else {
-                            Color::White
-                        }
-                    } else if out.moves.len().is_multiple_of(2) {
-                        Color::White
+                    let expected = if out.moves.len().is_multiple_of(2) {
+                        first_color
                     } else {
-                        Color::Black
+                        first_color.opposite()
                     };
                     // 轮次对不上的（残缺棋谱）整手丢弃，连坐标也不校验：
                     // 否则一个多余的坏坐标会让整盘打不开。
@@ -253,8 +259,44 @@ fn parse_move(s: &str, size: u8) -> Result<Move, String> {
     parse_coord(s, size).map(Move::Play)
 }
 
+/// 从 SGF `RU` 属性猜规则；认不出来就用默认（位置超级劫）。
+///
+/// 宁可放宽也不要收紧：映射错了顶多漏禁一手，收紧会让合法棋谱打不开。
+/// - 日本 / 新西兰：只禁简单劫（NZ 允许循环局面）
+/// - AGA / Ing / 韩国：情境超级劫（把行棋方算进重复判定）
+/// - 中国及未知值：位置超级劫（默认）
+pub fn ko_rule_from_rules(rules: Option<&str>) -> KoRule {
+    let Some(r) = rules else {
+        return KoRule::default();
+    };
+    let r = r.trim().to_ascii_lowercase();
+    // 用前缀而不是 contains：否则 "something else" 会因为含 "ing" 被认成 Ing 规则
+    if r.starts_with("japanese") || r.starts_with("new zealand") {
+        KoRule::Simple
+    } else if r.starts_with("aga") || r.starts_with("ing") || r.starts_with("korean") {
+        KoRule::SituationalSuperko
+    } else {
+        KoRule::PositionalSuperko
+    }
+}
+
+/// 写回 SGF `RU` 时用的名字。
+pub fn rules_for_ko(ko: KoRule) -> &'static str {
+    match ko {
+        KoRule::Simple => "Japanese",
+        KoRule::PositionalSuperko => "Chinese",
+        KoRule::SituationalSuperko => "Korean",
+    }
+}
+
 /// 把局面写回 SGF（只写主线，带摆子和贴目）。
-pub fn write_game(size: u8, komi: f32, setup: &[(Color, Point)], moves: &[Move]) -> String {
+pub fn write_game(
+    size: u8,
+    komi: f32,
+    setup: &[(Color, Point)],
+    moves: &[Move],
+    ko: KoRule,
+) -> String {
     fn coord(p: Point) -> String {
         let mut s = String::new();
         s.push((b'a' + p.x) as char);
@@ -262,7 +304,7 @@ pub fn write_game(size: u8, komi: f32, setup: &[(Color, Point)], moves: &[Move])
         s
     }
     let mut out = String::from("(;GM[1]FF[4]CA[UTF-8]");
-    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[Chinese]"));
+    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[{}]", rules_for_ko(ko)));
     let blacks: Vec<String> = setup
         .iter()
         .filter(|(c, _)| *c == Color::Black)
@@ -343,7 +385,7 @@ mod tests {
             Move::Pass,
             Move::Play(Point::new(3, 15)),
         ];
-        let text = write_game(19, 7.5, &[], &moves);
+        let text = write_game(19, 7.5, &[], &moves, KoRule::default());
         let back = parse(&text).unwrap();
         assert_eq!(back.size, 19);
         assert_eq!(back.komi, Some(7.5));
@@ -353,7 +395,7 @@ mod tests {
     #[test]
     fn writes_and_reparses_two_passes() {
         let moves = vec![Move::Play(Point::new(2, 2)), Move::Pass, Move::Pass];
-        let text = write_game(9, 7.5, &[], &moves);
+        let text = write_game(9, 7.5, &[], &moves, KoRule::default());
         let back = parse(&text).unwrap();
         assert_eq!(back.moves, moves);
     }
@@ -472,7 +514,7 @@ mod tests {
     fn random_games_round_trip_through_sgf() {
         for (seed, size) in [(1u64, 9u8), (2, 13), (3, 19)] {
             let game = random_legal_game(seed, size, 90);
-            let text = write_game(size, 7.5, &[], game.moves());
+            let text = write_game(size, 7.5, &[], game.moves(), KoRule::default());
             let back = parse(&text).unwrap_or_else(|e| panic!("seed {seed}: 解析失败：{e}"));
 
             assert_eq!(back.size, size, "seed {seed}");
@@ -501,7 +543,7 @@ mod tests {
             (Color::White, Point::new(6, 2)),
         ];
         let moves = vec![Move::Play(Point::new(4, 4)), Move::Pass];
-        let text = write_game(9, 0.5, &setup, &moves);
+        let text = write_game(9, 0.5, &setup, &moves, KoRule::default());
         let back = parse(&text).unwrap();
 
         assert_eq!(back.size, 9);
@@ -518,9 +560,61 @@ mod tests {
     fn consecutive_passes_round_trip_at_every_size() {
         for size in [5u8, 9, 13, 19] {
             let moves = vec![Move::Pass, Move::Pass, Move::Pass];
-            let text = write_game(size, 7.5, &[], &moves);
+            let text = write_game(size, 7.5, &[], &moves, KoRule::default());
             let back = parse(&text).unwrap();
             assert_eq!(back.moves, moves, "{size} 路盘连续 Pass 必须读回");
         }
+    }
+
+    #[test]
+    fn ru_survives_write_and_parse() {
+        for ko in [
+            KoRule::Simple,
+            KoRule::PositionalSuperko,
+            KoRule::SituationalSuperko,
+        ] {
+            let text = write_game(9, 7.5, &[], &[Move::Play(Point::new(2, 2))], ko);
+            let back = parse(&text).unwrap();
+            assert_eq!(ko_rule_from_rules(back.rules.as_deref()), ko, "{text}");
+        }
+    }
+
+    #[test]
+    fn ko_rule_mapping() {
+        assert_eq!(ko_rule_from_rules(Some("Japanese")), KoRule::Simple);
+        assert_eq!(ko_rule_from_rules(Some("Japanese rules")), KoRule::Simple);
+        assert_eq!(ko_rule_from_rules(Some("New Zealand")), KoRule::Simple);
+        assert_eq!(ko_rule_from_rules(Some("AGA")), KoRule::SituationalSuperko);
+        assert_eq!(
+            ko_rule_from_rules(Some("Korean")),
+            KoRule::SituationalSuperko
+        );
+        assert_eq!(
+            ko_rule_from_rules(Some("Chinese")),
+            KoRule::PositionalSuperko
+        );
+        assert_eq!(ko_rule_from_rules(None), KoRule::default());
+        assert_eq!(
+            ko_rule_from_rules(Some("something else")),
+            KoRule::default()
+        );
+    }
+
+    /// 文件里的 B/W 是事实：有摆子、或摆子出现在走子之后，都不能丢手。
+    #[test]
+    fn declared_colors_are_preserved_with_setup() {
+        // 让子棋：AW 摆白子，黑先
+        let g = parse("(;SZ[9]AW[dd];B[cc];W[gg])").unwrap();
+        assert_eq!(g.moves.len(), 2, "AW + 黑先不能丢第一手");
+        assert_eq!(g.moves[0], Move::Play(Point::new(2, 2)));
+
+        // AB 出现在走子之后（标记提子），后续手不能被吞
+        let g = parse("(;SZ[9];B[cc];W[gg];AB[ee];B[dd])").unwrap();
+        assert_eq!(g.moves.len(), 3);
+        assert_eq!(g.moves[2], Move::Play(Point::new(3, 3)));
+
+        // 真正的乱序（两个黑连着下）仍然丢弃第二个
+        let g = parse("(;SZ[9];B[cc];B[dd];W[ee])").unwrap();
+        assert_eq!(g.moves.len(), 2);
     }
 }

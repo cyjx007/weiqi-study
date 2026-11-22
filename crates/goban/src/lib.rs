@@ -85,21 +85,6 @@ impl KoRule {
             KoRule::SituationalSuperko => "情境超级劫",
         }
     }
-
-    /// 从 SGF `RU` 属性猜规则；认不出来就用默认（位置超级劫）。
-    pub fn from_rules(rules: Option<&str>) -> KoRule {
-        let Some(r) = rules else {
-            return KoRule::default();
-        };
-        let r = r.to_ascii_lowercase();
-        if r.contains("japanese") {
-            KoRule::Simple
-        } else if r.contains("korean") {
-            KoRule::SituationalSuperko
-        } else {
-            KoRule::PositionalSuperko
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -645,22 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn ko_rule_from_sgf_rules() {
-        assert_eq!(KoRule::from_rules(Some("Japanese")), KoRule::Simple);
-        assert_eq!(KoRule::from_rules(Some("Japanese rules")), KoRule::Simple);
-        assert_eq!(
-            KoRule::from_rules(Some("Korean")),
-            KoRule::SituationalSuperko
-        );
-        assert_eq!(
-            KoRule::from_rules(Some("Chinese")),
-            KoRule::PositionalSuperko
-        );
-        assert_eq!(KoRule::from_rules(None), KoRule::default());
-        assert_eq!(KoRule::from_rules(Some("AGA")), KoRule::PositionalSuperko);
-    }
-
-    #[test]
     fn area_score_counts_black_and_white_territory() {
         let g = Game::with_setup(
             5,
@@ -756,6 +725,7 @@ mod tests {
             let mut g = Game::new(size, 7.5);
             let mut rng = Rng(seeded(seed * 7919));
             let mut plays = 0usize;
+            let mut rejected = 0usize;
             for _ in 0..150 {
                 let mv = if rng.below(20) == 0 {
                     Move::Pass
@@ -766,6 +736,7 @@ mod tests {
                     ))
                 };
                 if g.play(mv).is_err() {
+                    rejected += 1;
                     continue;
                 }
                 if let Move::Play(_) = mv {
@@ -786,6 +757,12 @@ mod tests {
                     "seed {seed}: 黑白总面积不能超过棋盘"
                 );
             }
+            // 防假绿：如果所有随机手都被拒，上面的断言等于没跑
+            assert!(plays > 20, "seed {seed}: 合法手只有 {plays} 手");
+            assert!(
+                rejected < 150 * 9 / 10,
+                "seed {seed}: 拒手率过高（{rejected}/150）"
+            );
         }
     }
 

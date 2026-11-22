@@ -147,7 +147,7 @@ impl App {
     pub fn from_sgf(sg: &SgfGame, config: AppConfig) -> Result<Self, String> {
         let mut app = Self::new(sg.size, sg.komi.unwrap_or(7.5), config);
         app.setup = sg.setup.clone();
-        app.ko = KoRule::from_rules(sg.rules.as_deref());
+        app.ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
         app.rebuild()?;
@@ -239,7 +239,7 @@ impl App {
         let setup = self.setup.clone();
         if let Err(e) = self
             .store
-            .save(&path, self.size, self.komi, &setup, &self.moves)
+            .save(&path, self.size, self.komi, &setup, &self.moves, self.ko)
         {
             self.status = e;
         }
@@ -249,6 +249,7 @@ impl App {
     pub fn start_play(&mut self) {
         self.preview = None;
         self.next_generation();
+        self.ko = KoRule::default();
         self.setup.clear();
         self.moves.clear();
         self.pos = 0;
@@ -285,6 +286,7 @@ impl App {
         self.next_generation();
         self.size = sg.size;
         self.komi = sg.komi.unwrap_or(7.5);
+        self.ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
         self.setup = sg.setup.clone();
         self.moves = sg.moves.clone();
         self.pos = self.moves.len();
@@ -301,8 +303,14 @@ impl App {
         } else {
             match self.store.create() {
                 Ok(copy) => {
-                    self.store
-                        .save(&copy, self.size, self.komi, &self.setup, &self.moves)?;
+                    self.store.save(
+                        &copy,
+                        self.size,
+                        self.komi,
+                        &self.setup,
+                        &self.moves,
+                        self.ko,
+                    )?;
                     Some(copy)
                 }
                 Err(_) => None,
@@ -972,6 +980,26 @@ mod tests {
         // 没有 RU 时保持默认
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn opening_sgf_file_updates_ko_rule() {
+        // GUI / TUI 切谱走 open_sgf_file，不能沿用上一盘的规则
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+
+        let jp = sgf::parse("(;SZ[9]RU[Japanese];B[cc];W[gg])").unwrap();
+        let dir = std::env::temp_dir();
+        app.open_sgf_file(dir.join("weiqi-ko-jp.sgf"), &jp).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::Simple);
+
+        let cn = sgf::parse("(;SZ[9]RU[Chinese];B[cc];W[gg])").unwrap();
+        app.open_sgf_file(dir.join("weiqi-ko-cn.sgf"), &cn).unwrap();
+        assert_eq!(app.game().ko_rule(), KoRule::PositionalSuperko);
+
+        // 新开人机局要回到默认规则，不继承上一盘
+        app.start_play();
         assert_eq!(app.game().ko_rule(), KoRule::default());
     }
 

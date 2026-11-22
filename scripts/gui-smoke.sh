@@ -46,7 +46,7 @@ DBUS_PID=""
 cleanup() {
     if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
         kill "$APP_PID" 2>/dev/null || true
-        for _ in $(seq 20); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.1; done
+        for _ in $(seq 20); do alive "$APP_PID" || break; sleep 0.1; done
         kill -9 "$APP_PID" 2>/dev/null || true
     fi
     if [ -n "$XVFB_PID" ]; then kill "$XVFB_PID" 2>/dev/null || true; fi
@@ -65,6 +65,24 @@ fail() {
     exit 1
 }
 
+# 本机缺依赖可以跳过；CI 里设 WEIQI_SMOKE_REQUIRE=1，跳过等于失败
+skip() {
+    if [ "${WEIQI_SMOKE_REQUIRE:-0}" = 1 ]; then
+        echo "FAIL: $*（CI 要求必须跑）" >&2
+        exit 2
+    fi
+    echo "SKIP: $*"
+    exit 0
+}
+
+# 僵尸进程 kill -0 也返回 0，必须看 /proc 的状态位
+alive() {
+    local pid=$1 state
+    kill -0 "$pid" 2>/dev/null || return 1
+    state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null) || return 1
+    [ "$state" != "Z" ]
+}
+
 mkdir -p "$TMP/data/weiqi-study/games"
 printf '(;GM[1]FF[4]CA[UTF-8]SZ[19]KM[7.5]RU[Chinese];B[cc];W[gg])\n' \
     > "$TMP/data/weiqi-study/games/game-101.sgf"
@@ -73,19 +91,17 @@ printf '(;GM[1]FF[4]CA[UTF-8]SZ[19]KM[7.5]RU[Chinese];B[cc];W[gg];B[dd];W[ee];B[
 
 if [ -z "${DISPLAY:-}" ]; then
     if ! command -v Xvfb >/dev/null; then
-        echo "没有 DISPLAY 也没有 Xvfb；跳过 GUI 冒烟" >&2
-        exit 2
+        skip "没有 DISPLAY 也没有 Xvfb"
     fi
     # 挑一个空闲显示号，避免连到残留的 X server
     for n in $(seq 99 110); do
-        if [ ! -e "/tmp/.X11-unix/X$n" ]; then
+        if [ ! -e "/tmp/.X11-unix/X$n" ] && [ ! -e "/tmp/.X$n-lock" ]; then
             export DISPLAY=":$n"
             break
         fi
     done
     if [ -z "${DISPLAY:-}" ]; then
-        echo "找不到空闲的 X display（:99-:110）" >&2
-        exit 2
+        skip "找不到空闲的 X display（:99-:110）"
     fi
     Xvfb "$DISPLAY" -nolisten tcp -screen 0 1280x900x24 >"$TMP/xvfb.log" 2>&1 &
     XVFB_PID=$!
@@ -109,8 +125,7 @@ export WEIQI_LANG=zh
 # 私有一个 D-Bus 会话：adw::Application 按 application-id 做单实例，
 # 共用会话总线时第二次启动会直接把激活转给已有窗口然后退出。
 if ! command -v dbus-daemon >/dev/null; then
-    echo "需要 dbus-daemon 隔离 adw 单实例；没装就跳过 GUI 冒烟" >&2
-    exit 2
+    skip "需要 dbus-daemon 隔离 adw 单实例"
 fi
 BUS_INFO=$(dbus-daemon --session --fork --print-address=1 --print-pid=1)
 export DBUS_SESSION_BUS_ADDRESS
@@ -128,14 +143,14 @@ if [ "$HAVE_XDOTOOL" = 1 ]; then
     for _ in $(seq 100); do
         WID=$(xdotool search --name 'Weiqi Study' 2>/dev/null | head -1 || true)
         [ -n "$WID" ] && break
-        kill -0 "$APP_PID" 2>/dev/null || break
+        alive "$APP_PID" || break
         sleep 0.1
     done
 fi
 
 sleep "$SECONDS_UP"
 
-if ! kill -0 "$APP_PID" 2>/dev/null; then
+if ! alive "$APP_PID"; then
     fail "启动 ${SECONDS_UP}s 后进程已退出"
 fi
 if grep -qE 'panicked at|thread .* panicked|SIGABRT|Aborted' "$TMP/gui.log"; then
@@ -166,7 +181,7 @@ if [ -n "$WID" ]; then
     if [ "$KEY_FAIL" -eq 6 ]; then
         fail "6 次按键注入全部失败（xdotool 发不到窗口）"
     fi
-    kill -0 "$APP_PID" 2>/dev/null || fail "键盘导航后进程退出"
+    alive "$APP_PID" || fail "键盘导航后进程退出"
 
     if [ "$WANT_SWITCH" = 1 ]; then
         if [ "$HAVE_XDOTOOL" != 1 ]; then
@@ -179,7 +194,7 @@ if [ -n "$WID" ]; then
             sleep 0.3
             xdotool key --window "$WID" Down Return >/dev/null 2>&1 || true
             sleep 1
-            kill -0 "$APP_PID" 2>/dev/null || fail "切换棋谱后进程退出"
+            alive "$APP_PID" || fail "切换棋谱后进程退出"
         fi
     fi
 
@@ -198,8 +213,8 @@ else
 fi
 
 kill "$APP_PID" 2>/dev/null || true
-for _ in $(seq 30); do kill -0 "$APP_PID" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$APP_PID" 2>/dev/null; then
+for _ in $(seq 30); do alive "$APP_PID" || break; sleep 0.1; done
+if alive "$APP_PID"; then
     fail "收到 SIGTERM 后 3s 仍未退出"
 fi
 APP_PID=""

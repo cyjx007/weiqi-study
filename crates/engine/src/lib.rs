@@ -524,7 +524,8 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
 
     let mut candidates = Vec::new();
     if let Some(arr) = v.get("moveInfos").and_then(|x| x.as_array()) {
-        for m in arr.iter().take(8) {
+        // 先过滤再截断：否则前 8 条全坏时，第 9 条好棋会被误判成"全部无法解析"
+        for m in arr.iter() {
             // 候选级容错：引擎可能给出 resign / unknown / 越界坐标，
             // 跳过这一个候选即可，不要因为一个坏值丢掉整轮分析。
             let Some(raw) = m.get("move").and_then(|x| x.as_str()) else {
@@ -560,6 +561,7 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
         if candidates.is_empty() && !arr.is_empty() {
             return Err("moveInfos 里的候选全部无法解析".to_string());
         }
+        candidates.truncate(8);
     }
 
     let human_policy = v.get("humanPolicy").and_then(|x| x.as_array()).map(|a| {
@@ -628,6 +630,23 @@ mod tests {
         });
         let err = eval_from_json(&v, &game, 0).unwrap_err();
         assert!(err.contains("全部无法解析"), "{err}");
+    }
+
+    #[test]
+    fn good_candidate_after_eight_bad_ones_survives() {
+        let game = Game::new(9, 7.5);
+        let mut infos = Vec::new();
+        for _ in 0..8 {
+            infos.push(json!({"move": "resign"}));
+        }
+        infos.push(json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 3}));
+        let v = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": infos
+        });
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.candidates.len(), 1);
+        assert_eq!(ev.candidates[0].mv, Move::Play(Point::new(3, 5)));
     }
 
     /// 假 KataGo：不依赖 GPU/模型，验证协议解析与错误路径。

@@ -27,4 +27,5 @@ jobs:
       - name: GUI smoke (Xvfb)
         run: |
           sudo apt-get install -y xvfb xdotool
-          WEIQI_GUI_BIN=target/release/weiqi-gui ./scripts/gui-smoke.sh --switch
+          WEIQI_SMOKE_REQUIRE=1 WEIQI_GUI_BIN=target/release/weiqi-gui \
+            timeout 120 ./scripts/gui-smoke.sh --switch
