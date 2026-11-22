@@ -400,27 +400,23 @@ impl App {
 
     /// 切换拟人段位（`delta` 为 ±1，循环）。
     pub fn cycle_human_rank(&mut self, delta: i32) {
-        let st = strings(self.lang);
-        if !self.human_model_available() {
-            self.status = st.no_human_model.to_string();
-            return;
-        }
         let n = HUMAN_RANKS.len() as i32;
         let idx = (self.human_rank as i32 + delta).rem_euclid(n) as usize;
         self.set_human_rank(idx);
     }
 
-    /// 直接选中某个拟人段位（下拉框用）。
+    /// 直接选中某个拟人段位（下拉框用）。没有拟人网也允许预先选，
+    /// 只是状态里提示不可用。
     pub fn set_human_rank(&mut self, idx: usize) {
+        if idx >= HUMAN_RANKS.len() {
+            return;
+        }
+        self.human_rank = idx;
         let st = strings(self.lang);
         if !self.human_model_available() {
             self.status = st.no_human_model.to_string();
             return;
         }
-        if idx >= HUMAN_RANKS.len() {
-            return;
-        }
-        self.human_rank = idx;
         if self.human_enabled {
             self.engine
                 .set_human_profile(Some(self.human_profile().to_string()));
