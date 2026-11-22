@@ -72,6 +72,10 @@ weiqi-tui game.sgf
 weiqi-tui
 ```
 
+Every game is saved automatically as SGF under `$XDG_DATA_HOME/weiqi-study/games` (usually
+`~/.local/share/weiqi-study/games`). Press `L` in the TUI to reopen any of them, review, or
+continue playing.
+
 TUI keys:
 
 | Key | Action |
@@ -86,6 +90,7 @@ TUI keys:
 | `a` | analyse the current position |
 | `A` | full-game review (builds a blunder list) |
 | `b` | jump to the next blunder |
+| `L` | game list: open a saved game (review or continue) |
 | `?` | help |
 | `q` / `Esc` | quit |
 
@@ -106,6 +111,7 @@ Environment variables:
 | `KATAGO_BIN` | `katago` from `PATH` | Engine executable |
 | `KATAGO_MODEL` | auto-detected `*.bin.gz` | Neural network to load |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | Analysis config; generated on first use |
+| `WEIQI_LANG` | from `LANG` | `zh` or `en` for the interface; commentary text is Chinese for now |
 
 Command-line flags (`--help` is authoritative):
 
@@ -185,7 +191,8 @@ CI runs `cargo test --workspace` and `cargo build --release --workspace` on ever
   evaluation comes from KataGo's `scoreLead`.
 - Each analysis starts a fresh KataGo process, so expect about a second of model loading per
   request.
-- The written commentary is currently Chinese-only; the numbers are language-neutral.
+- The TUI interface is English or Chinese (`WEIQI_LANG`); the written commentary is Chinese-only for now.
+- Games are saved automatically after every move; nothing is deleted by the tool.
 
 ## License
 

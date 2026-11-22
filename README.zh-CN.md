@@ -70,6 +70,9 @@ weiqi-tui game.sgf
 weiqi-tui
 ```
 
+每盘棋都会自动存成 SGF，放在 `$XDG_DATA_HOME/weiqi-study/games`（通常是
+`~/.local/share/weiqi-study/games`）。在 TUI 里按 `L` 可以随时打开、复盘或继续走。
+
 TUI 按键：
 
 | 按键 | 作用 |
@@ -84,6 +87,7 @@ TUI 按键：
 | `a` | 分析当前局面 |
 | `A` | 全盘复盘（生成失误清单） |
 | `b` | 跳到下一个失误 |
+| `L` | 棋谱列表（打开、复盘或继续） |
 | `?` | 帮助 |
 | `q` / `Esc` | 退出 |
 
@@ -104,6 +108,7 @@ TUI 按键：
 | `KATAGO_BIN` | `PATH` 里的 `katago` | 引擎可执行文件 |
 | `KATAGO_MODEL` | 自动探测 `*.bin.gz` | 要加载的神经网络 |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | 分析配置；首次运行时生成 |
+| `WEIQI_LANG` | 跟随 `LANG` | `zh` / `en`，界面语言；讲评文字目前固定中文 |
 
 命令行参数（以 `--help` 为准）：
 
@@ -177,7 +182,8 @@ CI 在每次 push 时跑 `cargo test --workspace` 和 `cargo build --release --w
 - 提交给引擎的规则固定为中国规则；日本规则棋谱也能复盘，只是贴目语义略有差异
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`
 - 每次分析都会新起一个 KataGo 进程，有约 1 秒的模型加载开销
-- 讲评文字目前只有中文；数字本身与语言无关
+- TUI 界面支持中/英（`WEIQI_LANG`），讲评文字目前固定中文
+- 每落一子自动保存棋谱，工具本身不删除任何棋谱
 
 ## 许可
 
