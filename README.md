@@ -118,6 +118,7 @@ See [DESIGN.md](DESIGN.md) (Chinese) for the full design and the GTK4 plan.
 ## Known limits
 
 - SGF: main line only; variation trees are ignored.
+- Positions set up with `AB`/`AW` are treated as handicap games (White to move first).
 - Analysis queries use Chinese rules; Japanese-rules games still review fine, komi semantics differ slightly.
 - The built-in area scorer does not judge life and death — it is a rough display only. Real
   evaluation always comes from KataGo's `scoreLead`.

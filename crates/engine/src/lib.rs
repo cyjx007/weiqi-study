@@ -196,23 +196,49 @@ where
     let stdout = child.stdout.take().ok_or("打不开 KataGo stdout")?;
     let reader = BufReader::new(stdout);
     let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
+    let mut failure: Option<String> = None;
     for line in reader.lines() {
-        let line = line.map_err(|e| format!("读 KataGo 输出失败: {e}"))?;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                failure = Some(format!("读 KataGo 输出失败: {e}"));
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
-        let v: Value =
-            serde_json::from_str(&line).map_err(|e| format!("解析 JSON 失败: {e}: {line}"))?;
-        if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
-            return Err(format!("KataGo 报错: {err}"));
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                failure = Some(format!("解析 JSON 失败: {e}: {line}"));
+                break;
+            }
+        };
+        if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
+            failure = Some(format!("KataGo 报错: {err}"));
+            break;
         }
-        let Some(turn) = v.get("turnNumber").and_then(|x| x.as_u64()) else {
+        let Some(turn) = value.get("turnNumber").and_then(|x| x.as_u64()) else {
             continue;
         };
-        evals.push(eval_from_json(&v, game, turn as u16)?);
+        match eval_from_json(&value, game, turn as u16) {
+            Ok(ev) => evals.push(ev),
+            Err(e) => {
+                failure = Some(e);
+                break;
+            }
+        }
         progress(evals.len(), total);
     }
+    // 出错时别留孤儿子进程
+    if failure.is_some() {
+        let _ = child.kill();
+    }
     let _ = child.wait();
+    if let Some(e) = failure {
+        return Err(e);
+    }
 
     evals.sort_by_key(|e| e.turn);
     if evals.len() != total {
