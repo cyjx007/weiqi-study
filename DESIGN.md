@@ -41,7 +41,7 @@ Rust crates 走 crates.io：`ratatui`、`crossterm`、`gtk4`、`libadwaita`、`g
                  │        └──── 命令 ────┘      │
                  │              │              │
                  │        ┌─────▼─────┐        │
-                 │        │  app-core │        │  ◄── AppState + Command，纯逻辑
+                 │        │  app-core │        │  ◄── AppState + Controller，纯逻辑 + 后台线程
                  │        └─────┬─────┘        │
                  │    ┌─────────┼─────────┐    │
                  │    ▼         ▼         ▼    │
@@ -67,7 +67,7 @@ weiqi-study/               # 实际放在 weiqi-study/
 │  ├─ sgf/                   # SGF 子集：SZ/KM/RU/B/W/AB/AW/C，只读主线
 │  ├─ engine/                # KataGo 进程管理 + 协议
 │  ├─ review/                # 讲评模板（纯函数）
-│  ├─ app/                   # AppState（导航/落子/分析缓存），M1 已实现
+│  ├─ app/                   # AppState（导航/落子/分析缓存）+ Controller（spawn/tick），M1 已实现
 │  ├─ cli/   [bin go-review] # 批量复盘（M0 已实现）
 │  ├─ tui/   [bin weiqi-tui] # ratatui 前端
 │  └─ gui/   [bin weiqi-gui] # gtk4 + libadwaita 前端
@@ -81,8 +81,8 @@ weiqi-study/               # 实际放在 weiqi-study/
 | `sgf` | 文件内容字符串 ↔ 结构体 | 知道引擎存在 |
 | `engine` | spawn 进程、管道、JSON、超时、重启 | 知道 UI/规则细节（只收发坐标与胜率） |
 | `review` | 输入 `TurnEval` + 规则，输出中文句子 | IO、时间、随机数（保证快照测试稳定） |
-| `app` | 状态机：当前局面、选中的手、分析结果缓存 | 直接画图、直接 spawn 进程 |
-| `tui`/`gui` | 渲染、输入映射成 `Command` | 自己实现规则、自己算胜率 |
+| `app` | 状态机：当前局面、选中的手、分析结果缓存；`Controller` 起后台线程、收事件、推进 AI | 直接画图、直接管理进程/GTP（交给 `engine`） |
+| `tui`/`gui` | 渲染、输入映射成 `Controller` 调用 | 自己实现规则、自己算胜率、自己 spawn 分析 |
 
 ## 三、核心数据结构
 
@@ -167,7 +167,7 @@ pub struct Review {
 | `AnalysisBatch` | 一次性 `katago analysis`，stdin 一批 query | 复盘整盘、`go-review` CLI | 每次调用 |
 
 - 进程管理：崩溃自动重启（指数退避，最多 3 次）；启动时 `kata-analyze` 的 `interval` 用于限流。
-- 线程模型：**专用线程 + mpsc**，不用 async。理由：GTP 是行协议，async 只会增加复杂度；GUI 侧用 `glib::spawn_future_local` 把通道消息转成主循环事件。
+- 线程模型：**专用线程 + mpsc**，不用 async。理由：GTP 是行协议，async 只会增加复杂度。分析线程和 AI 推进统一由 `app::Controller` 管理（TUI/GUI 共用）；GUI 侧用 `glib::timeout_add_local` 每 50 ms 调一次 `Controller::tick`，只有状态变化才重画。
 - 复盘分批：一次 query 最多 30 个 `analyzeTurns`，避免长棋谱内存峰值；TUI/GUI 显示进度条。
 
 ## 五、前端

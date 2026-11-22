@@ -1,10 +1,13 @@
 //! 与界面无关的应用状态：导航、落子、人机对战、分析缓存。
 //!
-//! 前端只负责把按键映射成这里的调用，以及把状态画出来。
-//! 本 crate 不碰终端、不 spawn 线程——分析由前端起线程后把结果送回来。
+//! 前端只负责把按键映射成 [`Controller`] 的调用，以及把状态画出来。
+//! 后台分析线程与事件回填都在 [`controller`] 里，TUI/GUI 共用同一份。
 
+pub mod controller;
 pub mod i18n;
 pub mod storage;
+
+pub use controller::Controller;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -518,6 +521,14 @@ impl App {
     }
 }
 
+/// 把一手棋格式化成界面上的 GTP 坐标（A–T，跳过 I）。
+pub fn move_text(mv: Move, size: u8) -> String {
+    match mv {
+        Move::Play(p) => engine::gtp_coord(p, size),
+        Move::Pass => "pass".to_string(),
+    }
+}
+
 fn mix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = x;
@@ -769,6 +780,12 @@ mod tests {
 
         let _ = std::fs::remove_file(&external);
         let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn move_text_uses_gtp_coordinates() {
+        assert_eq!(move_text(Move::Play(Point::new(15, 3)), 19), "Q16");
+        assert_eq!(move_text(Move::Pass, 19), "pass");
     }
 
     #[test]

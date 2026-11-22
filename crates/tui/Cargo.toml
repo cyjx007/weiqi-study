@@ -13,5 +13,3 @@ ratatui = "0.29"
 app = { path = "../app" }
 goban = { path = "../goban" }
 sgf = { path = "../sgf" }
-engine = { path = "../engine" }
-review = { path = "../review" }

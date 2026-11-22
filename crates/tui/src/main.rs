@@ -2,12 +2,14 @@
 
 mod ui;
 
-use std::sync::mpsc;
 use std::time::Duration;
 
-use app::i18n::{fill, strings};
-use app::{Action, App, AppConfig, AppEvent};
+use app::i18n::strings;
+use app::{App, AppConfig, Controller};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+
+/// 事件轮询间隔；也决定 AI 应手、分析结果回到界面的节奏。
+const FRAME: Duration = Duration::from_millis(50);
 
 fn main() {
     if let Err(e) = run() {
@@ -72,36 +74,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, app, tx, rx);
+    let result = event_loop(&mut terminal, Controller::new(app));
     ratatui::restore();
     result
 }
 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
-    mut app: App,
-    tx: mpsc::Sender<AppEvent>,
-    rx: mpsc::Receiver<AppEvent>,
+    mut ctrl: Controller,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut dirty = true;
     loop {
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        if dirty {
+            terminal.draw(|frame| ui::draw(frame, &ctrl.app))?;
+            dirty = false;
+        }
 
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(FRAME)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                    if ctrl && key.code == KeyCode::Char('c') {
+                    let ctrl_key = key.modifiers.contains(KeyModifiers::CONTROL);
+                    if ctrl_key && key.code == KeyCode::Char('c') {
                         return Ok(());
                     }
 
-                    if app.show_games {
+                    if ctrl.app.show_games {
                         match key.code {
-                            KeyCode::Esc | KeyCode::Char('L') => app.toggle_games(),
-                            KeyCode::Up | KeyCode::Char('k') => app.move_game_cursor(-1),
-                            KeyCode::Down | KeyCode::Char('j') => app.move_game_cursor(1),
-                            KeyCode::Enter => app.open_selected_game(),
+                            KeyCode::Esc | KeyCode::Char('L') => ctrl.app.toggle_games(),
+                            KeyCode::Up | KeyCode::Char('k') => ctrl.app.move_game_cursor(-1),
+                            KeyCode::Down | KeyCode::Char('j') => ctrl.app.move_game_cursor(1),
+                            KeyCode::Enter => ctrl.open_selected_game(),
                             KeyCode::Char('q') => return Ok(()),
                             _ => {}
                         }
@@ -109,113 +112,43 @@ fn event_loop(
                         match key.code {
                             KeyCode::Char('q') => return Ok(()),
                             KeyCode::Esc => {
-                                if app.show_help {
-                                    app.show_help = false;
+                                if ctrl.app.show_help {
+                                    ctrl.app.show_help = false;
                                 } else {
                                     return Ok(());
                                 }
                             }
-                            KeyCode::Char('?') => app.show_help = !app.show_help,
-                            KeyCode::Char('L') => app.toggle_games(),
-                            KeyCode::Char('i') => app.show_info = !app.show_info,
-                            KeyCode::Left | KeyCode::Char('h') => app.move_cursor(-1, 0),
-                            KeyCode::Right | KeyCode::Char('l') => app.move_cursor(1, 0),
-                            KeyCode::Up | KeyCode::Char('k') => app.move_cursor(0, -1),
-                            KeyCode::Down | KeyCode::Char('j') => app.move_cursor(0, 1),
-                            KeyCode::Enter => match app.play_at_cursor() {
-                                Ok(()) => {
-                                    app.status = strings(app.lang).move_played.to_string();
-                                    spawn_analysis(&mut app, &tx);
-                                }
-                                Err(e) => app.status = e,
-                            },
-                            KeyCode::Char('t') => {
-                                app.start_play();
-                                spawn_analysis(&mut app, &tx);
+                            KeyCode::Char('?') => ctrl.app.show_help = !ctrl.app.show_help,
+                            KeyCode::Char('L') => ctrl.app.toggle_games(),
+                            KeyCode::Char('i') => ctrl.app.show_info = !ctrl.app.show_info,
+                            KeyCode::Left | KeyCode::Char('h') => ctrl.app.move_cursor(-1, 0),
+                            KeyCode::Right | KeyCode::Char('l') => ctrl.app.move_cursor(1, 0),
+                            KeyCode::Up | KeyCode::Char('k') => ctrl.app.move_cursor(0, -1),
+                            KeyCode::Down | KeyCode::Char('j') => ctrl.app.move_cursor(0, 1),
+                            KeyCode::Enter => {
+                                let _ = ctrl.play_at_cursor();
                             }
-                            KeyCode::Char('v') => {
-                                app.toggle_ai();
-                                pump(&mut app, &tx);
-                            }
+                            KeyCode::Char('t') => ctrl.start_play(),
+                            KeyCode::Char('v') => ctrl.toggle_ai(),
                             KeyCode::Char('u') => {
-                                app.prev_move();
-                                app.status = strings(app.lang).undone.to_string();
+                                ctrl.app.prev_move();
+                                ctrl.app.status = strings(ctrl.app.lang).undone.to_string();
                             }
-                            KeyCode::Char('n') => app.next_move(),
-                            KeyCode::Char('p') => app.prev_move(),
-                            KeyCode::Home | KeyCode::Char('g') => app.goto_start(),
-                            KeyCode::End | KeyCode::Char('G') => app.goto_end(),
-                            KeyCode::Char('a') => spawn_analysis(&mut app, &tx),
-                            KeyCode::Char('A') => spawn_review(&mut app, &tx),
-                            KeyCode::Char('b') => app.next_blunder(),
+                            KeyCode::Char('n') => ctrl.app.next_move(),
+                            KeyCode::Char('p') => ctrl.app.prev_move(),
+                            KeyCode::Home | KeyCode::Char('g') => ctrl.app.goto_start(),
+                            KeyCode::End | KeyCode::Char('G') => ctrl.app.goto_end(),
+                            KeyCode::Char('a') => ctrl.analyze(),
+                            KeyCode::Char('A') => ctrl.review(),
+                            KeyCode::Char('b') => ctrl.app.next_blunder(),
                             _ => {}
                         }
                     }
                 }
             }
+            dirty = true;
         }
 
-        while let Ok(ev) = rx.try_recv() {
-            app.apply(ev);
-        }
-        pump(&mut app, &tx);
+        dirty |= ctrl.tick();
     }
-}
-
-/// 人机模式下推进一步：轮到 AI 就落子，否则保证当前局面有分析结果。
-fn pump(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
-    match app.next_action() {
-        Action::None => {}
-        Action::Analyze => spawn_analysis(app, tx),
-        Action::AiMove(mv) => match app.play_move(mv) {
-            Ok(()) => {
-                app.status = strings(app.lang).ai_played.to_string();
-                spawn_analysis(app, tx);
-            }
-            Err(e) => app.status = e,
-        },
-    }
-}
-
-fn spawn_analysis(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
-    if app.busy {
-        app.status = strings(app.lang).busy.to_string();
-        return;
-    }
-    let pos = app.pos();
-    app.busy = true;
-    app.status = fill(strings(app.lang).analyzing, app.config.engine.visits);
-    let game = app.snapshot();
-    let engine = app.engine.clone();
-    let tx = tx.clone();
-    std::thread::spawn(move || {
-        let result = engine.analyze_position(&game);
-        let _ = tx.send(AppEvent::Analysis { pos, result });
-    });
-}
-
-fn spawn_review(app: &mut App, tx: &mpsc::Sender<AppEvent>) {
-    if app.busy {
-        app.status = strings(app.lang).busy.to_string();
-        return;
-    }
-    app.busy = true;
-    app.status = strings(app.lang).reviewing.to_string();
-    let game = match app.full_game() {
-        Ok(g) => g,
-        Err(e) => {
-            app.busy = false;
-            app.status = e;
-            return;
-        }
-    };
-    let engine = app.engine.clone();
-    let english = !app.lang.is_zh();
-    let tx = tx.clone();
-    std::thread::spawn(move || {
-        let result = engine
-            .analyze_game(&game, |_, _| {})
-            .map(|evals| review::build(english, &game, &evals, 5.0));
-        let _ = tx.send(AppEvent::Review(result));
-    });
 }

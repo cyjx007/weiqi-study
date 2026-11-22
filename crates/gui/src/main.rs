@@ -4,12 +4,11 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use app::i18n::{color_name, fill, strings};
-use app::{Action, App, AppConfig, AppEvent};
+use app::i18n::{color_name, strings};
+use app::{move_text, App, AppConfig, Controller};
 use gtk::cairo;
 use gtk::gdk;
 use gtk::glib;
@@ -19,9 +18,7 @@ const GRID: (f64, f64, f64) = (0.18, 0.12, 0.05);
 const BG: (f64, f64, f64) = (0.10, 0.10, 0.11);
 
 struct Ui {
-    app: App,
-    tx: mpsc::Sender<AppEvent>,
-    rx: mpsc::Receiver<AppEvent>,
+    ctrl: Controller,
     hover: Option<goban::Point>,
     area: gtk::DrawingArea,
     game_count: usize,
@@ -67,8 +64,6 @@ fn build_ui(application: &adw::Application) {
             }
         }
     }
-
-    let (tx, rx) = mpsc::channel();
 
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);
@@ -198,9 +193,7 @@ fn build_ui(application: &adw::Application) {
     window.present();
 
     let ui = Rc::new(RefCell::new(Ui {
-        app,
-        tx,
-        rx,
+        ctrl: Controller::new(app),
         hover: None,
         area: area.clone(),
         game_count: 0,
@@ -230,7 +223,7 @@ fn build_ui(application: &adw::Application) {
         let ui = ui.clone();
         area.set_draw_func(move |_, cr, w, h| {
             let ui = ui.borrow();
-            draw_board(cr, w as f64, h as f64, &ui.app, ui.hover);
+            draw_board(cr, w as f64, h as f64, &ui.ctrl.app, ui.hover);
         });
     }
 
@@ -242,13 +235,10 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            let n = ui.app.size as f64;
+            let n = ui.ctrl.app.size as f64;
             if let Some(p) = point_at(x, y, w_of(&ui.area), h_of(&ui.area), n) {
-                ui.app.cursor = p;
-                match ui.app.play_at_cursor() {
-                    Ok(()) => spawn_analysis(&mut ui),
-                    Err(e) => ui.app.status = e,
-                }
+                ui.ctrl.app.cursor = p;
+                let _ = ui.ctrl.play_at_cursor();
                 refresh(&mut ui);
             }
         });
@@ -263,7 +253,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            let n = ui.app.size as f64;
+            let n = ui.ctrl.app.size as f64;
             ui.hover = point_at(x, y, w_of(&ui.area), h_of(&ui.area), n);
             ui.area.queue_draw();
         });
@@ -280,35 +270,26 @@ fn build_ui(application: &adw::Application) {
                 return glib::Propagation::Proceed;
             };
             match key {
-                gdk::Key::h | gdk::Key::Left => ui.app.move_cursor(-1, 0),
-                gdk::Key::l | gdk::Key::Right => ui.app.move_cursor(1, 0),
-                gdk::Key::k | gdk::Key::Up => ui.app.move_cursor(0, -1),
-                gdk::Key::j | gdk::Key::Down => ui.app.move_cursor(0, 1),
+                gdk::Key::h | gdk::Key::Left => ui.ctrl.app.move_cursor(-1, 0),
+                gdk::Key::l | gdk::Key::Right => ui.ctrl.app.move_cursor(1, 0),
+                gdk::Key::k | gdk::Key::Up => ui.ctrl.app.move_cursor(0, -1),
+                gdk::Key::j | gdk::Key::Down => ui.ctrl.app.move_cursor(0, 1),
                 gdk::Key::Return => {
                     if let Some(p) = ui.hover {
-                        ui.app.cursor = p;
+                        ui.ctrl.app.cursor = p;
                     }
-                    match ui.app.play_at_cursor() {
-                        Ok(()) => spawn_analysis(&mut ui),
-                        Err(e) => ui.app.status = e,
-                    }
+                    let _ = ui.ctrl.play_at_cursor();
                 }
-                gdk::Key::u => ui.app.prev_move(),
-                gdk::Key::n => ui.app.next_move(),
-                gdk::Key::p => ui.app.prev_move(),
-                gdk::Key::g => ui.app.goto_start(),
-                gdk::Key::G => ui.app.goto_end(),
-                gdk::Key::t => {
-                    ui.app.start_play();
-                    spawn_analysis(&mut ui);
-                }
-                gdk::Key::v => {
-                    ui.app.toggle_ai();
-                    pump(&mut ui);
-                }
-                gdk::Key::a => spawn_analysis(&mut ui),
-                gdk::Key::A => spawn_review(&mut ui),
-                gdk::Key::b => ui.app.next_blunder(),
+                gdk::Key::u => ui.ctrl.app.prev_move(),
+                gdk::Key::n => ui.ctrl.app.next_move(),
+                gdk::Key::p => ui.ctrl.app.prev_move(),
+                gdk::Key::g => ui.ctrl.app.goto_start(),
+                gdk::Key::G => ui.ctrl.app.goto_end(),
+                gdk::Key::t => ui.ctrl.start_play(),
+                gdk::Key::v => ui.ctrl.toggle_ai(),
+                gdk::Key::a => ui.ctrl.analyze(),
+                gdk::Key::A => ui.ctrl.review(),
+                gdk::Key::b => ui.ctrl.app.next_blunder(),
                 gdk::Key::q => {
                     window_c.close();
                     return glib::Propagation::Stop;
@@ -328,8 +309,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            ui.app.start_play();
-            spawn_analysis(&mut ui);
+            ui.ctrl.start_play();
             reload_games(&mut ui);
             refresh(&mut ui);
         });
@@ -340,7 +320,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            spawn_analysis(&mut ui);
+            ui.ctrl.analyze();
             refresh(&mut ui);
         });
     }
@@ -350,7 +330,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            spawn_review(&mut ui);
+            ui.ctrl.review();
             refresh(&mut ui);
         });
     }
@@ -360,7 +340,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            ui.app.prev_move();
+            ui.ctrl.app.prev_move();
             refresh(&mut ui);
         });
     }
@@ -370,7 +350,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            ui.app.prev_move();
+            ui.ctrl.app.prev_move();
             refresh(&mut ui);
         });
     }
@@ -380,7 +360,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            ui.app.next_move();
+            ui.ctrl.app.next_move();
             refresh(&mut ui);
         });
     }
@@ -390,7 +370,7 @@ fn build_ui(application: &adw::Application) {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return;
             };
-            ui.app.lang = if ui.app.lang.is_zh() {
+            ui.ctrl.app.lang = if ui.ctrl.app.lang.is_zh() {
                 app::i18n::Lang::En
             } else {
                 app::i18n::Lang::Zh
@@ -409,27 +389,25 @@ fn build_ui(application: &adw::Application) {
                 return;
             }
             let idx = ui.games.selected() as usize;
-            if idx < ui.app.games.len() {
-                ui.app.game_cursor = idx;
-                ui.app.open_selected_game();
+            if idx < ui.ctrl.app.games.len() {
+                ui.ctrl.app.game_cursor = idx;
+                ui.ctrl.open_selected_game();
                 reload_games(&mut ui);
             }
             refresh(&mut ui);
         });
     }
 
-    // 定时器：收分析结果、推进 AI、刷新界面
+    // 定时器：收分析结果 + 推进 AI，只在状态变了才重画
     {
         let ui = ui.clone();
-        glib::timeout_add_local(Duration::from_millis(80), move || {
+        glib::timeout_add_local(Duration::from_millis(50), move || {
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return glib::ControlFlow::Continue;
             };
-            while let Ok(ev) = ui.rx.try_recv() {
-                ui.app.apply(ev);
+            if ui.ctrl.tick() {
+                refresh(&mut ui);
             }
-            pump(&mut ui);
-            refresh(&mut ui);
             glib::ControlFlow::Continue
         });
     }
@@ -494,66 +472,12 @@ fn h_of(area: &gtk::DrawingArea) -> f64 {
     area.height() as f64
 }
 
-fn spawn_analysis(ui: &mut Ui) {
-    if ui.app.busy {
-        return;
-    }
-    let pos = ui.app.pos();
-    ui.app.busy = true;
-    ui.app.status = fill(strings(ui.app.lang).analyzing, ui.app.config.engine.visits);
-    let game = ui.app.snapshot();
-    let engine = ui.app.engine.clone();
-    let tx = ui.tx.clone();
-    std::thread::spawn(move || {
-        let result = engine.analyze_position(&game);
-        let _ = tx.send(AppEvent::Analysis { pos, result });
-    });
-}
-
-fn spawn_review(ui: &mut Ui) {
-    if ui.app.busy {
-        return;
-    }
-    ui.app.busy = true;
-    ui.app.status = strings(ui.app.lang).reviewing.to_string();
-    let game = match ui.app.full_game() {
-        Ok(g) => g,
-        Err(e) => {
-            ui.app.busy = false;
-            ui.app.status = e;
-            return;
-        }
-    };
-    let engine = ui.app.engine.clone();
-    let english = !ui.app.lang.is_zh();
-    let tx = ui.tx.clone();
-    std::thread::spawn(move || {
-        let result = engine
-            .analyze_game(&game, |_, _| {})
-            .map(|evals| review::build(english, &game, &evals, 5.0));
-        let _ = tx.send(AppEvent::Review(result));
-    });
-}
-
-fn pump(ui: &mut Ui) {
-    match ui.app.next_action() {
-        Action::None => {}
-        Action::Analyze => spawn_analysis(ui),
-        Action::AiMove(mv) => {
-            if ui.app.play_move(mv).is_ok() {
-                ui.app.status = strings(ui.app.lang).ai_played.to_string();
-                spawn_analysis(ui);
-            }
-        }
-    }
-}
-
 fn reload_games(ui: &mut Ui) {
-    ui.app.refresh_games();
-    let names: Vec<String> = if ui.app.games.is_empty() {
-        vec![strings(ui.app.lang).no_games.to_string()]
+    ui.ctrl.app.refresh_games();
+    let names: Vec<String> = if ui.ctrl.app.games.is_empty() {
+        vec![strings(ui.ctrl.app.lang).no_games.to_string()]
     } else {
-        ui.app
+        ui.ctrl.app
             .games
             .iter()
             .map(|g| g.label.clone())
@@ -563,11 +487,11 @@ fn reload_games(ui: &mut Ui) {
     ui.updating_games = true;
     ui.games.set_model(Some(&gtk::StringList::new(&refs)));
     ui.updating_games = false;
-    ui.game_count = ui.app.games.len();
+    ui.game_count = ui.ctrl.app.games.len();
 }
 
 fn refresh(ui: &mut Ui) {
-    let s = strings(ui.app.lang);
+    let s = strings(ui.ctrl.app.lang);
     ui.sec_winrate.set_markup(&format!("<b>{}</b>", s.winrate));
     ui.sec_position.set_markup(&format!("<b>{}</b>", s.position));
     ui.sec_predict.set_markup(&format!("<b>{}</b>", s.predict));
@@ -577,15 +501,15 @@ fn refresh(ui: &mut Ui) {
     ui.review_btn.set_label(s.review_btn);
     ui.undo_btn.set_label(s.undo_btn);
     ui.lang_btn
-        .set_label(if ui.app.lang.is_zh() { "EN" } else { "中文" });
+        .set_label(if ui.ctrl.app.lang.is_zh() { "EN" } else { "中文" });
 
-    let wr = ui.app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
+    let wr = ui.ctrl.app.analysis().map(|a| a.winrate_black).unwrap_or(0.5);
     ui.winrate.set_fraction(wr.clamp(0.0, 1.0) as f64);
     ui.winrate_text.set_text(&format!("{:.1}%", wr * 100.0));
 
-    let who = if !ui.app.ai_enabled {
+    let who = if !ui.ctrl.app.ai_enabled {
         s.review.to_string()
-    } else if ui.app.to_move() == ui.app.human {
+    } else if ui.ctrl.app.to_move() == ui.ctrl.app.human {
         s.you.to_string()
     } else {
         s.ai.to_string()
@@ -593,30 +517,30 @@ fn refresh(ui: &mut Ui) {
     ui.turn.set_text(&format!(
         "{}: {}({})",
         s.turn,
-        color_name(ui.app.to_move(), ui.app.lang),
+        color_name(ui.ctrl.app.to_move(), ui.ctrl.app.lang),
         who
     ));
-    let score = ui.app.analysis().map(|a| a.score_black).unwrap_or(0.0);
+    let score = ui.ctrl.app.analysis().map(|a| a.score_black).unwrap_or(0.0);
     ui.score.set_text(&format!("{}: {score:+.1}", s.score));
     ui.moves
-        .set_text(&format!("{}: {} / {}", s.moves, ui.app.pos(), ui.app.total_moves()));
+        .set_text(&format!("{}: {} / {}", s.moves, ui.ctrl.app.pos(), ui.ctrl.app.total_moves()));
 
     let mut cand = String::new();
-    for (i, (mv, wr)) in ui.app.prediction().iter().enumerate() {
+    for (i, (mv, wr)) in ui.ctrl.app.prediction().iter().enumerate() {
         cand.push_str(&format!(
             "{}. {}  {:.1}%\n",
             i + 1,
-            move_text(*mv, ui.app.size),
+            move_text(*mv, ui.ctrl.app.size),
             wr * 100.0
         ));
     }
-    if let Some(a) = ui.app.analysis() {
+    if let Some(a) = ui.ctrl.app.analysis() {
         if let Some(best) = a.candidates.first() {
             let pv: Vec<String> = best
                 .pv
                 .iter()
                 .take(6)
-                .map(|m| move_text(*m, ui.app.size))
+                .map(|m| move_text(*m, ui.ctrl.app.size))
                 .collect();
             if !pv.is_empty() {
                 cand.push_str(&format!("{}: {}", s.line, pv.join(" ")));
@@ -628,9 +552,9 @@ fn refresh(ui: &mut Ui) {
     }
     ui.cand.set_text(&cand);
 
-    let mut text = ui.app.last_comment.clone().unwrap_or_default();
-    if ui.app.ai_enabled && ui.app.to_move() == ui.app.human {
-        if let Some(a) = ui.app.analysis() {
+    let mut text = ui.ctrl.app.last_comment.clone().unwrap_or_default();
+    if ui.ctrl.app.ai_enabled && ui.ctrl.app.to_move() == ui.ctrl.app.human {
+        if let Some(a) = ui.ctrl.app.analysis() {
             if let Some(best) = a.candidates.first() {
                 if !text.is_empty() {
                     text.push_str("\n\n");
@@ -638,7 +562,7 @@ fn refresh(ui: &mut Ui) {
                 text.push_str(&format!(
                     "{} {}（{:.1}%）",
                     s.suggestion,
-                    move_text(best.mv, ui.app.size),
+                    move_text(best.mv, ui.ctrl.app.size),
                     best.winrate_black * 100.0
                 ));
             }
@@ -648,19 +572,12 @@ fn refresh(ui: &mut Ui) {
         text.push_str(s.fallback_comment);
     }
     ui.comment.set_text(&text);
-    ui.status.set_text(&ui.app.status);
+    ui.status.set_text(&ui.ctrl.app.status);
 
-    if ui.app.games.len() != ui.game_count {
+    if ui.ctrl.app.games.len() != ui.game_count {
         reload_games(ui);
     }
     ui.area.queue_draw();
-}
-
-fn move_text(mv: goban::Move, size: u8) -> String {
-    match mv {
-        goban::Move::Play(p) => engine::gtp_coord(p, size),
-        goban::Move::Pass => "pass".to_string(),
-    }
 }
 
 #[derive(Clone, Copy)]

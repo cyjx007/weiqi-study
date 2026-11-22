@@ -170,7 +170,7 @@ crates/goban     规则：提子、自杀、位置超级劫、面积数子
 crates/sgf       SGF 读取：跟随主线，跳过变化
 crates/engine    KataGo 进程管理与 analysis JSON 解析
 crates/review    讲评模板（纯函数、确定性）
-crates/app       与界面无关的状态：导航、落子/撤回、引擎应手
+crates/app       与界面无关的状态 + 共用 Controller（分析线程、AI 推进）
 crates/cli       go-review
 crates/tui       weiqi-tui（ratatui）
 crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）

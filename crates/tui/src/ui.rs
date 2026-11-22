@@ -1,7 +1,7 @@
 //! 界面渲染：只读 `App` 状态，不修改任何东西。
 
 use app::i18n::{color_name, strings};
-use app::App;
+use app::{move_text, App};
 use goban::{Color, Move, Point};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -258,7 +258,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(format!(
                 "{}. {:<4} {:.1}%",
                 i + 1,
-                mv_text(*mv, app.size),
+                move_text(*mv, app.size),
                 wr * 100.0
             )));
         }
@@ -268,7 +268,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                     .pv
                     .iter()
                     .take(5)
-                    .map(|m| mv_text(*m, app.size))
+                    .map(|m| move_text(*m, app.size))
                     .collect();
                 if !pv.is_empty() {
                     lines.push(Line::from(format!("{} {}", s.line, pv.join(" "))));
@@ -294,14 +294,14 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
                 text.push_str(&format!(
                     "{} {}（{:.1}%）",
                     s.suggestion,
-                    mv_text(best.mv, app.size),
+                    move_text(best.mv, app.size),
                     best.winrate_black * 100.0
                 ));
                 let pv: Vec<String> = best
                     .pv
                     .iter()
                     .take(4)
-                    .map(|m| mv_text(*m, app.size))
+                    .map(|m| move_text(*m, app.size))
                     .collect();
                 if !pv.is_empty() {
                     text.push_str(&format!("，{} {}", s.line, pv.join(" ")));
@@ -327,7 +327,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_games(frame: &mut Frame, app: &App, area: Rect) {
     let s = strings(app.lang);
     let w = 52.min(area.width);
-    let h = ((app.games.len() as u16) + 4).clamp(7, area.height);
+    let h = ((app.games.len() as u16) + 4).clamp(7.min(area.height), area.height);
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
 
@@ -386,13 +386,6 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         y: area.y + area.height.saturating_sub(h) / 2,
         width: w,
         height: h,
-    }
-}
-
-fn mv_text(mv: Move, size: u8) -> String {
-    match mv {
-        Move::Play(p) => engine::gtp_coord(p, size),
-        Move::Pass => "pass".to_string(),
     }
 }
 
@@ -490,5 +483,12 @@ mod tests {
     fn tiny_terminal_does_not_panic() {
         let app = test_app();
         let _ = render_to_string(&app, 20, 8);
+    }
+
+    #[test]
+    fn tiny_games_overlay_does_not_panic() {
+        let mut app = test_app();
+        app.show_games = true;
+        let _ = render_to_string(&app, 20, 4);
     }
 }

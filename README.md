@@ -176,7 +176,7 @@ crates/goban     rules only: captures, suicide, positional superko, area scoring
 crates/sgf       SGF reader: follows the main line, skips variations
 crates/engine    KataGo process management and analysis JSON parsing
 crates/review    commentary templates (pure, deterministic)
-crates/app       UI-independent state: navigation, play/undo, engine turns
+crates/app       UI-independent state + shared Controller (analysis threads, AI pump)
 crates/cli       go-review binary
 crates/tui       weiqi-tui binary (ratatui)
 crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
