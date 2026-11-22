@@ -9,3 +9,4 @@ goban = { path = "../goban" }
 sgf = { path = "../sgf" }
 engine = { path = "../engine" }
 review = { path = "../review" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

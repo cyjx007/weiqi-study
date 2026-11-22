@@ -243,6 +243,59 @@ fn parse_move(s: &str, size: u8) -> Move {
     }
 }
 
+/// 把局面写回 SGF（只写主线，带摆子和贴目）。
+pub fn write_game(
+    size: u8,
+    komi: f32,
+    setup: &[(Color, Point)],
+    moves: &[Move],
+) -> String {
+    fn coord(p: Point) -> String {
+        let mut s = String::new();
+        s.push((b'a' + p.x) as char);
+        s.push((b'a' + p.y) as char);
+        s
+    }
+    let mut out = String::from("(;GM[1]FF[4]CA[UTF-8]");
+    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[Chinese]"));
+    let blacks: Vec<String> = setup
+        .iter()
+        .filter(|(c, _)| *c == Color::Black)
+        .map(|(_, p)| format!("[{}]", coord(*p)))
+        .collect();
+    let whites: Vec<String> = setup
+        .iter()
+        .filter(|(c, _)| *c == Color::White)
+        .map(|(_, p)| format!("[{}]", coord(*p)))
+        .collect();
+    if !blacks.is_empty() {
+        out.push_str("AB");
+        out.push_str(&blacks.concat());
+    }
+    if !whites.is_empty() {
+        out.push_str("AW");
+        out.push_str(&whites.concat());
+    }
+
+    let first = if setup.is_empty() {
+        Color::Black
+    } else {
+        Color::White
+    };
+    for (i, mv) in moves.iter().enumerate() {
+        let color = if i % 2 == 0 { first } else { first.opposite() };
+        out.push(';');
+        out.push(color.sgf_char());
+        out.push('[');
+        if let Move::Play(p) = mv {
+            out.push_str(&coord(*p));
+        }
+        out.push(']');
+    }
+    out.push(')');
+    out
+}
+
 /// SGF 坐标 -> 0-based Point（给测试和外部工具复用）
 pub fn point_from_sgf(s: &str, size: u8) -> Option<Point> {
     parse_coord(s, size)
@@ -272,6 +325,20 @@ mod tests {
         assert_eq!(g.moves.len(), 3);
         assert_eq!(g.moves[1], Move::Play(Point::new(6, 6))); // G7
         assert_eq!(g.moves[2], Move::Play(Point::new(3, 3)));
+    }
+
+    #[test]
+    fn writes_and_reparses() {
+        let moves = vec![
+            Move::Play(Point::new(15, 3)),
+            Move::Pass,
+            Move::Play(Point::new(3, 15)),
+        ];
+        let text = write_game(19, 7.5, &[], &moves);
+        let back = parse(&text).unwrap();
+        assert_eq!(back.size, 19);
+        assert_eq!(back.komi, Some(7.5));
+        assert_eq!(back.moves, moves);
     }
 
     #[test]

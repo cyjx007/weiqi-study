@@ -3,7 +3,14 @@
 //! 前端只负责把按键映射成这里的调用，以及把状态画出来。
 //! 本 crate 不碰终端、不 spawn 线程——分析由前端起线程后把结果送回来。
 
+pub mod i18n;
+pub mod storage;
+
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+use i18n::{strings, Lang};
+use storage::{GameEntry, GameStore};
 
 use engine::{EngineConfig, TurnEval};
 use goban::{Color, Game, Move, Point};
@@ -55,6 +62,12 @@ pub struct App {
     pub human: Color,
     /// 最近一手的即时点评
     pub last_comment: Option<String>,
+    pub lang: Lang,
+    pub store: GameStore,
+    pub current_file: Option<PathBuf>,
+    pub games: Vec<GameEntry>,
+    pub show_games: bool,
+    pub game_cursor: usize,
     setup: Vec<(Color, Point)>,
     moves: Vec<Move>,
     pos: usize,
@@ -71,13 +84,19 @@ impl App {
             komi,
             cursor: Point::new(size / 2, size / 2),
             review: None,
-            status: "就绪".to_string(),
+            status: strings(Lang::from_env()).ready.to_string(),
             busy: false,
             show_help: false,
             config,
             ai_enabled: false,
             human: Color::Black,
             last_comment: None,
+            lang: Lang::from_env(),
+            store: GameStore::open(),
+            current_file: None,
+            games: Vec::new(),
+            show_games: false,
+            game_cursor: 0,
             setup: Vec::new(),
             moves: Vec::new(),
             pos: 0,
@@ -141,7 +160,7 @@ impl App {
     /// 在光标处落子（人）。人机模式下轮到 AI 时会拒绝。
     pub fn play_at_cursor(&mut self) -> Result<(), String> {
         if self.ai_enabled && self.to_move() != self.human {
-            return Err("现在轮到 AI".to_string());
+            return Err(strings(self.lang).turn_ai.to_string());
         }
         self.play_move(Move::Play(self.cursor))
     }
@@ -157,7 +176,19 @@ impl App {
         // 新分支之后的评估全部作废
         self.evals.retain(|&k, _| k <= self.pos);
         self.review = None;
+        self.autosave();
         Ok(())
+    }
+
+    /// 把当前局面写回它对应的文件（如果有）。
+    fn autosave(&mut self) {
+        let Some(path) = self.current_file.clone() else {
+            return;
+        };
+        let setup = self.setup.clone();
+        if let Err(e) = self.store.save(&path, self.size, self.komi, &setup, &self.moves) {
+            self.status = e;
+        }
     }
 
     /// 开始一盘人机对局：空盘，你执黑，AI 执白。
@@ -176,15 +207,94 @@ impl App {
             self.status = e;
             return;
         }
-        self.status = "人机对局：你执黑，AI 执白。Enter 落子".to_string();
+        match self.store.create() {
+            Ok(path) => {
+                self.current_file = Some(path.clone());
+                self.autosave();
+                self.status = i18n::fill(
+                    strings(self.lang).new_game,
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                );
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    pub fn open_sgf_file(
+        &mut self,
+        path: PathBuf,
+        sg: &SgfGame,
+    ) -> Result<(), String> {
+        self.size = sg.size;
+        self.komi = sg.komi.unwrap_or(7.5);
+        self.setup = sg.setup.clone();
+        self.moves = sg.moves.clone();
+        self.pos = self.moves.len();
+        self.current_file = Some(path);
+        self.evals.clear();
+        self.review = None;
+        self.last_comment = None;
+        self.failed_pos = None;
+        self.cursor = Point::new(self.size / 2, self.size / 2);
+        self.rebuild()
+    }
+
+    pub fn toggle_games(&mut self) {
+        self.show_games = !self.show_games;
+        if self.show_games {
+            self.refresh_games();
+            self.game_cursor = 0;
+        }
+    }
+
+    pub fn refresh_games(&mut self) {
+        self.games = self.store.list();
+    }
+
+    pub fn move_game_cursor(&mut self, delta: i32) {
+        if self.games.is_empty() {
+            return;
+        }
+        let n = self.games.len() as i32;
+        let mut i = self.game_cursor as i32 + delta;
+        if i < 0 {
+            i = n - 1;
+        } else if i >= n {
+            i = 0;
+        }
+        self.game_cursor = i as usize;
+    }
+
+    pub fn open_selected_game(&mut self) {
+        let Some(entry) = self.games.get(self.game_cursor).cloned() else {
+            return;
+        };
+        let result = self
+            .store
+            .read(&entry.path)
+            .and_then(|text| sgf::parse(&text));
+        match result {
+            Ok(sg) => match self.open_sgf_file(entry.path.clone(), &sg) {
+                Ok(()) => {
+                    self.show_games = false;
+                    self.status = i18n::fill(
+                        strings(self.lang).game_loaded,
+                        entry.path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                    );
+                }
+                Err(e) => self.status = e,
+            },
+            Err(e) => self.status = e,
+        }
     }
 
     pub fn toggle_ai(&mut self) {
         self.ai_enabled = !self.ai_enabled;
+        let st = strings(self.lang);
         self.status = if self.ai_enabled {
-            format!("AI 应手：开（你执{}）", self.human.name_zh())
+            i18n::fill(st.ai_on, i18n::color_name(self.human, self.lang))
         } else {
-            "AI 应手：关（自由摆子）".to_string()
+            st.ai_off.to_string()
         };
     }
 
@@ -223,11 +333,11 @@ impl App {
 
     pub fn next_blunder(&mut self) {
         let Some(review) = &self.review else {
-            self.status = "还没有全盘复盘（按 A）".to_string();
+            self.status = strings(self.lang).need_review.to_string();
             return;
         };
         if review.blunders.is_empty() {
-            self.status = "没有超过阈值的失误".to_string();
+            self.status = strings(self.lang).no_blunders.to_string();
             return;
         }
         let turns: Vec<u16> = review
@@ -242,7 +352,7 @@ impl App {
             .or_else(|| turns.first().copied());
         if let Some(turn) = next {
             self.jump_to_turn(turn);
-            self.status = format!("跳到第 {turn} 手");
+            self.status = i18n::fill(strings(self.lang).jump_turn, turn);
         }
     }
 
@@ -326,7 +436,7 @@ impl App {
                     Ok(t) => {
                         self.failed_pos = None;
                         self.evals.insert(pos, t);
-                        self.status = "分析完成".to_string();
+                        self.status = strings(self.lang).analysis_done.to_string();
                         if pos > 0 && pos <= self.moves.len() {
                             let before = self.evals.get(&(pos - 1)).cloned();
                             let after = self.evals.get(&pos).cloned();
@@ -348,18 +458,18 @@ impl App {
                     }
                     Err(e) => {
                         self.failed_pos = Some(pos);
-                        self.status = format!("分析失败：{e}");
+                        self.status = i18n::fill(strings(self.lang).analysis_failed, e);
                     }
                 }
             }
             AppEvent::Review(Ok(r)) => {
                 self.review = Some(r);
                 self.busy = false;
-                self.status = "全盘复盘完成（b 跳到下一个失误）".to_string();
+                self.status = strings(self.lang).review_done.to_string();
             }
             AppEvent::Review(Err(e)) => {
                 self.busy = false;
-                self.status = format!("复盘失败：{e}");
+                self.status = i18n::fill(strings(self.lang).review_failed, e);
             }
         }
     }
@@ -396,6 +506,23 @@ mod tests {
     use super::*;
     use engine::Candidate;
     use goban::Move;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn test_store() -> storage::GameStore {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        storage::GameStore::at(std::env::temp_dir().join(format!(
+            "weiqi-app-test-{}-{}",
+            std::process::id(),
+            n
+        )))
+    }
+
+    fn start(app: &mut App) {
+        app.store = test_store();
+        app.start_play();
+    }
 
     fn demo() -> App {
         let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[dd];W[ee])").unwrap();
@@ -481,7 +608,7 @@ mod tests {
     #[test]
     fn start_play_gives_empty_board_to_human() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         assert_eq!(app.total_moves(), 0);
         assert_eq!(app.to_move(), Color::Black);
         assert!(app.ai_enabled);
@@ -491,7 +618,7 @@ mod tests {
     #[test]
     fn human_cannot_move_on_ai_turn() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         app.evals.insert(
             0,
             eval(0, Color::Black, 1.0, Move::Play(Point::new(2, 2))),
@@ -504,7 +631,7 @@ mod tests {
     #[test]
     fn ai_choice_comes_from_candidates() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         app.cursor = Point::new(2, 2);
         app.play_at_cursor().unwrap(); // 黑
         app.evals
@@ -516,7 +643,7 @@ mod tests {
     #[test]
     fn next_action_requests_analysis_then_ai_move() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         // 空盘、轮到人：没有评估 → 要求分析
         assert_eq!(app.next_action(), Action::Analyze);
         app.evals.insert(0, eval(0, Color::Black, 0.5, Move::Play(Point::new(2, 2))));
@@ -535,7 +662,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.engine.visits = 40;
         let mut app = App::new(9, 7.5, config);
-        app.start_play();
+        start(&mut app);
 
         let mut guard = 0;
         while app.total_moves() < 6 && guard < 20 {
@@ -563,9 +690,29 @@ mod tests {
     }
 
     #[test]
+    fn saves_moves_and_reloads() {
+        let mut app = demo();
+        start(&mut app);
+        app.cursor = Point::new(2, 2);
+        app.play_at_cursor().unwrap();
+        let file = app.current_file.clone().unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let sg = sgf::parse(&text).unwrap();
+        assert_eq!(sg.moves.len(), 1);
+        app.refresh_games();
+        assert_eq!(app.games.len(), 1);
+
+        let mut reopened = App::new(9, 7.5, AppConfig::default());
+        reopened.store = app.store.clone();
+        reopened.open_sgf_file(file, &sg).unwrap();
+        assert_eq!(reopened.total_moves(), 1);
+        assert_eq!(reopened.pos(), 1);
+    }
+
+    #[test]
     fn failed_analysis_does_not_retry_forever() {
         let mut app = demo();
-        app.start_play();
+        start(&mut app);
         app.apply(AppEvent::Analysis {
             pos: 0,
             result: Err("boom".to_string()),
