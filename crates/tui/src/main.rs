@@ -117,6 +117,7 @@ fn event_loop(
                             }
                             KeyCode::Char('?') => app.show_help = !app.show_help,
                             KeyCode::Char('L') => app.toggle_games(),
+                            KeyCode::Char('i') => app.show_info = !app.show_info,
                             KeyCode::Left | KeyCode::Char('h') => app.move_cursor(-1, 0),
                             KeyCode::Right | KeyCode::Char('l') => app.move_cursor(1, 0),
                             KeyCode::Up | KeyCode::Char('k') => app.move_cursor(0, -1),

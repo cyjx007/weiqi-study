@@ -132,7 +132,7 @@ const ZH: Strings = Strings {
     game_loaded: "已载入 {}",
     new_game: "新棋谱：{}",
     games_hint: "↑↓ 选择 · Enter 打开 · Esc 关闭",
-    footer: "hjkl 移动 · Enter 落子 · t 对局 · v AI · u 撤回 · n/p 翻手 · a 分析 · A 复盘 · b 失误 · L 棋谱 · q 退出",
+    footer: "hjkl 移动 · Enter 落子 · t 对局 · v AI · u 撤回 · n/p 翻手 · a 分析 · A 复盘 · b 失误 · L 棋谱 · i 信息 · q 退出",
     help_lines: &[
         ("hjkl / 方向键", "移动光标"),
         ("Enter", "在光标处落子"),
@@ -192,7 +192,7 @@ const EN: Strings = Strings {
     game_loaded: "Loaded {}",
     new_game: "New game: {}",
     games_hint: "↑↓ select · Enter open · Esc close",
-    footer: "hjkl move · Enter play · t game · v AI · u undo · n/p prev/next · a analyse · A review · b blunder · L games · q quit",
+    footer: "hjkl move · Enter play · t game · v AI · u undo · n/p prev/next · a analyse · A review · b blunder · L games · i info · q quit",
     help_lines: &[
         ("hjkl / arrows", "move the cursor"),
         ("Enter", "play at the cursor"),

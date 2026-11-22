@@ -20,17 +20,37 @@ const CAND: [&str; 3] = ["1", "2", "3"];
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
     let content = rows[0];
     let footer = rows[1];
 
-    let cols = Layout::horizontal([Constraint::Min(42), Constraint::Length(38)]).split(content);
-    draw_board(frame, app, cols[0]);
-    draw_side(frame, app, cols[1]);
+    // 宽窗口才固定侧栏；窄窗口把棋盘铺满，信息用 i 临时覆盖显示
+    let docked = content.width >= 78;
+    let side_w = 38.min(content.width.saturating_sub(44));
+    if docked {
+        let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(side_w)]).split(content);
+        draw_board(frame, app, cols[0]);
+        draw_side(frame, app, cols[1]);
+    } else {
+        draw_board(frame, app, content);
+        if app.show_info {
+            let w = 38.min(content.width);
+            let rect = Rect {
+                x: content.x + content.width.saturating_sub(w),
+                y: content.y,
+                width: w,
+                height: content.height,
+            };
+            frame.render_widget(Clear, rect);
+            draw_side(frame, app, rect);
+        }
+    }
 
     let s = strings(app.lang);
     frame.render_widget(
-        Paragraph::new(s.footer).style(Style::default().fg(C::Gray)),
+        Paragraph::new(s.footer)
+            .style(Style::default().fg(C::Gray))
+            .wrap(Wrap { trim: true }),
         footer,
     );
 
@@ -40,6 +60,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.show_games {
         draw_games(frame, app, area);
     }
+}
+
+/// 保持像素接近正方形：字符高约为宽的两倍，所以行距 = 列距 / 2。
+fn choose_scale(inner_w: u16, inner_h: u16, n: u16) -> Option<(u16, u16)> {
+    for (spacing, row_step) in [(6u16, 3u16), (4, 2), (2, 1)] {
+        let w = n * spacing + 4;
+        let h = n * row_step + 2;
+        if w <= inner_w && h <= inner_h {
+            return Some((spacing, row_step));
+        }
+    }
+    None
 }
 
 fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
@@ -68,18 +100,16 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let n = app.size as u16;
-    // 横向格距随窗口变宽：2 → 3 → 4；纵向在够高时隔行加空行
-    let spacing: u16 = ((inner.width.saturating_sub(5)) / n).clamp(2, 4);
-    let row_step: u16 = if inner.height >= n * 2 + 3 { 2 } else { 1 };
-    let need_w = n * spacing + 4;
-    let need_h = n * row_step + 2;
-    if inner.width < need_w || inner.height < need_h {
+    let Some((spacing, row_step)) = choose_scale(inner.width, inner.height, n) else {
         frame.render_widget(
-            Paragraph::new("window too small / 窗口太小").style(Style::default().fg(C::Gray)),
+            Paragraph::new("window too small / 窗口太小")
+                .style(Style::default().fg(C::Gray)),
             inner,
         );
         return;
-    }
+    };
+    let need_w = n * spacing + 4;
+    let need_h = n * row_step + 2;
     let x0 = inner.x + (inner.width - need_w) / 2;
     let y0 = inner.y + (inner.height - need_h) / 2;
 
@@ -96,11 +126,12 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     let stars = star_points(n as usize);
     let grid_x = x0 + 3;
 
+    let pad = (spacing.saturating_sub(1)) / 2;
     for j in 0..n {
         let letter = GTP_COLS[j as usize] as char;
-        buf.set_string(grid_x + j * spacing, y0, letter.to_string(), wood.fg(LINE));
+        buf.set_string(grid_x + j * spacing + pad, y0, letter.to_string(), wood.fg(LINE));
         buf.set_string(
-            grid_x + j * spacing,
+            grid_x + j * spacing + pad,
             y0 + 1 + n * row_step,
             letter.to_string(),
             wood.fg(LINE),
@@ -138,9 +169,22 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 },
             };
-            buf.set_string(x, y, format!("{sym} "), style.fg(fg));
+            let cell = cell_text(sym, spacing);
+            buf.set_string(x, y, cell, style.fg(fg));
         }
     }
+}
+
+/// 把 1 列宽的符号放进 `spacing` 列宽的格子里并居中。
+fn cell_text(sym: &str, spacing: u16) -> String {
+    let w = spacing as usize;
+    let pad = (w.saturating_sub(1)) / 2;
+    let mut out = String::new();
+    out.push_str(&" ".repeat(pad));
+    out.push_str(sym);
+    let used = pad + 1;
+    out.push_str(&" ".repeat(w.saturating_sub(used)));
+    out
 }
 
 fn star_points(n: usize) -> &'static [usize] {
@@ -419,6 +463,14 @@ mod tests {
         app.lang = Lang::En;
         let en = compact(render_to_string(&app, 110, 40));
         assert!(en.contains("Nosavedgamesyet"));
+    }
+
+    #[test]
+    fn scale_keeps_square_aspect() {
+        assert_eq!(choose_scale(200, 80, 19), Some((6, 3)));
+        assert_eq!(choose_scale(100, 40, 19), Some((4, 2)));
+        assert_eq!(choose_scale(60, 40, 19), Some((2, 1)));
+        assert_eq!(choose_scale(30, 12, 19), None);
     }
 
     #[test]
