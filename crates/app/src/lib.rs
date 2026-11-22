@@ -731,6 +731,7 @@ mod tests {
     #[test]
     fn analysis_produces_quick_comment() {
         let mut app = demo();
+        app.lang = Lang::Zh;
         start(&mut app);
         app.cursor = Point::new(2, 2);
         app.play_at_cursor().unwrap();
