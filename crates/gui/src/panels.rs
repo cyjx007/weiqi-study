@@ -94,22 +94,29 @@ impl Panels {
         let head = card();
         let sec_winrate = section("");
         turn.add_css_class("turn-label");
+        turn.set_hexpand(true);
         let winrate_text = gtk::Label::new(Some("50.0%"));
         winrate_text.add_css_class("winrate-big");
-        winrate_text.set_xalign(0.0);
+        winrate_text.set_xalign(1.0);
         winrate.set_show_text(false);
         winrate.add_css_class("winrate-bar");
+
+        // 轮次 + 胜率同一行；目差 + 手数同一行
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        title_row.append(&turn);
+        title_row.append(&winrate_text);
+        let stats_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        stats_row.append(&score);
+        stats_row.append(&moves);
+
         head.append(&sec_winrate);
-        head.append(&turn);
-        head.append(&winrate_text);
+        head.append(&title_row);
         head.append(&winrate);
-        // 局面信息并进同一张卡，省出一整张卡的高度给预测/讲解
         let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
         sep.set_margin_top(2);
         sep.set_margin_bottom(2);
         head.append(&sep);
-        head.append(&score);
-        head.append(&moves);
+        head.append(&stats_row);
         side.append(&head);
 
         // AI 设置：默认折叠，给预测/讲解留出高度
@@ -159,7 +166,6 @@ impl Panels {
 
         // 预测
         let predict_card = card();
-        predict_card.set_vexpand(true);
         let sec_predict = section("");
         predict_card.append(&sec_predict);
         predict_card.append(&cand);
