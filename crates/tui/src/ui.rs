@@ -151,9 +151,6 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
             if is_last {
                 style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
-            if app.cursor == p {
-                style = style.bg(CURSOR);
-            }
             let (sym, fg) = match stone {
                 Some(Color::Black) => ("●", C::Black),
                 Some(Color::White) => ("○", C::White),
@@ -169,8 +166,20 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
                     }
                 },
             };
-            let cell = cell_text(sym, spacing);
-            buf.set_string(x, y, cell, style.fg(fg));
+            buf.set_string(x, y, cell_text(sym, spacing), style.fg(fg));
+
+            // 光标：用奇数宽的块罩住落点，保证点在方块正中（偶数格宽做不到精确居中）
+            if app.cursor == p {
+                let block_w = if spacing >= 3 { 3 } else { 2 };
+                let pad = (spacing.saturating_sub(1)) / 2;
+                let start = pad.saturating_sub(block_w / 2);
+                buf.set_string(
+                    x + start,
+                    y,
+                    cell_text(sym, block_w),
+                    style.bg(CURSOR).fg(fg),
+                );
+            }
         }
     }
 }

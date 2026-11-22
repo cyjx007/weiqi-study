@@ -24,6 +24,10 @@
             pkgs.cargo
             pkgs.rustc
             pkgs.katago
+            pkgs.pkg-config
+            pkgs.gtk4
+            pkgs.libadwaita
+            pkgs.gobject-introspection
           ];
         };
       });

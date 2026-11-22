@@ -10,6 +10,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: System deps (GTK4 / libadwaita)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
       - name: Test
         run: cargo test --workspace
       - name: Build

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Weiqi Study
+Name[zh_CN]=围棋学习
+Comment=Local Go study board with KataGo
+Comment[zh_CN]=用 KataGo 复盘和练习围棋
+Exec=weiqi-gui
+Icon=applications-games
+Terminal=false
+Categories=Game;BoardGame;
+Keywords=go;weiqi;baduk;围棋;
