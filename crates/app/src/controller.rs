@@ -202,6 +202,21 @@ impl Controller {
         }
     }
 
+    /// 停一手（Pass）；成功后和落子一样自动分析新局面。
+    pub fn play_pass(&mut self) -> Result<(), String> {
+        self.dirty = true;
+        match self.app.play_pass() {
+            Ok(()) => {
+                self.analyze();
+                Ok(())
+            }
+            Err(e) => {
+                self.app.status = e.clone();
+                Err(e)
+            }
+        }
+    }
+
     /// 开一盘人机对局，并立刻分析空盘。
     pub fn start_play(&mut self) {
         self.dirty = true;
@@ -655,6 +670,18 @@ done
         ctrl.tick();
         assert_eq!(ctrl.app.total_moves(), 1, "退出预览后 AI 才落子");
         assert_eq!(ctrl.app.pos(), 1);
+    }
+
+    #[test]
+    fn play_pass_plays_and_starts_analysis() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+
+        ctrl.play_pass().unwrap();
+        assert_eq!(ctrl.app.total_moves(), 1);
+        assert_eq!(ctrl.app.game().moves()[0], Move::Pass);
+        assert!(ctrl.app.busy, "Pass 后应自动分析新局面");
     }
 
     #[test]

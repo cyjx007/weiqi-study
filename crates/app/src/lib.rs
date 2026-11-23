@@ -299,6 +299,14 @@ impl App {
         self.play_move(Move::Play(self.cursor))
     }
 
+    /// 停一手（Pass）。人机模式下轮到 AI 时会拒绝，和落子规则一致。
+    pub fn play_pass(&mut self) -> Result<(), String> {
+        if self.ai_enabled && self.to_move() != self.human {
+            return Err(strings(self.lang).turn_ai.to_string());
+        }
+        self.play_move(Move::Pass)
+    }
+
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
         let mut probe = self.snapshot();

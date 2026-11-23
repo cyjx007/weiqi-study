@@ -1037,6 +1037,21 @@ fn human_rank_cycles() {
 }
 
 #[test]
+fn human_can_pass_but_not_on_the_ai_turn() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.lang = Lang::Zh; // CI/doCheck 是 C/en，断言语义必须固定语言
+    start(&mut app);
+    app.play_pass().unwrap();
+    assert_eq!(app.total_moves(), 1);
+    assert_eq!(app.game().moves()[0], Move::Pass);
+    assert_eq!(app.to_move(), Color::White);
+
+    let err = app.play_pass().unwrap_err();
+    assert!(err.contains("AI") || err.contains("轮到"), "{err}");
+    assert_eq!(app.total_moves(), 1, "被拒绝的 Pass 不能改主线");
+}
+
+#[test]
 fn human_policy_drives_the_ai_move() {
     let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
     let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
