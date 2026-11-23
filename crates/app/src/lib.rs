@@ -364,7 +364,7 @@ impl App {
         self.start_play();
     }
 
-    /// 开始一盘人机对局：空盘，你执黑，AI 执白。
+    /// 开始一盘人机对局：空盘，保持当前选择的一方（默认你执黑），AI 执另一方。
     pub fn start_play(&mut self) {
         self.preview = None;
         self.next_generation();
@@ -381,7 +381,6 @@ impl App {
         self.failed_pos = None;
         self.ai_enabled = true;
         self.vs_ai = true;
-        self.human = Color::Black;
         self.cursor = Point::new(self.size / 2, self.size / 2);
         if let Err(e) = self.rebuild() {
             self.status = e;
@@ -393,9 +392,14 @@ impl App {
                 // 新文件还没有“上次看到的指纹”，否则会误判成冲突
                 self.file_stamp = None;
                 self.autosave();
-                self.status = i18n::fill(
-                    strings(self.lang).new_game,
-                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                let st = strings(self.lang);
+                self.status = format!(
+                    "{} · {}",
+                    i18n::fill(
+                        st.new_game,
+                        path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+                    ),
+                    i18n::fill(st.side_set, i18n::color_name(self.human, self.lang))
                 );
             }
             Err(e) => self.status = e,
@@ -566,6 +570,31 @@ impl App {
         } else {
             st.ai_off.to_string()
         };
+    }
+
+    /// 选择人机对局里你执哪一方。
+    ///
+    /// 分析缓存是黑方视角、与“谁是 AI”无关，因此保留；但即时点评会按
+    /// “你/AI”措辞，必须作废。换边后 `next_action()` 会让 AI 接手它的一方
+    /// （你执白时空盘第一手由 AI 走）。
+    pub fn set_human_color(&mut self, color: Color) {
+        if self.human == color {
+            return;
+        }
+        self.human = color;
+        self.failed_pos = None;
+        self.last_comment = None;
+        self.next_generation();
+        let st = strings(self.lang);
+        self.status = i18n::fill(st.side_set, i18n::color_name(color, self.lang));
+    }
+
+    /// 交换人机双方的执子颜色（TUI/快捷键用）。
+    pub fn swap_sides(&mut self) {
+        self.set_human_color(match self.human {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+        });
     }
 
     pub fn human_model_available(&self) -> bool {

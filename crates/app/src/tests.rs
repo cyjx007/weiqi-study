@@ -657,6 +657,68 @@ fn start_play_gives_empty_board_to_human() {
 }
 
 #[test]
+fn switching_sides_lets_the_engine_open() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    app.lang = Lang::Zh;
+    app.start_play();
+    let gen = app.generation();
+
+    // 你执白：空盘轮到黑，AI 先分析
+    app.set_human_color(Color::White);
+    assert_eq!(app.human, Color::White);
+    assert!(app.generation() > gen, "换边要让旧事件失效");
+    assert_eq!(app.next_action(), Action::Analyze);
+    assert!(app.status.contains('白'), "{}", app.status);
+
+    // 空盘已有分析时，AI 直接落第一子，不需要重新分析
+    let best = Move::Play(Point::new(2, 2));
+    app.evals.insert(0, eval(0, Color::Black, 0.5, best));
+    assert!(
+        matches!(app.next_action(), Action::AiMove(_)),
+        "有分析时应当直接应手，而不是再分析一次"
+    );
+
+    // 换回执黑：轮到你，已有分析就不再重复分析
+    app.swap_sides();
+    assert_eq!(app.human, Color::Black);
+    assert_eq!(app.next_action(), Action::None);
+}
+
+#[test]
+fn new_game_keeps_the_chosen_side() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    app.set_human_color(Color::White);
+    app.start_play();
+    assert_eq!(app.human, Color::White, "开新局不应把选边重置成黑");
+    assert_eq!(app.next_action(), Action::Analyze, "人执白时 AI 先走");
+}
+
+#[test]
+fn changing_sides_clears_stale_comment_and_failed_pos_but_keeps_evals() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    app.start_play();
+    app.failed_pos = Some(3);
+    app.last_comment = Some("旧点评".to_string());
+    app.evals
+        .insert(1, eval(1, Color::White, 0.4, Move::Play(Point::new(1, 1))));
+
+    let gen = app.generation();
+    app.set_human_color(Color::White);
+    assert!(app.generation() > gen);
+    assert_eq!(app.failed_pos, None);
+    assert!(app.last_comment.is_none());
+    assert!(app.evals.contains_key(&1), "分析是黑方视角，换边后仍然有效");
+
+    // 同一个颜色再设一次是空操作
+    let gen = app.generation();
+    app.set_human_color(Color::White);
+    assert_eq!(app.generation(), gen);
+}
+
+#[test]
 fn human_cannot_move_on_ai_turn() {
     let mut app = demo();
     start(&mut app);

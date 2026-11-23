@@ -207,6 +207,20 @@ impl Controller {
         self.pump();
     }
 
+    /// 选择人机对局里你执哪一方（GUI 下拉框用）；换边后立刻推进 AI 的一手。
+    pub fn set_human_color(&mut self, color: goban::Color) {
+        self.dirty = true;
+        self.app.set_human_color(color);
+        self.pump();
+    }
+
+    /// 交换人机双方的执子颜色（TUI 快捷键用）。
+    pub fn swap_sides(&mut self) {
+        self.dirty = true;
+        self.app.swap_sides();
+        self.pump();
+    }
+
     /// 调整分析强度（visits），下一次分析生效。
     pub fn set_visits(&mut self, visits: u32) {
         self.dirty = true;
@@ -566,6 +580,18 @@ done
         }
         assert!(!ctrl.app.busy);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn swapping_sides_makes_the_engine_open_the_game() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        assert!(!ctrl.app.busy);
+
+        ctrl.swap_sides();
+        assert_eq!(ctrl.app.human, Color::White);
+        assert_eq!(ctrl.spawns, 1, "人执白时空盘第一手应由 AI 接手");
+        assert!(ctrl.app.busy, "AI 的第一手在后台分析中");
     }
 
     #[test]
