@@ -309,6 +309,15 @@ impl Engine {
     where
         F: FnMut(usize, usize),
     {
+        // 参数错误必须挡在建会话之前：`Game::to_move_at()` 对超出历史的回合会按奇偶推算行棋方，
+        // 放任越界 turn 下去只会变成引擎报错/超时，看不出是调用方传错了。
+        let total_moves = game.moves().len();
+        if let Some(&bad) = turns.iter().find(|&&t| t as usize > total_moves) {
+            return Err(format!(
+                "请求的回合越界: turn={bad}，当前棋谱共 {total_moves} 手"
+            ));
+        }
+
         for (label, path) in [
             ("katago", &self.cfg.katago),
             ("model", &self.cfg.model),
@@ -504,7 +513,7 @@ impl AnalysisSession {
             let value: Value =
                 serde_json::from_str(&line).map_err(|e| format!("解析 JSON 失败: {e}: {line}"))?;
             if let Some(err) = value.get("error").and_then(|x| x.as_str()) {
-                return Err(format!("KataGo 报错: {err}"));
+                return Err(describe_engine_error(err));
             }
             let id = value
                 .get("id")
@@ -620,6 +629,38 @@ fn finite_f32(v: &Value, key: &str) -> Result<f32, String> {
     Ok(y)
 }
 
+/// 概率类字段：先在原始 `f64` 上校验 `[0, 1]`，再转 `f32`。
+///
+/// 不能先转再查：`1.00000001` 舍入成 `1.0` 会被当成合法值，`-1e-50` 会变成 `-0.0`
+/// 从而绕过“负数非法”的检查。
+fn unit_f32(v: &Value, key: &str) -> Result<f32, String> {
+    let x = finite_f64(v, key)?;
+    if !(0.0..=1.0).contains(&x) {
+        return Err(format!("{key} 越界: {x}"));
+    }
+    let y = x as f32;
+    if !y.is_finite() {
+        return Err(format!("{key} 超出 f32 范围: {x}"));
+    }
+    Ok(y)
+}
+
+/// 给引擎报错补一条可操作的说明；保留原始上下文，不改写错误文本。
+fn describe_engine_error(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    let large_board = ["boardxsize", "boardysize", "board size", "boardsize"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if large_board {
+        format!(
+            "KataGo 报错: {err}；当前构建可能不支持该棋盘尺寸——20 路以上需要用 \
+             MAX_LEN>19 自行编译的 KataGo，且官方网络并未针对大棋盘训练"
+        )
+    } else {
+        format!("KataGo 报错: {err}")
+    }
+}
+
 /// 解析一条候选。协议必需字段（move/winrate/scoreLead/visits）缺任何一个都返回 Err，
 /// 由调用方跳过该候选；只有 `pv` 是可选字段（缺省为空）。
 fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candidate, String> {
@@ -629,10 +670,7 @@ fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candida
         .ok_or_else(|| "候选缺少 move".to_string())?;
     let mv = parse_gtp_move(raw, game.size()).map_err(|e| format!("move={raw}: {e}"))?;
 
-    let cwr = finite_f32(m, "winrate")?;
-    if !(0.0..=1.0).contains(&cwr) {
-        return Err(format!("winrate 越界: {cwr}"));
-    }
+    let cwr = unit_f32(m, "winrate")?;
     let csc = finite_f32(m, "scoreLead")?;
 
     // visits 是整数：`1.9` 不能被 `as u32` 截断成 1
@@ -669,20 +707,31 @@ fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candida
     })
 }
 
-/// `humanPolicy` 是 row-major 概率，-1 表示非法点（项目约定）。
-/// 任何非数字、非有限值、或 -1 之外的负数/大于 1 的值，都视为整份数据损坏。
-fn human_policy_from_json(v: &Value) -> Option<Vec<f32>> {
+/// `humanPolicy` 是 row-major 概率，-1 表示非法点（项目约定），最后一位是 Pass。
+///
+/// 协议规定长度必须精确等于 `boardYSize * boardXSize + 1`；少一个 Pass 槽或多出元素
+/// 都属于坏数据，整份丢弃（普通候选不因此失败）。
+/// 取值范围在原始 `f64` 上判断：`-1.00000001` 不能因为舍入成 `f32 -1.0` 被当成合法哨兵。
+fn human_policy_from_json(v: &Value, size: u8) -> Option<Vec<f32>> {
     let arr = v.as_array()?;
+    let cells = (size as usize) * (size as usize);
+    if arr.len() != cells + 1 {
+        return None;
+    }
     let mut out = Vec::with_capacity(arr.len());
     for x in arr {
-        let p = x.as_f64()? as f32;
+        let p = x.as_f64()?;
         if !p.is_finite() {
             return None;
         }
         if p != -1.0 && !(0.0..=1.0).contains(&p) {
             return None;
         }
-        out.push(p);
+        let q = p as f32;
+        if !q.is_finite() {
+            return None;
+        }
+        out.push(q);
     }
     Some(out)
 }
@@ -690,10 +739,7 @@ fn human_policy_from_json(v: &Value) -> Option<Vec<f32>> {
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
     let to_move = game.to_move_at(turn);
     let root = v.get("rootInfo").ok_or("结果缺少 rootInfo")?;
-    let wr = finite_f32(root, "winrate").map_err(|e| format!("rootInfo {e}"))?;
-    if !(0.0..=1.0).contains(&wr) {
-        return Err(format!("rootInfo.winrate 越界: {wr}"));
-    }
+    let wr = unit_f32(root, "winrate").map_err(|e| format!("rootInfo {e}"))?;
     let score = finite_f32(root, "scoreLead").map_err(|e| format!("rootInfo {e}"))?;
     let (winrate_black, score_black) = if to_move == Color::Black {
         (wr, score)
@@ -731,8 +777,10 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
         candidates.truncate(8);
     }
 
-    // 可选字段：缺失就是 None；一旦出现，任何一个坏值都丢掉整份策略
-    let human_policy = v.get("humanPolicy").and_then(human_policy_from_json);
+    // 可选字段：缺失就是 None；一旦出现，任何一个坏值或长度不对都丢掉整份策略
+    let human_policy = v
+        .get("humanPolicy")
+        .and_then(|p| human_policy_from_json(p, game.size()));
 
     Ok(TurnEval {
         turn,
@@ -921,9 +969,9 @@ done
 "#,
             1,
         );
-        let err = engine
-            .analyze_turns(&Game::new(9, 7.5), &[0, 1], |_, _| {})
-            .unwrap_err();
+        let mut game = Game::new(9, 7.5);
+        game.play(Move::Play(Point::new(2, 2))).unwrap(); // turn 1 必须落在棋谱范围内
+        let err = engine.analyze_turns(&game, &[0, 1], |_, _| {}).unwrap_err();
         assert!(err.contains("越界"), "{err}");
         assert!(err.contains("id=q"), "错误里要带请求 id：{err}");
         let _ = std::fs::remove_dir_all(dir);
@@ -941,9 +989,9 @@ while IFS= read -r line; do
 done
 "#,
         );
-        let err = engine
-            .analyze_turns(&Game::new(9, 7.5), &[0, 1], |_, _| {})
-            .unwrap_err();
+        let mut game = Game::new(9, 7.5);
+        game.play(Move::Play(Point::new(2, 2))).unwrap(); // turn 1 必须落在棋谱范围内
+        let err = engine.analyze_turns(&game, &[0, 1], |_, _| {}).unwrap_err();
         assert!(err.contains("重复"), "{err}");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1099,23 +1147,189 @@ done
         let root = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}, "moveInfos": []});
 
         for bad in [
-            json!(["0.5", "0.5"]),   // 字符串
-            json!([0.5, -2.0, 0.5]), // -1 之外的负数
-            json!([0.5, 1.5]),       // 概率大于 1
-            json!([0.5, 1e100]),     // 超 f32
+            json!("0.5"), // 字符串
+            json!(-2.0),  // -1 之外的负数
+            json!(1.5),   // 概率大于 1
+            json!(1e100), // 超 f32
         ] {
+            // 用完整长度，确保是“值非法”而不是“长度不对”被丢
+            let mut policy = vec![json!(0.5); 9 * 9 + 1];
+            policy[0] = bad;
             let mut v = root.clone();
-            v["humanPolicy"] = bad;
+            v["humanPolicy"] = json!(policy);
             let ev = eval_from_json(&v, &game, 0).unwrap();
             assert!(ev.human_policy.is_none(), "坏策略必须整份丢弃");
             assert_eq!(ev.winrate_black, 0.5, "root 分析仍然有效");
         }
 
         // 合法的 -1 哨兵与正常概率
+        let mut policy = vec![json!(0.0); 9 * 9 + 1];
+        policy[0] = json!(0.3);
+        policy[1] = json!(-1.0);
+        policy[2] = json!(0.7);
         let mut v = root;
-        v["humanPolicy"] = json!([0.3, -1.0, 0.7]);
+        v["humanPolicy"] = json!(policy);
         let ev = eval_from_json(&v, &game, 0).unwrap();
-        assert_eq!(ev.human_policy.as_deref(), Some(&[0.3, -1.0, 0.7][..]));
+        // 拟人策略必须整份比对：前三位正确不代表数组长度正确
+        let policy = ev.human_policy.expect("完整长度的策略应当保留");
+        assert_eq!(&policy[..3], &[0.3, -1.0, 0.7]);
+        assert_eq!(policy.len(), 9 * 9 + 1);
+    }
+
+    #[test]
+    fn winrate_range_is_checked_before_the_f32_cast() {
+        let game = Game::new(9, 7.5);
+        let root = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+
+        // 这些值转成 f32 会落到合法边界（1.0 / -0.0），必须在原始 f64 上就拒绝
+        for bad in [1.00000001f64, -1.0, -1e-50, 1.5] {
+            let mut v = root.clone();
+            v["rootInfo"]["winrate"] = json!(bad);
+            let err = eval_from_json(&v, &game, 0).unwrap_err();
+            assert!(err.contains("rootInfo") && err.contains("越界"), "{err}");
+
+            let mut v = root.clone();
+            v["moveInfos"] = json!([
+                {"move": "D4", "winrate": bad, "scoreLead": 0.0, "visits": 1}
+            ]);
+            let err = eval_from_json(&v, &game, 0).unwrap_err();
+            assert!(err.contains("winrate") && err.contains("越界"), "{err}");
+        }
+
+        // 边界本身照常接受
+        for ok in [0.0f64, 1.0] {
+            let mut v = root.clone();
+            v["rootInfo"]["winrate"] = json!(ok);
+            v["moveInfos"] = json!([
+                {"move": "D4", "winrate": ok, "scoreLead": 0.0, "visits": 1}
+            ]);
+            let ev = eval_from_json(&v, &game, 0).unwrap();
+            assert_eq!(ev.winrate_black as f64, ok);
+            assert_eq!(ev.candidates.len(), 1);
+        }
+    }
+
+    #[test]
+    fn human_policy_range_is_checked_before_the_f32_cast() {
+        let game = Game::new(9, 7.5);
+        let cells = 9 * 9;
+        let root = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": [{"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 3}]
+        });
+
+        // -1.00000001 舍入后是 -1.0：不能因此被当成“非法点”哨兵
+        for bad in [-1.00000001f64, 1.00000001, -1e-50] {
+            let mut policy = vec![json!(0.0); cells + 1];
+            policy[0] = json!(bad);
+            let mut v = root.clone();
+            v["humanPolicy"] = json!(policy);
+            let ev = eval_from_json(&v, &game, 0).unwrap();
+            assert!(ev.human_policy.is_none(), "原始值越界应丢弃整份策略");
+            assert_eq!(ev.winrate_black, 0.5, "root 分析不受影响");
+            assert_eq!(ev.candidates.len(), 1, "普通候选不受影响");
+        }
+
+        // 精确 -1 与 0/1 边界合法
+        let mut policy = vec![json!(0.0); cells + 1];
+        policy[0] = json!(-1.0);
+        policy[1] = json!(1.0);
+        let mut v = root;
+        v["humanPolicy"] = json!(policy);
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        let policy = ev.human_policy.expect("完整长度的策略应当保留");
+        assert_eq!(&policy[..2], &[-1.0, 1.0]);
+        assert_eq!(policy.len(), cells + 1);
+    }
+
+    #[test]
+    fn human_policy_length_must_be_size_squared_plus_pass() {
+        let game = Game::new(9, 7.5);
+        let root = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": [{"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 3}]
+        });
+        let cells = 9 * 9;
+
+        // 9 路棋盘只接受 82；80/81/83 都是坏数据，但只丢策略本身
+        for len in [0usize, 80, 81, 83] {
+            let mut v = root.clone();
+            v["humanPolicy"] = json!(vec![0.5f32; len]);
+            let ev = eval_from_json(&v, &game, 0).unwrap();
+            assert!(ev.human_policy.is_none(), "长度 {len} 必须拒绝");
+            assert_eq!(ev.winrate_black, 0.5);
+            assert_eq!(ev.candidates.len(), 1, "长度错误不影响候选");
+        }
+
+        let mut v = root;
+        v["humanPolicy"] = json!(vec![0.5f32; cells + 1]);
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.human_policy.as_ref().map(Vec::len), Some(cells + 1));
+    }
+
+    #[test]
+    fn analyze_turns_rejects_turns_past_the_game_end() {
+        // 假引擎只要被启动就会留下 started 标记
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+echo x > "$0/started"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  t=$(printf '%s' "$line" | sed -n 's/.*"analyzeTurns":\[\([0-9]*\).*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":$t,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}"
+done
+"#,
+        );
+        let mut game = Game::new(9, 7.5);
+        game.play(Move::Play(Point::new(2, 2))).unwrap(); // 共 1 手，合法 turn 是 0..=1
+
+        let err = engine.analyze_turns(&game, &[2], |_, _| {}).unwrap_err();
+        assert!(err.contains("turn=2"), "{err}");
+        assert!(err.contains("共 1 手"), "{err}");
+        assert!(
+            !dir.join("started").exists(),
+            "参数错误不应启动引擎（会变成超时/引擎错误）"
+        );
+
+        // 0 和最后一手对应 turn 都应通过
+        for turn in [0u16, 1] {
+            let evals = engine
+                .analyze_turns(&game, &[turn], |_, _| {})
+                .unwrap_or_else(|e| panic!("合法回合 {turn} 应通过：{e}"));
+            assert_eq!(evals.len(), 1);
+            assert_eq!(evals[0].turn, turn);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn board_size_errors_keep_context_and_add_a_hint() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  echo '{"error":"boardXSize 25 is larger than compiled MAX_LEN 19"}'
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(25, 7.5)).unwrap_err();
+        assert!(
+            err.contains("boardXSize 25 is larger than compiled MAX_LEN 19"),
+            "原始错误必须保留：{err}"
+        );
+        assert!(err.contains("MAX_LEN>19"), "要给出可操作提示：{err}");
+        let _ = std::fs::remove_dir_all(dir);
+
+        // 与棋盘尺寸无关的错误不加多余提示
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  echo '{"error":"bad rules"}'
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert_eq!(err, "KataGo 报错: bad rules");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
