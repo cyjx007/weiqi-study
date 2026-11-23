@@ -707,7 +707,8 @@ impl App {
     }
 
     pub fn goto_end(&mut self) {
-        self.jump_to_turn(self.moves.len() as u16);
+        // Game 把总手数限制在 u16 范围内；这里封顶只是防御
+        self.jump_to_turn(u16::try_from(self.moves.len()).unwrap_or(u16::MAX));
     }
 
     pub fn jump_to_turn(&mut self, turn: u16) {

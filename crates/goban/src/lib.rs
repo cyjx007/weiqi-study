@@ -178,7 +178,13 @@ pub enum IllegalMove {
     Occupied,
     Suicide,
     Superko,
+    /// 一盘棋最多 `MAX_MOVES` 手（回合号是 u16）
+    TooManyMoves,
 }
+
+/// 一盘棋允许的最大手数。回合编号（`TurnEval.turn`、KataGo `turnNumber`）
+/// 是 `u16`，超过就无法表达；在核心层直接拦住，避免后续转换溢出。
+pub const MAX_MOVES: usize = u16::MAX as usize;
 
 impl fmt::Display for IllegalMove {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -187,6 +193,7 @@ impl fmt::Display for IllegalMove {
             IllegalMove::Occupied => "该点已有子",
             IllegalMove::Suicide => "自杀",
             IllegalMove::Superko => "重复局面（劫争规则）",
+            IllegalMove::TooManyMoves => "手数超过 65535（回合号是 u16）",
         };
         f.write_str(s)
     }
@@ -484,6 +491,9 @@ impl Game {
     }
 
     pub fn play(&mut self, mv: Move) -> Result<(), IllegalMove> {
+        if self.moves.len() >= MAX_MOVES {
+            return Err(IllegalMove::TooManyMoves);
+        }
         let next = self.position().try_play(mv)?;
         let board_hash = hash_board(&next);
         let situational = hash_position(&next);
@@ -866,6 +876,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn moves_are_capped_at_u16_range() {
+        let mut g = Game::new(9, 0.0);
+        for _ in 0..MAX_MOVES {
+            g.play(Move::Pass).expect("未到上限前 Pass 必须合法");
+        }
+        assert_eq!(g.moves().len(), MAX_MOVES);
+        assert_eq!(g.play(Move::Pass), Err(IllegalMove::TooManyMoves));
+        assert_eq!(g.moves().len(), MAX_MOVES, "失败不能改变历史");
     }
 
     #[test]

@@ -287,12 +287,13 @@ impl Engine {
     where
         F: FnMut(usize, usize),
     {
-        let turns: Vec<u16> = (0..=game.moves().len() as u16).collect();
+        let last = turn_number(game.moves().len())?;
+        let turns: Vec<u16> = (0..=last).collect();
         self.analyze_turns(game, &turns, progress)
     }
 
     pub fn analyze_position(&self, game: &Game) -> Result<TurnEval, String> {
-        let turn = game.moves().len() as u16;
+        let turn = turn_number(game.moves().len())?;
         let mut evals = self.analyze_turns(game, &[turn], |_, _| {})?;
         evals
             .pop()
@@ -541,6 +542,16 @@ impl Drop for AnalysisSession {
     }
 }
 
+/// `usize` 手数 → `u16` 回合号；超限必须报错，不能截断。
+fn turn_number(moves: usize) -> Result<u16, String> {
+    u16::try_from(moves).map_err(|_| {
+        format!(
+            "棋谱手数超过 {}（实际 {moves}），无法用 u16 回合号表示",
+            goban::MAX_MOVES
+        )
+    })
+}
+
 /// 解析响应里的 `turnNumber`；超出 `u16` 范围必须报错，不能截断成小数字。
 fn response_turn(value: &Value) -> Result<u16, String> {
     let raw = value
@@ -562,6 +573,7 @@ fn history_json(game: &Game) -> Vec<Value> {
         .iter()
         .enumerate()
         .map(|(i, mv)| {
+            // Game 已把总手数限制在 u16 范围内，这里的转换不会溢出
             let color = game.color_of_move(i as u16 + 1);
             let coord = match mv {
                 Move::Play(p) => gtp_coord(*p, size),
@@ -1121,6 +1133,15 @@ done
         let mut v = root;
         v["moveInfos"] = json!([]);
         assert!(eval_from_json(&v, &game, 0).is_ok(), "空数组是合法的");
+    }
+
+    #[test]
+    fn turn_number_conversion_is_checked() {
+        assert_eq!(turn_number(0).unwrap(), 0);
+        assert_eq!(turn_number(goban::MAX_MOVES).unwrap(), u16::MAX);
+        let err = turn_number(goban::MAX_MOVES + 1).unwrap_err();
+        assert!(err.contains("超过"), "{err}");
+        assert!(err.contains("65535"), "{err}");
     }
 
     #[test]
