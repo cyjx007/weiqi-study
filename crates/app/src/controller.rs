@@ -8,6 +8,12 @@ use std::sync::mpsc;
 use crate::i18n::{fill, strings};
 use crate::{Action, App, AppEvent};
 
+/// 后台线程 panic 时不能把 `working` / `busy` 永久留在 true：
+/// 捕获后转成一个普通的 Err 事件，走和引擎失败相同的收尾路径。
+fn catch_worker<T>(message: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| message.to_string())
+}
+
 /// 一个前端控制器：拥有 `App`、后台事件通道和「需要重画」标记。
 pub struct Controller {
     pub app: App,
@@ -125,8 +131,12 @@ impl Controller {
         let game = self.app.snapshot();
         let engine = self.app.engine.clone();
         let tx = self.tx.clone();
+        let panic_msg = strings(self.app.lang).worker_panicked.to_string();
         std::thread::spawn(move || {
-            let result = engine.analyze_position(&game);
+            let result = match catch_worker(&panic_msg, || engine.analyze_position(&game)) {
+                Ok(result) => result,
+                Err(e) => Err(e),
+            };
             let _ = tx.send(AppEvent::Analysis {
                 generation,
                 pos,
@@ -159,10 +169,16 @@ impl Controller {
         let generation = self.app.generation();
         let revision = self.app.review_revision();
         let tx = self.tx.clone();
+        let panic_msg = strings(self.app.lang).worker_panicked.to_string();
         std::thread::spawn(move || {
-            let result = engine
-                .analyze_game(&game, |_, _| {})
-                .and_then(|evals| review::build(english, &game, &evals, 5.0));
+            let result = match catch_worker(&panic_msg, || {
+                engine
+                    .analyze_game(&game, |_, _| {})
+                    .and_then(|evals| review::build(english, &game, &evals, 5.0))
+            }) {
+                Ok(result) => result,
+                Err(e) => Err(e),
+            };
             let _ = tx.send(AppEvent::Review {
                 generation,
                 revision,
@@ -343,6 +359,16 @@ mod tests {
             }],
             human_policy: None,
         }
+    }
+
+    #[test]
+    fn panicking_worker_becomes_an_error_instead_of_sticking_busy() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result: Result<(), String> =
+            catch_worker("后台任务异常退出", || panic!("boom"));
+        std::panic::set_hook(prev);
+        assert_eq!(result.unwrap_err(), "后台任务异常退出");
     }
 
     #[test]
