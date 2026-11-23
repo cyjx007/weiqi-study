@@ -9,7 +9,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use app::i18n::strings;
 use app::{App, AppConfig, Controller, VISIT_PRESETS};
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 
 use crate::board::{draw_board, point_at};
 use crate::panels::{install_css, Panels};
@@ -39,6 +39,7 @@ pub fn build_ui(application: &adw::Application) {
     let (side, panels) = Panels::build();
     let games = panels.games.clone();
     let lang_btn = panels.lang_btn.clone();
+    let import_btn = panels.import_btn.clone();
     let analyse_btn = panels.analyse_btn.clone();
     let review_btn = panels.review_btn.clone();
     let undo_btn = panels.undo_btn.clone();
@@ -125,6 +126,7 @@ pub fn build_ui(application: &adw::Application) {
         let window_c = window.clone();
         let keys = gtk::EventControllerKey::new();
         keys.connect_key_pressed(move |_, key, _, _| {
+            let ui_rc = ui.clone();
             let Ok(mut ui) = ui.try_borrow_mut() else {
                 return glib::Propagation::Proceed;
             };
@@ -175,6 +177,11 @@ pub fn build_ui(application: &adw::Application) {
                 }
                 gdk::Key::g => ui.ctrl.app.goto_start(),
                 gdk::Key::G => ui.ctrl.app.goto_end(),
+                gdk::Key::o => {
+                    drop(ui);
+                    open_import_dialog(ui_rc, window_c.clone());
+                    return glib::Propagation::Stop;
+                }
                 gdk::Key::t => ui.ctrl.start_play(),
                 gdk::Key::s => ui.ctrl.swap_sides(),
                 gdk::Key::v => ui.ctrl.toggle_ai(),
@@ -212,6 +219,11 @@ pub fn build_ui(application: &adw::Application) {
                 refresh(&mut ui);
             });
         }
+    }
+    {
+        let ui = ui.clone();
+        let window_i = window.clone();
+        import_btn.connect_clicked(move |_| open_import_dialog(ui.clone(), window_i.clone()));
     }
     {
         let ui = ui.clone();
@@ -590,6 +602,44 @@ pub fn build_ui(application: &adw::Application) {
 fn refresh(ui: &mut Ui) {
     ui.panels.refresh(&mut ui.ctrl.app);
     ui.area.queue_draw();
+}
+
+/// 打开“导入 SGF”文件对话框；按钮和 `o` 键共用。
+///
+/// 对话框回调里才借用 `Ui`，避免在 GTK 关 popover/对话框时重入。
+fn open_import_dialog(ui: Rc<RefCell<Ui>>, window: adw::ApplicationWindow) {
+    let title = {
+        let Ok(ui) = ui.try_borrow() else {
+            return;
+        };
+        strings(ui.ctrl.app.lang).import_title.to_string()
+    };
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("SGF"));
+    filter.add_pattern("*.sgf");
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk::FileDialog::builder()
+        .title(title)
+        .modal(true)
+        .filters(&filters)
+        .build();
+    dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+        let Ok(file) = result else {
+            return;
+        };
+        let Some(path) = file.path() else {
+            return;
+        };
+        let Ok(mut ui) = ui.try_borrow_mut() else {
+            return;
+        };
+        if let Err(e) = ui.ctrl.open_path(path) {
+            ui.ctrl.app.status = e;
+        }
+        reload_games(&mut ui);
+        refresh(&mut ui);
+    });
 }
 
 fn reload_games(ui: &mut Ui) {

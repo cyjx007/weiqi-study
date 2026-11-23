@@ -62,6 +62,10 @@ pub const DEFAULT_KOMI: f32 = 7.5;
 /// 每步思考量的四个快捷档位（visits）。
 pub const VISIT_PRESETS: [u32; 4] = [60, 120, 300, 600];
 
+/// `--visits` / 设置面板接受的思考量范围；TUI、CLI 与 GUI 共用这一份约定。
+pub const VISITS_MIN: u32 = 10;
+pub const VISITS_MAX: u32 = 5000;
+
 pub const HUMAN_RANKS: [&str; 9] = [
     "rank_20k", "rank_15k", "rank_10k", "rank_5k", "rank_1k", "rank_1d", "rank_3d", "rank_5d",
     "rank_9d",
@@ -184,6 +188,16 @@ impl App {
             review_revision: 0,
             preview: None,
         }
+    }
+
+    /// 从磁盘读一盘 SGF 但**不**放进棋谱库（演示/临时查看用）。
+    ///
+    /// 普通打开请用 [`App::open_path`]，那会按 copy-on-open 规则复制进库。
+    pub fn from_sgf_path(path: &std::path::Path, config: AppConfig) -> Result<Self, String> {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("读不了 {}：{e}", path.display()))?;
+        let sg = sgf::parse(&text)?;
+        Self::from_sgf(&sg, config)
     }
 
     pub fn from_sgf(sg: &SgfGame, config: AppConfig) -> Result<Self, String> {
@@ -419,6 +433,17 @@ impl App {
                 self.status = e;
             }
         }
+    }
+
+    /// 读取并解析一个 SGF 路径，再交给 [`App::open_sgf_file`]。
+    ///
+    /// 前端只负责选路径；读取/解析/copy-on-open 都收在 app 里，避免 TUI/GUI
+    /// 各写一套（也都容易忘掉错误处理）。
+    pub fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读不了 {}：{e}", path.display()))?;
+        let sg = sgf::parse(&text)?;
+        self.open_sgf_file(path, &sg)
     }
 
     /// 打开一盘棋。
@@ -657,7 +682,7 @@ impl App {
 
     /// 调整每次分析的 visits（10–5000），下一次分析立即生效。
     pub fn set_visits(&mut self, visits: u32) {
-        let visits = visits.clamp(10, 5000);
+        let visits = visits.clamp(VISITS_MIN, VISITS_MAX);
         self.config.engine.visits = visits;
         self.engine.set_visits(visits);
         self.failed_pos = None;

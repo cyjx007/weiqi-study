@@ -17,6 +17,7 @@ pub struct Panels {
     pub games: gtk::DropDown,
     pub lang_btn: gtk::Button,
     pub new_btn: gtk::MenuButton,
+    pub import_btn: gtk::Button,
     pub size_btns: Vec<gtk::Button>,
     pub size_popover: gtk::Popover,
     pub analyse_btn: gtk::Button,
@@ -77,6 +78,7 @@ impl Panels {
 
         let lang_btn = gtk::Button::with_label("EN");
         let new_btn = gtk::MenuButton::new();
+        let import_btn = gtk::Button::with_label("");
         let analyse_btn = gtk::Button::with_label("");
         let review_btn = gtk::Button::with_label("");
         let undo_btn = gtk::Button::with_label("");
@@ -213,6 +215,7 @@ impl Panels {
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         actions.add_css_class("actions");
         actions.append(&new_btn);
+        actions.append(&import_btn);
         actions.append(&analyse_btn);
         actions.append(&review_btn);
         actions.append(&undo_btn);
@@ -252,6 +255,7 @@ impl Panels {
             games,
             lang_btn,
             new_btn,
+            import_btn,
             size_btns,
             size_popover,
             analyse_btn,
@@ -326,6 +330,7 @@ impl Panels {
         self.sec_comment
             .set_markup(&format!("<b>{}</b>", s.commentary));
         self.new_btn.set_label(s.new_game_btn);
+        self.import_btn.set_label(s.import_btn);
         self.analyse_btn.set_label(s.analyse_btn);
         self.review_btn.set_label(s.review_btn);
         self.undo_btn.set_label(s.undo_btn);

@@ -10,7 +10,7 @@ name = "weiqi-gui"
 path = "src/main.rs"
 
 [dependencies]
-gtk = { package = "gtk4", version = "0.11" }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 app = { path = "../app" }
 goban = { path = "../goban" }

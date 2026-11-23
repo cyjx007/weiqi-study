@@ -896,6 +896,48 @@ fn saves_moves_and_reloads() {
 }
 
 #[test]
+fn from_sgf_path_opens_without_touching_the_library() {
+    let path = std::env::temp_dir().join("weiqi-ephemeral.sgf");
+    std::fs::write(&path, "(;SZ[9]KM[7.5];B[cc];W[gg])").unwrap();
+    let app = App::from_sgf_path(&path, AppConfig::default()).unwrap();
+    assert_eq!(app.total_moves(), 2);
+    assert!(app.current_file.is_none(), "临时打开不绑定库里的文件");
+    assert!(app.games.is_empty(), "不应复制进棋谱库");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn open_path_copies_external_games_into_the_library() {
+    let mut app = App::new(9, DEFAULT_KOMI, AppConfig::default());
+    app.store = test_store();
+    let external = std::env::temp_dir().join("weiqi-open-path.sgf");
+    let text = "(;SZ[9]KM[7.5];B[cc];W[gg])";
+    std::fs::write(&external, text).unwrap();
+
+    app.open_path(external.clone()).unwrap();
+    assert_eq!(app.total_moves(), 2);
+    assert_eq!(
+        std::fs::read_to_string(&external).unwrap(),
+        text,
+        "原文件不能被改写"
+    );
+    let current = app.current_file.clone().unwrap();
+    assert!(current.starts_with(app.store.dir()), "应复制进棋谱库");
+    assert_ne!(current, external);
+    assert!(app.store.read(&current).unwrap().contains("B[cc]"));
+
+    // 解析失败要返回错误、不改当前棋局
+    let bad = std::env::temp_dir().join("weiqi-open-bad.sgf");
+    std::fs::write(&bad, "not an sgf").unwrap();
+    let before = app.total_moves();
+    assert!(app.open_path(bad.clone()).is_err());
+    assert_eq!(app.total_moves(), before);
+
+    let _ = std::fs::remove_file(&external);
+    let _ = std::fs::remove_file(&bad);
+}
+
+#[test]
 fn opening_external_sgf_never_writes_it() {
     use std::io::Write;
     let store = test_store();

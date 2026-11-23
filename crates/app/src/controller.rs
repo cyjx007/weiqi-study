@@ -283,6 +283,16 @@ impl Controller {
         self.dirty = true;
         self.app.open_selected_game();
     }
+
+    /// 导入一个外部 SGF（GUI 的文件对话框用）：解析 + copy-on-open 都在 app 里。
+    pub fn open_path(&mut self, path: std::path::PathBuf) -> Result<(), String> {
+        self.dirty = true;
+        let result = self.app.open_path(path);
+        if result.is_ok() {
+            self.app.show_games = false;
+        }
+        result
+    }
 }
 
 #[cfg(test)]
