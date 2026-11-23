@@ -26,6 +26,8 @@ pub struct EngineConfig {
     pub chunk: usize,
     /// 等单条响应的超时；超时后杀掉会话，下一次调用会重新拉起进程
     pub timeout: Duration,
+    /// 插在 `analysis` 子命令之前的额外参数（测试用 `sh -c <script> <dir>`，生产默认空）
+    pub extra_args: Vec<String>,
 }
 
 impl Default for EngineConfig {
@@ -47,6 +49,7 @@ impl Default for EngineConfig {
             visits: 120,
             chunk: 30,
             timeout: Duration::from_secs(90),
+            extra_args: Vec::new(),
         }
     }
 }
@@ -383,6 +386,7 @@ impl AnalysisSession {
         epoch: u64,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&cfg.katago);
+        cmd.args(&cfg.extra_args);
         cmd.arg("analysis").arg("-model").arg(&cfg.model);
         if let Some(model) = human_model {
             cmd.arg("-human-model").arg(model);
@@ -900,7 +904,7 @@ done
         // 第一次调用不回话 → 超时；进程被丢掉后，第二次应重新拉起并成功
         let (engine, dir) = fake_engine_with(
             r#"#!/bin/sh
-d=$(dirname "$0")
+d="$0"
 echo x >> "$d/count"
 n=$(wc -l < "$d/count")
 while IFS= read -r line; do
@@ -1003,12 +1007,17 @@ done"#,
         fake_engine_with(script, chunk, Duration::from_secs(90))
     }
 
+    /// 假引擎：`katago` 指向系统的 `/bin/sh`，脚本用 `-c` 内联传进去。
+    ///
+    /// 不往磁盘写可执行文件是**故意的**：cargo 多线程跑测试时，别的测试 `fork` 出的
+    /// 子进程会继承我们正在写的 fd，父进程关闭后 exec 仍会 ETXTBSY（CI 10/10 复现过）。
+    /// `/bin/sh` 是系统文件、永远不会被我们写，彻底绕开这一类竞态。
+    /// `dir` 会作为 `$0` 传给脚本，需要持久化状态的测试可以拿它当目录。
     fn fake_engine_with(
         script: &str,
         chunk: usize,
         timeout: Duration,
     ) -> (Engine, std::path::PathBuf) {
-        use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join(format!(
@@ -1024,27 +1033,24 @@ done"#,
         let mut dir_perms = std::fs::metadata(&dir).unwrap().permissions();
         dir_perms.set_mode(0o700);
         std::fs::set_permissions(&dir, dir_perms).unwrap();
-        let bin = dir.join("katago");
-        {
-            let mut f = std::fs::File::create(&bin).unwrap();
-            f.write_all(script.as_bytes()).unwrap();
-            f.sync_all().unwrap();
-        } // 显式关闭：否则紧接着 exec 可能拿到 ETXTBSY
-        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&bin, perms).unwrap();
+
         let model = dir.join("model.bin.gz");
         let config = dir.join("analysis.cfg");
         std::fs::write(&model, "fake").unwrap();
         std::fs::write(&config, "fake").unwrap();
         let engine = Engine::new(EngineConfig {
-            katago: bin,
+            katago: std::path::PathBuf::from("/bin/sh"),
             model,
             config,
             human_model: None,
             visits: 10,
             chunk,
             timeout,
+            extra_args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                dir.to_string_lossy().into_owned(),
+            ],
         });
         (engine, dir)
     }

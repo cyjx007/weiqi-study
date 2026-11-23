@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# 同一个 ref 只留最新一次运行：避免一次推送/补推产生多个排队任务和重复失败邮件
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

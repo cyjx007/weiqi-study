@@ -10,7 +10,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "weiqi-study";
-  version = "0.11.0";
+  version = "0.11.1";
 
   # flake 会把源码过滤成 git 跟踪的文件，target/ 和 katago 软链不会进来
   src = lib.cleanSource ../.;
