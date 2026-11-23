@@ -268,7 +268,7 @@ non-image terminal (e.g. `xterm`) and confirm it fails with a clear error instea
 - SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. Root `PL` (explicit next player) is honoured; handicap setups default to White to move.
 - Because only the main line is kept, the copy the tool saves into `games/` loses any extra branches. The original file is never modified (copy-on-open), so keep it if you need the variations; `go-review` likewise analyses the main line only.
 - SGF collections (several game trees in one file) are parsed in full: the TUI/GUI open the first game with a visible warning, `go-review --game N` picks another. Leading/trailing junk is a parse error with a character position, never silently ignored.
-- Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal.
+- Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal and end the game.
 - Malformed `KM`, out-of-turn moves and unrecognised `PL` are reported as warnings (status bar / stderr); `go-review --strict` turns them into errors.
 - Engine queries follow the SGF `RU` through an explicit rule set: Chinese, Japanese, Korean,
   AGA and Ing are passed to KataGo verbatim (`chinese` / `japanese` / `korean` / `aga` / `ing`).
@@ -279,6 +279,9 @@ non-image terminal (e.g. `xterm`) and confirm it fails with a clear error instea
   default to `MAX_LEN=19`: 20×20 and larger need a custom build compiled with larger-board
   support, and the official networks were not trained on those sizes. If the engine rejects the
   size, its message is shown as-is with that hint in the status line.
+- Two consecutive passes end the game. Further moves/passes are rejected at the end; go back one
+  move and play to branch and continue. The result line shows the local area score (it does not
+  mark dead stones) and, once analysed, the engine's score lead.
 - You choose the side you play (Black or White). The choice is kept when you start a new game,
   and switching sides during a human-vs-engine game makes the engine take its move immediately
   (switching to White on an empty board means the engine opens). The GUI exposes the same choice

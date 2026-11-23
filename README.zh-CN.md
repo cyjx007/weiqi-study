@@ -260,7 +260,7 @@ nix shell nixpkgs#foot --command foot weiqi-tui --mode image samples/demo.sgf   
 - SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
 - 因此工具存进 `games/` 的副本只保留主线，**原来的变化分支会丢**；原始文件不会被改（copy-on-open），需要分支就留好原文件。`go-review` 同样只分析主线
 - 一个文件里有多盘棋（SGF collection）会完整解析：TUI/GUI 打开第一盘并显示 warning，`go-review --game N` 可选其它盘；文件前后的多余内容会带字符位置报错，不再静默忽略
-- SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
+- SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法并终局
 - 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
 - 提交给引擎的规则走一个显式规则集：中国 / 日本 / 韩国 / AGA / Ing 原样传给 KataGo
   （`chinese` / `japanese` / `korean` / `aga` / `ing`）。未知值以及 New Zealand（本工具不支持自杀）
@@ -269,6 +269,8 @@ nix shell nixpkgs#foot --command foot weiqi-tui --mode image samples/demo.sgf   
 - SGF 的 2–25 路棋盘都接受，并按原样传给 KataGo。KataGo 官方构建默认 `MAX_LEN=19`：
   20 路以上需要自行编译开启大棋盘支持，官方网络也没有针对这些尺寸训练。引擎拒绝该尺寸时，
   状态栏保留原始错误并附这条提示
+- 连续两次 Pass 即终局。终局后继续落子/Pass 会被拒绝；想继续研究就退一手再从该局面改走，
+  等于开一个新分支。结果行给出本地数子（不判死活）和引擎分析完成后的目差。
 - 人机对局可以选择你执黑还是执白。开新局会保持当前选择；对局中换边会让 AI 立刻接走它的一方
   （空盘换成执白就是 AI 先走）。图形界面里是 AI 设置中的「你执」一行。
 - 从棋谱库打开一盘棋会进入纯研究模式：自动分析/应手关闭（`ai_enabled=false`），

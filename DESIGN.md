@@ -273,6 +273,9 @@ pub struct EngineConfig {
 - **版本指纹**：`FileStamp { mtime, len, FNV-1a(bytes) }`。目标文件和“上次看到的不一样”
   就另存 `*.conflict-<纳秒>-<pid>.sgf`，不覆盖别人的内容。副本优先 `hard_link`（内容与文件名
   同时原子出现），不支持硬链接时退回 `create_new` + 复制。
+- **终局**：`Game::is_finished()` = 当前前缀最后两手都是 Pass。`App` 在终局后拒绝新的
+  落子/Pass 和自动应手；结果文本 = 本地数子（不判死活）+ 引擎 `scoreLead`（分析完成时）。
+  想继续研究就从历史局面改走（分支），不会“复活”终局。
 - **空局不落盘**：`start_play()` 只预留文件名，第一手落子时才 `autosave`。SGF 解析要求至少
   一手或摆子，提前写文件会在库里留下打不开的空棋谱。
 - **新局参数**：`start_play()` 把规则、先手、komi 都重置为默认（`DEFAULT_KOMI`），不继承
