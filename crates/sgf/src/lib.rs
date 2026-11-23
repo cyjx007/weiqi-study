@@ -367,7 +367,7 @@ fn parse_tree(chars: &[char], i: &mut usize) -> Result<Vec<Props>, String> {
     loop {
         skip_ws(chars, i);
         if *i < chars.len() && chars[*i] == ';' {
-            nodes.push(parse_node(chars, i));
+            nodes.push(parse_node(chars, i)?);
         } else {
             break;
         }
@@ -402,12 +402,23 @@ fn skip_ws(chars: &[char], i: &mut usize) {
     }
 }
 
-fn parse_node(chars: &[char], i: &mut usize) -> Props {
+/// 解析一个节点（`;` 之后到下一个 `;` / `(` / `)` 之前）。
+///
+/// SGF 要求每个属性至少有一个 `[...]` 值；`B` / `W` 的空值 `B[]` 才是合法 Pass。
+/// 缺值、未闭合的 `[`、值末尾孤立的反斜杠都必须报错，不能悄悄当成 Pass。
+fn parse_node(chars: &[char], i: &mut usize) -> Result<Props, String> {
     *i += 1; // ';'
     let mut props = Vec::new();
     loop {
         skip_ws(chars, i);
         if *i >= chars.len() || !chars[*i].is_ascii_uppercase() {
+            if *i < chars.len() && chars[*i].is_ascii_lowercase() {
+                return Err(format!(
+                    "第 {} 个字符：SGF 属性名必须大写（{:?}）",
+                    *i + 1,
+                    chars[*i]
+                ));
+            }
             break;
         }
         let start = *i;
@@ -417,27 +428,72 @@ fn parse_node(chars: &[char], i: &mut usize) -> Props {
         let ident: String = chars[start..*i].iter().collect();
         let mut values: Vec<String> = Vec::new();
         while *i < chars.len() && chars[*i] == '[' {
+            let open = *i;
             *i += 1;
             let mut v = String::new();
-            while *i < chars.len() && chars[*i] != ']' {
-                if chars[*i] == '\\' {
-                    *i += 1;
-                    if *i < chars.len() {
-                        v.push(chars[*i]);
+            let mut closed = false;
+            while *i < chars.len() {
+                match chars[*i] {
+                    ']' => {
+                        *i += 1;
+                        closed = true;
+                        break;
+                    }
+                    '\\' => {
+                        *i += 1;
+                        if *i >= chars.len() {
+                            return Err(format!(
+                                "第 {} 个字符：属性 {ident} 的值以反斜杠结尾",
+                                open + 1
+                            ));
+                        }
+                        // SGF：反斜杠 + 换行表示行续接，两者都从值里删掉
+                        match chars[*i] {
+                            '\r' => {
+                                *i += 1;
+                                if *i < chars.len() && chars[*i] == '\n' {
+                                    *i += 1;
+                                }
+                            }
+                            '\n' => *i += 1,
+                            c => {
+                                v.push(c);
+                                *i += 1;
+                            }
+                        }
+                    }
+                    c => {
+                        v.push(c);
                         *i += 1;
                     }
-                } else {
-                    v.push(chars[*i]);
-                    *i += 1;
                 }
             }
-            *i += 1; // ]
+            if !closed {
+                return Err(format!(
+                    "第 {} 个字符：属性 {ident} 的 [ 没有闭合",
+                    open + 1
+                ));
+            }
             values.push(v);
             skip_ws(chars, i);
         }
+        if values.is_empty() {
+            // `YBar` 这种：属性名只能由大写字母组成，下面跟着小写说明是写错了
+            if *i < chars.len() && chars[*i].is_ascii_lowercase() {
+                return Err(format!(
+                    "第 {} 个字符：SGF 属性名必须大写（{:?} 紧跟 {ident}）",
+                    *i + 1,
+                    chars[*i]
+                ));
+            }
+            return Err(format!(
+                "第 {} 个字符：属性 {ident} 缺少 [...] 值",
+                start + 1
+            ));
+        }
         props.push((ident, values));
     }
-    props
+    Ok(props)
 }
 
 fn skip_tree(chars: &[char], i: &mut usize) {
@@ -670,6 +726,76 @@ mod tests {
         let src = "(;SZ[9];B[];W[ee])";
         let g = parse(src).unwrap();
         assert_eq!(g.moves[0], Move::Pass);
+    }
+
+    #[test]
+    fn property_without_a_value_is_an_error() {
+        // B/W 缺 [] 不能被当成 Pass
+        for src in [
+            "(;SZ[9];B;W[cc])",
+            "(;SZ[9];B[cc];W)",
+            "(;SZ[9];SZ)",
+            "(;SZ[9]C[later];B[cc];W[dd];C)",
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(err.contains("缺少 [...] 值"), "{src} 应报缺值，实际：{err}");
+        }
+    }
+
+    #[test]
+    fn empty_brackets_are_still_a_pass() {
+        let g = parse("(;SZ[9];B[];W[cc];B[];W[dd])").unwrap();
+        assert_eq!(
+            g.moves,
+            vec![
+                Move::Pass,
+                Move::Play(Point::new(2, 2)),
+                Move::Pass,
+                Move::Play(Point::new(3, 3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn truncated_input_reports_a_position_and_never_panics() {
+        let err = parse("(;SZ[9];B[cc").unwrap_err();
+        assert!(err.contains("没有闭合"), "{err}");
+        assert!(err.contains("第 "), "要带字符位置：{err}");
+
+        let err = parse("(;SZ[9];B[cc]").unwrap_err();
+        assert!(err.contains("括号不匹配"), "{err}");
+
+        // 值末尾孤立的反斜杠
+        let err = parse("(;SZ[9]C[abc\\").unwrap_err();
+        assert!(
+            err.contains("反斜杠结尾") || err.contains("没有闭合"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn escaped_brackets_and_line_continuations_follow_sgf_rules() {
+        // 值里的 \] 是字面 ]，不会提前结束属性
+        let g = parse("(;SZ[9]C[a \\] b];B[cc])").unwrap();
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+
+        // 反斜杠 + 换行 = 行续接，两者都删掉
+        let g = parse("(;SZ[9]C[ab\\\ncd];B[cc])").unwrap();
+        assert_eq!(g.moves, vec![Move::Play(Point::new(2, 2))]);
+        let g = parse("(;SZ[9]C[ab\\\r\ncd];B[cc])").unwrap();
+        assert_eq!(g.moves, vec![Move::Play(Point::new(2, 2))]);
+    }
+
+    #[test]
+    fn lowercase_property_names_are_rejected_with_a_hint() {
+        let err = parse("(;SZ[9];B[cc]YBar[1])").unwrap_err();
+        assert!(err.contains("必须大写"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_first_game_does_not_swallow_the_next_one() {
+        let err = parse_collection("(;SZ[9];B;W[cc])(;SZ[9];B[dd])").unwrap_err();
+        assert!(err.contains("缺少 [...] 值"), "{err}");
     }
 
     #[test]
