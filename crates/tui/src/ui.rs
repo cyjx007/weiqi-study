@@ -281,6 +281,16 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
 
     let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
     let who = turn_side_label(app, s);
+    let turn_line = if app.game_over() {
+        Line::from(s.game_over)
+    } else {
+        Line::from(format!(
+            "{}   {}({})",
+            s.turn,
+            color_name(app.display_to_move(), app.lang),
+            who
+        ))
+    };
     let info = Paragraph::new(vec![
         Line::from(format!("{}   - {score:+.1}", s.score)),
         Line::from(format!(
@@ -289,12 +299,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
             app.display_pos(),
             app.total_moves()
         )),
-        Line::from(format!(
-            "{}   {}({})",
-            s.turn,
-            color_name(app.display_to_move(), app.lang),
-            who
-        )),
+        turn_line,
         Line::from(format!(
             "{}   {}",
             s.side_title,

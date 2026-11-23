@@ -346,7 +346,9 @@ impl Panels {
         self.undo_btn.set_label(s.undo_btn);
         self.pass_btn.set_label(s.pass_btn);
         self.pass_btn.set_sensitive(
-            !app.preview_active() && (!app.ai_enabled || app.to_move() == app.human),
+            !app.game_over()
+                && !app.preview_active()
+                && (!app.ai_enabled || app.to_move() == app.human),
         );
         self.rename_btn.set_label(s.rename);
         self.delete_btn.set_label(s.delete);
@@ -438,19 +440,23 @@ impl Panels {
         self.winrate.set_fraction(wr.clamp(0.0, 1.0) as f64);
         self.winrate_text.set_text(&format!("{:.1}%", wr * 100.0));
 
-        let who = if !app.ai_enabled {
-            s.review.to_string()
-        } else if app.display_to_move() == app.human {
-            s.you.to_string()
+        if app.game_over() {
+            self.turn.set_text(s.game_over);
         } else {
-            s.ai.to_string()
-        };
-        self.turn.set_text(&format!(
-            "{}: {}({})",
-            s.turn,
-            color_name(app.display_to_move(), app.lang),
-            who
-        ));
+            let who = if !app.ai_enabled {
+                s.review.to_string()
+            } else if app.display_to_move() == app.human {
+                s.you.to_string()
+            } else {
+                s.ai.to_string()
+            };
+            self.turn.set_text(&format!(
+                "{}: {}({})",
+                s.turn,
+                color_name(app.display_to_move(), app.lang),
+                who
+            ));
+        }
         let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
         self.score.set_text(&format!("{}: {score:+.1}", s.score));
         self.moves.set_text(&format!(
