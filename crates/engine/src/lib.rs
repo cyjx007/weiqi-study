@@ -738,6 +738,38 @@ mod tests {
     }
 
     #[test]
+    fn eval_converts_to_black_view_under_white_first() {
+        // 白先棋谱：turn 0 的行棋方是白，KataGo 给的 winrate/scoreLead 是白方视角
+        let mut game =
+            Game::with_setup_rules_first(9, 7.5, Vec::new(), RuleSet::CHINESE, Color::White);
+        let v = json!({
+            "rootInfo": {"winrate": 0.7, "scoreLead": 3.0},
+            "moveInfos": [{"move": "D4", "winrate": 0.7, "scoreLead": 3.0, "visits": 10}]
+        });
+
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.to_move, Color::White);
+        assert!(
+            (ev.winrate_black - 0.3).abs() < 1e-6,
+            "{}",
+            ev.winrate_black
+        );
+        assert!((ev.score_black + 3.0).abs() < 1e-6, "{}", ev.score_black);
+        assert!((ev.candidates[0].winrate_black - 0.3).abs() < 1e-6);
+
+        // 白落一手后轮到黑，视角不再翻转
+        game.play(Move::Play(Point::new(2, 2))).unwrap();
+        let ev = eval_from_json(&v, &game, 1).unwrap();
+        assert_eq!(ev.to_move, Color::Black);
+        assert!(
+            (ev.winrate_black - 0.7).abs() < 1e-6,
+            "{}",
+            ev.winrate_black
+        );
+        assert!((ev.score_black - 3.0).abs() < 1e-6, "{}", ev.score_black);
+    }
+
+    #[test]
     fn incomplete_candidate_fields_are_rejected_not_defaulted() {
         let game = Game::new(9, 7.5);
         let base = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
