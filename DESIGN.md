@@ -1,6 +1,6 @@
 # weiqi-study 设计文档
 
-> 2026-11-24 更新（对应 0.11.4）· 本地围棋学习工具（CLI + TUI + GTK4）
+> 版本以 `Cargo.toml` 为准· 本地围棋学习工具（CLI + TUI + GTK4）
 > 目标：纯本地、不依赖浏览器、单人自学；引擎用本机 KataGo + 游戏目录里的网络。
 >
 > 本文只描述**当前代码真实做了什么**。已实现 / 有限支持 / 尚未实现 在每节显式标注；
@@ -62,7 +62,7 @@ Rust crates：`ratatui`、`crossterm`、`ratatui-image`、`gtk4`、`libadwaita`�
 
 ```
 weiqi-study/
-├─ Cargo.toml                  # workspace（版本 0.11.1）
+├─ Cargo.toml                  # workspace（版本见文件内 version）
 ├─ crates/
 │  ├─ goban/                   # Board/Position/Game、提子、劫、禁入点、RuleSet、面积数子
 │  ├─ sgf/                     # SGF 解析/写回（含 collection）
@@ -247,7 +247,9 @@ pub struct EngineConfig {
 目录：`$XDG_DATA_HOME/weiqi-study/games`（通常 `~/.local/share/weiqi-study/games`）。
 
 - **原子写**：同目录 `create_new` 唯一临时文件 → 写入 → `fsync` → 关闭 → `rename` → 父目录 `fsync`。
-- **目录持久性**：`rename`（同目录）同步 `games/`；`trash` 是跨目录操作，源目录和 `.trash/` 都同步。
+- **目录持久性**：`rename` 同步源目录与 `games/`；`trash` 同步源目录、`games/` 和 `.trash/`。
+  同步失败会返回错误并说明“内容可能已替换、只是持久性无法确认”；平台明确不支持目录 fsync 时
+  按 best-effort 处理（保证较弱，已在错误语义上区分）。
 - **跨进程锁**：保存全程持有 `games/.locks/<文件名>` 上的排它 advisory 锁
   （`std::fs::File::lock`），覆盖“写临时文件 → 比较版本 → rename”，关闭句柄/进程退出即释放。
   等锁有上限（默认 2s，`GameStore::with_lock_timeout` 可调），超时返回可诊断错误而不是卡住 UI；

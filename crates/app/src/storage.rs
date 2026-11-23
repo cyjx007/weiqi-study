@@ -207,7 +207,9 @@ impl GameStore {
             let _ = fs::remove_file(&tmp);
             format!("保存 {} 失败：{e}", path.display())
         })?;
-        sync_dir(&self.dir);
+        if let Err(e) = sync_dir(&self.dir) {
+            return Err(format!("{e}；文件内容可能已替换，但持久性无法确认"));
+        }
         Ok(SaveOutcome::Written(stamp))
     }
 
@@ -346,7 +348,7 @@ impl GameStore {
             match fs::hard_link(tmp, &alt) {
                 Ok(()) => {
                     let _ = fs::remove_file(tmp);
-                    sync_dir(&self.dir);
+                    sync_dir(&self.dir)?;
                     return Ok(alt);
                 }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
@@ -369,7 +371,7 @@ impl GameStore {
                         let _ = fs::remove_file(&alt);
                         format!("写冲突副本 {} 失败：{e}", alt.display())
                     })?;
-                    sync_dir(&self.dir);
+                    sync_dir(&self.dir)?;
                     return Ok(alt);
                 }
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
@@ -472,9 +474,13 @@ impl GameStore {
         let stamp = FileStamp::of(&target)?;
         // 目录项变更也要落盘：源可能是 games/sub/，目标固定在 games/
         if let Some(src_dir) = path.parent() {
-            sync_dir(src_dir);
+            if let Err(e) = sync_dir(src_dir) {
+                return Err(format!("已重命名，但{e}"));
+            }
         }
-        sync_dir(&self.dir);
+        if let Err(e) = sync_dir(&self.dir) {
+            return Err(format!("已重命名，但{e}"));
+        }
         drop(lock2);
         drop(lock1);
         Ok((target, stamp))
@@ -487,7 +493,9 @@ impl GameStore {
         }
         let trash = self.dir.join(".trash");
         fs::create_dir_all(&trash).map_err(|e| format!("创建回收站失败：{e}"))?;
-        sync_dir(&self.dir);
+        if let Err(e) = sync_dir(&self.dir) {
+            return Err(format!("已创建回收站，但{e}"));
+        }
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -516,10 +524,16 @@ impl GameStore {
         }
         // 跨目录：源目录、games/ 和 .trash/ 都同步（源可能是 games/sub/）
         if let Some(src_dir) = path.parent() {
-            sync_dir(src_dir);
+            if let Err(e) = sync_dir(src_dir) {
+                return Err(format!("已移入回收站，但{e}"));
+            }
         }
-        sync_dir(&self.dir);
-        sync_dir(&trash);
+        if let Err(e) = sync_dir(&self.dir) {
+            return Err(format!("已移入回收站，但{e}"));
+        }
+        if let Err(e) = sync_dir(&trash) {
+            return Err(format!("已移入回收站，但{e}"));
+        }
         drop(lock);
         Ok(target)
     }
@@ -601,10 +615,29 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::remove_file(from)
 }
 
-/// rename 之后同步父目录，保证目录项本身也落盘。
-fn sync_dir(dir: &Path) {
-    if let Ok(f) = fs::File::open(dir) {
-        let _ = f.sync_all();
+/// 测试注入：让目录同步返回失败（线程本地，不干扰并行测试）。
+#[cfg(test)]
+thread_local! {
+    static FORCE_SYNC_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 同步目录项。成功返回 Ok；平台明确不支持时也返回 Ok（保证较弱，见 DESIGN）。
+fn sync_dir(dir: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        if FORCE_SYNC_FAIL.with(|f| f.get()) {
+            return Err(format!("同步目录 {} 失败（测试注入）", dir.display()));
+        }
+    }
+    let f = match fs::File::open(dir) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::Unsupported => return Ok(()),
+        Err(e) => return Err(format!("打开目录 {} 失败：{e}", dir.display())),
+    };
+    match f.sync_all() {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::Unsupported => Ok(()),
+        Err(e) => Err(format!("同步目录 {} 失败：{e}", dir.display())),
     }
 }
 
@@ -1023,6 +1056,35 @@ mod tests {
         );
         assert!(tmp_files(store.dir()).is_empty());
 
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn dir_sync_failure_reports_uncertain_durability() {
+        let store = temp_store();
+        let path = store.dir().join("sync.sgf");
+        FORCE_SYNC_FAIL.with(|f| f.set(true));
+        let out = store.save(
+            &path,
+            9,
+            7.5,
+            &[],
+            &[Move::Play(Point::new(2, 2))],
+            opts(None),
+        );
+        FORCE_SYNC_FAIL.with(|f| f.set(false));
+
+        let err = out.unwrap_err();
+        assert!(err.contains("可能已替换"), "{err}");
+        // rename 已经完成：内容确实在，只是持久性未确认
+        assert!(path.exists(), "失败信息不能谎称文件没变");
+        assert_eq!(
+            sgf::parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .moves
+                .len(),
+            1
+        );
         let _ = std::fs::remove_dir_all(store.dir());
     }
 
