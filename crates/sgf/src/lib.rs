@@ -131,10 +131,19 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
     // 第一遍：读盘面参数（根节点在前）
     // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
     let mut move_nodes = 0usize;
+    let (mut saw_sz, mut saw_ha, mut saw_re) = (false, false, false);
     for (node_idx, props) in nodes.iter().enumerate() {
         for (ident, values) in props {
             match ident.as_str() {
                 "SZ" => {
+                    if saw_sz {
+                        out.warnings.push("重复的 SZ，只取第一个".to_string());
+                        continue;
+                    }
+                    saw_sz = true;
+                    if values.len() > 1 {
+                        out.warnings.push("SZ 有多个值，只取第一个".to_string());
+                    }
                     let Some(v) = values.first() else { continue };
                     let (w, h) = match v.split_once(':') {
                         Some((w, h)) => (w.trim(), h.trim()),
@@ -151,7 +160,9 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                     out.size = w;
                 }
                 "KM" => {
-                    if out.komi.is_none() {
+                    if out.komi.is_some() {
+                        out.warnings.push("重复的 KM，只取第一个".to_string());
+                    } else {
                         let Some(v) = values.first() else { continue };
                         if values.len() > 1 {
                             out.warnings.push("KM 有多个值，只取第一个".to_string());
@@ -186,6 +197,9 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                         "W" => Some(Color::White),
                         _ => None,
                     };
+                    if color.is_some() && pl.is_some() {
+                        out.warnings.push("重复的 PL，使用最后一个".to_string());
+                    }
                     match color {
                         Some(c) if first_move_node.is_none_or(|m| node_idx <= m) => pl = Some(c),
                         Some(_) => out
@@ -196,12 +210,27 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                             .push(format!("第 {} 个节点的 PL 值无法识别：{v:?}", node_idx + 1)),
                     }
                 }
-                "RU" if out.rules.is_none() => {
-                    if let Some(v) = values.first() {
+                "RU" => {
+                    if out.rules.is_some() {
+                        out.warnings.push("重复的 RU，只取第一个".to_string());
+                    } else if values.len() > 1 {
+                        out.warnings.push("RU 有多个值，只取第一个".to_string());
+                        if let Some(v) = values.first() {
+                            out.rules = Some(v.trim().to_string());
+                        }
+                    } else if let Some(v) = values.first() {
                         out.rules = Some(v.trim().to_string());
                     }
                 }
                 "HA" => {
+                    if saw_ha {
+                        out.warnings.push("重复的 HA，只取第一个".to_string());
+                        continue;
+                    }
+                    saw_ha = true;
+                    if values.len() > 1 {
+                        out.warnings.push("HA 有多个值，只取第一个".to_string());
+                    }
                     let raw = values.first().map(|s| s.trim()).unwrap_or("");
                     match raw.parse::<u8>() {
                         Ok(n) if n >= 2 => out.handicap = Some(n),
@@ -212,6 +241,14 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                     }
                 }
                 "RE" => {
+                    if saw_re {
+                        out.warnings.push("重复的 RE，只取第一个".to_string());
+                        continue;
+                    }
+                    saw_re = true;
+                    if values.len() > 1 {
+                        out.warnings.push("RE 有多个值，只取第一个".to_string());
+                    }
                     if let Some(v) = values.first() {
                         let v = v.trim();
                         if !v.is_empty() {
@@ -409,6 +446,7 @@ fn skip_ws(chars: &[char], i: &mut usize) {
 fn parse_node(chars: &[char], i: &mut usize) -> Result<Props, String> {
     *i += 1; // ';'
     let mut props = Vec::new();
+    let mut move_prop: Option<String> = None;
     loop {
         skip_ws(chars, i);
         if *i >= chars.len() || !chars[*i].is_ascii_uppercase() {
@@ -492,6 +530,23 @@ fn parse_node(chars: &[char], i: &mut usize) -> Result<Props, String> {
                 "第 {} 个字符：属性 {ident} 缺少 [...] 值",
                 start + 1
             ));
+        }
+        // 落子属性：一个节点只能有一手，且 B/W 只能有一个值
+        if ident == "B" || ident == "W" {
+            if values.len() != 1 {
+                return Err(format!(
+                    "第 {} 个字符：{ident} 只能有一个值（实际 {} 个）",
+                    start + 1,
+                    values.len()
+                ));
+            }
+            if let Some(prev) = &move_prop {
+                return Err(format!(
+                    "第 {} 个字符：同一节点不能同时有 {prev} 和 {ident}",
+                    start + 1
+                ));
+            }
+            move_prop = Some(ident.clone());
         }
         props.push((ident, values));
     }
@@ -737,6 +792,62 @@ mod tests {
             g.moves,
             vec![Move::Play(Point::new(2, 2)), Move::Play(Point::new(6, 6))]
         );
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+    }
+
+    #[test]
+    fn move_properties_must_be_single_valued() {
+        for src in ["(;SZ[9];B[cc][dd];W[ee])", "(;SZ[9];B[cc];W[dd][ee])"] {
+            let err = parse(src).unwrap_err();
+            assert!(err.contains("只能有一个值"), "{src}: {err}");
+            assert!(err.contains("第 "), "要带位置：{err}");
+        }
+    }
+
+    #[test]
+    fn one_node_cannot_hold_two_moves() {
+        let err = parse("(;SZ[9];B[cc]W[dd])").unwrap_err();
+        assert!(err.contains("同一节点不能同时有"), "{err}");
+    }
+
+    #[test]
+    fn scalar_properties_warn_on_extra_or_duplicate_values() {
+        // 多值：只取第一个，但必须说出来
+        for (src, needle) in [
+            ("(;SZ[9][13];B[cc])", "SZ 有多个值"),
+            ("(;SZ[9]RU[Chinese][Japanese];B[cc])", "RU 有多个值"),
+            ("(;SZ[9]HA[2][3];W[cc])", "HA 有多个值"),
+            ("(;SZ[9]RE[W+R][B+R];B[cc])", "RE 有多个值"),
+        ] {
+            let g = parse(src).unwrap();
+            assert!(
+                g.warnings.iter().any(|w| w.contains(needle)),
+                "{src} 应提示 {needle}：{:?}",
+                g.warnings
+            );
+        }
+        // 重复属性：只取第一个
+        for (src, needle) in [
+            ("(;SZ[9]SZ[13];B[cc])", "重复的 SZ"),
+            ("(;SZ[9]KM[6.5]KM[7.5];B[cc])", "重复的 KM"),
+            ("(;SZ[9]RU[Chinese]RU[Japanese];B[cc])", "重复的 RU"),
+            ("(;SZ[9]PL[B]PL[W];B[cc])", "重复的 PL"),
+        ] {
+            let g = parse(src).unwrap();
+            assert!(
+                g.warnings.iter().any(|w| w.contains(needle)),
+                "{src} 应提示 {needle}：{:?}",
+                g.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn setup_properties_still_accept_multiple_values() {
+        let g = parse("(;SZ[9]AB[aa][bb][cc]AW[dd][ee]AE[aa];W[ff])").unwrap();
+        // AB 三个、AW 两个，AE 清掉 aa
+        assert_eq!(g.setup.len(), 4, "{:?}", g.setup);
+        assert!(!g.setup.iter().any(|(_, p)| *p == Point::new(0, 0)));
         assert!(g.warnings.is_empty(), "{:?}", g.warnings);
     }
 
