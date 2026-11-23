@@ -595,6 +595,33 @@ done
     }
 
     #[test]
+    fn swapping_sides_during_preview_does_not_play_into_the_main_line() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        let best = Move::Play(Point::new(2, 2));
+        let mut e = eval(0, Color::Black, 0.5, best);
+        e.candidates[0].pv = vec![best, Move::Play(Point::new(3, 3))];
+        ctrl.app.evals.insert(0, e);
+        ctrl.app.start_preview();
+        assert!(ctrl.app.preview_active());
+
+        // 换边会让 AI 轮到黑；没有预览守卫时这里会直接 AiMove 并清掉预览
+        ctrl.swap_sides();
+        ctrl.tick();
+        assert_eq!(ctrl.app.human, Color::White);
+        assert!(ctrl.app.preview_active(), "预览必须保留");
+        assert_eq!(ctrl.app.total_moves(), 0, "主线不能被写一手");
+        assert_eq!(ctrl.app.pos(), 0);
+        assert_eq!(ctrl.spawns, 0, "预览期间不自动起分析");
+
+        // 退出预览后，AI 才按新执子方应手
+        ctrl.app.exit_preview();
+        ctrl.tick();
+        assert_eq!(ctrl.app.total_moves(), 1, "退出预览后 AI 才落子");
+        assert_eq!(ctrl.app.pos(), 1);
+    }
+
+    #[test]
     fn play_at_cursor_plays_and_starts_analysis() {
         let mut ctrl = Controller::new(offline_app());
         ctrl.app.start_play();

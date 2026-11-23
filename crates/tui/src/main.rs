@@ -138,6 +138,7 @@ fn event_loop(
                             KeyCode::Left | KeyCode::Char('p') | KeyCode::Char('[') => {
                                 ctrl.preview_prev()
                             }
+                            KeyCode::Char('s') => ctrl.swap_sides(),
                             KeyCode::Char('c') => ctrl.commit_preview(),
                             KeyCode::Esc => ctrl.exit_preview(),
                             KeyCode::Char('q') => return Ok(()),

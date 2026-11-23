@@ -992,6 +992,33 @@ fn human_policy_length_must_match_the_board_exactly() {
 }
 
 #[test]
+fn swapping_sides_during_preview_leaves_the_main_line_alone() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    start(&mut app);
+    let best = Move::Play(Point::new(2, 2));
+    let mut e = eval(0, Color::Black, 0.5, best);
+    e.candidates[0].pv = vec![best, Move::Play(Point::new(3, 3))];
+    app.evals.insert(0, e);
+
+    app.start_preview();
+    assert!(app.preview_active(), "{}", app.status);
+
+    app.swap_sides();
+    assert_eq!(app.human, Color::White);
+    assert_eq!(app.next_action(), Action::None, "预览期间不能自动应手");
+    assert!(app.preview_active(), "换边不应退出预览");
+    assert_eq!(app.total_moves(), 0);
+    assert_eq!(app.pos(), 0);
+    assert_eq!(app.game().moves().len(), 0, "主线一手都不能多");
+
+    app.exit_preview();
+    assert!(
+        matches!(app.next_action(), Action::AiMove(_)),
+        "退出预览后 AI 按新执子方应手"
+    );
+}
+
+#[test]
 fn previews_and_commits_a_variation() {
     let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
     let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();

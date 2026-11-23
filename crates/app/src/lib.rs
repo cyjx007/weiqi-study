@@ -779,6 +779,11 @@ impl App {
     /// 当前展示的棋盘：预览变化时是预览局面，否则是主线局面。
     /// 当前该做的动作：分析当前局面、让 AI 落子，或者什么都不做。
     pub fn next_action(&self) -> Action {
+        // 预览 PV 期间不动主线：任何自动分析/自动落子都会打断预览，
+        // 落子还会清掉预览并写进主线。退出预览后再由正常 tick 推进。
+        if self.preview_active() {
+            return Action::None;
+        }
         if self.busy || !self.ai_enabled {
             return Action::None;
         }
