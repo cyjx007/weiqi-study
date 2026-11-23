@@ -306,7 +306,12 @@ impl Board {
 pub struct Position {
     pub board: Board,
     pub to_move: Color,
-    pub captures: [u16; 2],
+    /// 双方累计提子数。
+    ///
+    /// 用 `u32` 而不是 `u16`：每颗落下的子最多被提一次，所以总提子数
+    /// ≤ 手数 + 开局摆子 ≤ `MAX_MOVES(65535) + 25×25(625)`。这个上界只比
+    /// `u16::MAX` 大 625，极端棋谱（几乎每手都提子）会让 `u16` 溢出。
+    pub captures: [u32; 2],
     pub last_move: Option<Move>,
 }
 
@@ -339,7 +344,7 @@ impl Position {
                 let mut board = self.board.clone();
                 board.set(p, Some(color));
 
-                let mut captured = 0u16;
+                let mut captured = 0u32;
                 for n in board.neighbors(p) {
                     if board.at(n) == Some(color.opposite()) {
                         let (stones, liberties) = board.group_and_liberties(n);
@@ -680,6 +685,27 @@ mod tests {
         g.play(Move::Play(p(0, 1))).unwrap(); // B：提掉 (0,0)
         assert_eq!(g.position().board.at(p(0, 0)), None);
         assert_eq!(g.position().captures[Color::Black.index()], 1);
+    }
+
+    #[test]
+    fn captures_do_not_overflow_u16_range() {
+        // 总提子上界是 手数 + 摆子 ≤ 66160，比 u16::MAX 多 625：
+        // 极端棋谱（几乎每手都提子）会踩到。这里把计数推到 u16::MAX 再提一子，
+        // 旧的 u16 实现会 debug panic / release 回绕。
+        let mut pos = Position::new(9);
+        pos.captures[Color::Black.index()] = u32::from(u16::MAX);
+        // 角上的白子只剩 (1,0) 一口气
+        pos.board.set(p(0, 0), Some(Color::White));
+        pos.board.set(p(0, 1), Some(Color::Black));
+        pos.to_move = Color::Black;
+
+        let next = pos.try_play(Move::Play(p(1, 0))).unwrap();
+        assert_eq!(next.board.at(p(0, 0)), None, "白子应被提掉");
+        assert_eq!(
+            next.captures[Color::Black.index()],
+            u32::from(u16::MAX) + 1,
+            "累计提子不能停在或回绕到 u16 边界"
+        );
     }
 
     #[test]

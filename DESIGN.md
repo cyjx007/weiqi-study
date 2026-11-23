@@ -99,7 +99,7 @@ pub struct Point { pub x: u8, pub y: u8 }          // 0-based，左上原点
 pub struct Position {                               // 可落子的局面
     pub board: Board,
     pub to_move: Color,
-    pub captures: [u16; 2],
+    pub captures: [u32; 2],                         // 总提子 ≤ 手数+摆子(≤66160)，u16 会溢出
     pub last_move: Option<Move>,
 }
 

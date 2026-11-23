@@ -90,7 +90,10 @@ pub fn move_facts(before: &goban::Position, mv: Move) -> Option<MoveFacts> {
     let after = before.try_play(mv).ok()?;
     let size = before.board.size();
 
-    let captures = after.captures[mover.index()].saturating_sub(before.captures[mover.index()]);
+    // 每手的提子差最多是一整盘子（≤625），u16 足够；转换只作防御。
+    let captures =
+        u16::try_from(after.captures[mover.index()].saturating_sub(before.captures[mover.index()]))
+            .unwrap_or(u16::MAX);
     let (_, own_liberties) = after.board.group_and_liberties(p);
 
     let mut contact = false;
