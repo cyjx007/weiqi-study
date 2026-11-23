@@ -311,16 +311,36 @@ impl GameStore {
 
     /// 把 tmp 的内容落成一份冲突副本；用 `create_new` 保证不覆盖已有副本。
     fn create_conflict_copy(&self, tmp: &Path, path: &Path) -> Result<PathBuf, String> {
-        let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("game");
+        let stem = path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("game")
+            .to_string();
         let stamp = unix_nanos();
         let pid = std::process::id();
-        for i in 0..1000u32 {
+        let dir = self.dir.clone();
+        self.create_conflict_copy_with(tmp, &stem, move |stem, i| {
             let suffix = if i == 0 {
                 format!("{stamp}-{pid}")
             } else {
                 format!("{stamp}-{pid}-{i}")
             };
-            let alt = self.dir.join(format!("{stem}.conflict-{suffix}.sgf"));
+            dir.join(format!("{stem}.conflict-{suffix}.sgf"))
+        })
+    }
+
+    /// 真正的落盘逻辑；文件名由调用方给，方便测试“撞名后加后缀”分支。
+    fn create_conflict_copy_with<F>(
+        &self,
+        tmp: &Path,
+        stem: &str,
+        mut name_for: F,
+    ) -> Result<PathBuf, String>
+    where
+        F: FnMut(&str, u32) -> PathBuf,
+    {
+        for i in 0..1000u32 {
+            let alt = name_for(stem, i);
             // 优先 hard_link：目标要么不存在、要么已带着完整内容出现，
             // 不会出现“0 字节 .sgf”被 list() 扫到的中间态。
             match fs::hard_link(tmp, &alt) {
@@ -926,6 +946,33 @@ mod tests {
             1
         );
         assert!(tmp_files(store.dir()).is_empty());
+
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn conflict_copy_skips_names_that_already_exist() {
+        let store = temp_store();
+        let tmp = store.dir().join("payload.tmp-x");
+        std::fs::write(&tmp, "(;SZ[9];B[cc])").unwrap();
+        // 故意占住第一个候选名
+        let taken = store.dir().join("g.conflict-0.sgf");
+        std::fs::write(&taken, "sentinel").unwrap();
+        let free = store.dir().join("g.conflict-1.sgf");
+
+        let dir = store.dir().to_path_buf();
+        let got = store
+            .create_conflict_copy_with(&tmp, "g", |_, i| dir.join(format!("g.conflict-{i}.sgf")))
+            .unwrap();
+
+        assert_eq!(got, free, "撞名时应顺延到下一个候选");
+        assert_eq!(
+            std::fs::read_to_string(&taken).unwrap(),
+            "sentinel",
+            "已有副本不能被覆盖"
+        );
+        assert_eq!(std::fs::read_to_string(&free).unwrap(), "(;SZ[9];B[cc])");
+        assert!(!tmp.exists(), "临时文件应被消费掉");
 
         let _ = std::fs::remove_dir_all(store.dir());
     }
