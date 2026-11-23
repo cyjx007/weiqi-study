@@ -173,10 +173,20 @@ impl GameStore {
         drop(file); // 先关掉，rename 才能跨平台可靠
 
         // 版本校验：磁盘上的文件不是我们上次看到的那个，就另存副本
-        if let Some(expected) = opts.expected {
-            if FileStamp::of(path)? != Some(expected) {
-                let alt = self.create_conflict_copy(&tmp, path)?;
-                return Ok(SaveOutcome::Conflict(alt));
+        match opts.expected {
+            Some(expected) => {
+                if FileStamp::of(path)? != Some(expected) {
+                    let alt = self.create_conflict_copy(&tmp, path)?;
+                    return Ok(SaveOutcome::Conflict(alt));
+                }
+            }
+            // expected=None 的语义是“新建”：目标已经存在说明名字被占用，
+            // 也不覆盖，另存副本（宁可多一个文件，也不丢别人的内容）
+            None => {
+                if FileStamp::of(path)?.is_some() {
+                    let alt = self.create_conflict_copy(&tmp, path)?;
+                    return Ok(SaveOutcome::Conflict(alt));
+                }
             }
         }
 
@@ -205,6 +215,10 @@ impl GameStore {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("game.sgf");
+        self.acquire_name_lock(name)
+    }
+
+    fn acquire_name_lock(&self, name: &str) -> Result<Option<fs::File>, String> {
         let locks = self.dir.join(".locks");
         fs::create_dir_all(&locks).map_err(|e| format!("创建锁目录失败：{e}"))?;
         let lock_path = locks.join(name);
@@ -396,6 +410,29 @@ impl GameStore {
         if target == path {
             return Ok(target);
         }
+        let old_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("game.sgf")
+            .to_string();
+        let new_name = target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("game.sgf")
+            .to_string();
+        // 按字典序取锁，避免两个进程互换名字时死锁
+        let (first, second) = if old_name <= new_name {
+            (old_name.as_str(), new_name.as_str())
+        } else {
+            (new_name.as_str(), old_name.as_str())
+        };
+        let lock1 = self.acquire_name_lock(first)?;
+        let lock2 = if second == first {
+            None
+        } else {
+            Some(self.acquire_name_lock(second)?)
+        };
+
         if target.exists() {
             return Err(format!(
                 "{} 已存在",
@@ -403,9 +440,10 @@ impl GameStore {
             ));
         }
         fs::rename(path, &target).map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
-        if let Some(old) = path.file_name().and_then(|n| n.to_str()) {
-            self.drop_lock_file(old);
-        }
+        drop(lock2);
+        drop(lock1);
+        // 旧名字以后不会再被保存，锁文件可以清掉（失败忽略）
+        self.drop_lock_file(&old_name);
         Ok(target)
     }
 
@@ -420,6 +458,8 @@ impl GameStore {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("game.sgf");
+        // 和 save 互斥：否则保存中的 rename 可能把刚删掉的文件名重新建出来
+        let lock = self.acquire_name_lock(name)?;
         // 纳秒 + pid，避免同一秒删除同名棋谱时互相覆盖
         let stamp = unix_nanos();
         let pid = std::process::id();
@@ -431,6 +471,7 @@ impl GameStore {
         }
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
+        drop(lock);
         self.drop_lock_file(name);
         Ok(target)
     }
@@ -613,9 +654,27 @@ mod tests {
                 store.save(&path, 9, 7.5, &[], &moves, opts(None)).unwrap()
             }));
         }
+        // expected=None 表示“新建”：只有一个能写主文件，其余必须落副本
+        let mut written = 0;
+        let mut conflicts = 0;
         for h in handles {
-            assert!(matches!(h.join().unwrap(), SaveOutcome::Written(_)));
+            match h.join().unwrap() {
+                SaveOutcome::Written(_) => written += 1,
+                SaveOutcome::Conflict(alt) => {
+                    assert!(alt.exists());
+                    assert_eq!(
+                        sgf::parse(&std::fs::read_to_string(&alt).unwrap())
+                            .unwrap()
+                            .moves
+                            .len(),
+                        1
+                    );
+                    conflicts += 1;
+                }
+            }
         }
+        assert_eq!(written, 1, "只能有一个写入主文件");
+        assert_eq!(conflicts, 7);
         // 最终文件必须是完整 SGF，不能是两次写入拼出来的半截
         let text = std::fs::read_to_string(&path).unwrap();
         let back = sgf::parse(&text).unwrap();
@@ -645,6 +704,31 @@ mod tests {
 
         assert!(res.is_err(), "目录不可写时保存必须失败");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn expected_none_never_overwrites_an_existing_file() {
+        let store = temp_store();
+        let path = store.dir().join("existing.sgf");
+        std::fs::write(&path, "(;SZ[9]KM[0.5];B[dd])").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let out = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(2, 2))],
+                opts(None),
+            )
+            .unwrap();
+        let SaveOutcome::Conflict(alt) = out else {
+            panic!("expected=None 遇到已存在文件必须落副本，实际 {out:?}");
+        };
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(alt.exists());
         let _ = std::fs::remove_dir_all(store.dir());
     }
 
@@ -700,7 +784,6 @@ mod tests {
         let base = temp_store();
         let store = GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_secs(2));
         let path = store.dir().join("wait.sgf");
-        std::fs::write(&path, "(;SZ[9])").unwrap();
         let lock_path = store.dir().join(".locks").join("wait.sgf");
         std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let holder = std::fs::OpenOptions::new()
