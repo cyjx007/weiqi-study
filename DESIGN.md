@@ -38,7 +38,7 @@ Rust crates：`ratatui`、`crossterm`、`ratatui-image`、`gtk4`、`libadwaita`�
                  ┌─────────────────────────────┐
                  │           crates/           │
                  │                             │
-  输入事件 ──►   │  tui (ratatui)  gui (gtk4)  │  ◄── 两个前端只做「画 + 输入」
+  输入事件 ──►   │  tui (ratatui)  gui (gtk4)  │  ◄── 前端只做「画 + 输入 + 选路径」
                  │        │             │      │
                  │        └──── 命令 ────┘      │
                  │              │              │
@@ -51,7 +51,7 @@ Rust crates：`ratatui`、`crossterm`、`ratatui-image`、`gtk4`、`libadwaita`�
                  │  (规则)   (读写)    (讲评)   │
                  │              │              │
                  │        ┌─────▼─────┐        │
-                 │        │  engine   │        │  ◄── 唯一碰进程/IO 的地方
+                 │        │  engine   │        │  ◄── 唯一碰 KataGo 进程的地方
                  │        └─────┬─────┘        │
                  └──────────────┼──────────────┘
                                 ▼
@@ -76,18 +76,20 @@ weiqi-study/
 └─ scripts/                    # gui-smoke.sh / tui-smoke.py（CI 用）
 ```
 
-`app/src/lib.rs` 目前 900 行上下；测试在 `tests.rs`、变化预览在 `preview.rs`。
+`app/src/lib.rs` 目前约 1100 行；测试在 `app/src/tests.rs`、变化预览在 `preview.rs`。
+`sgf/src/lib.rs` 的业务代码和测试已经拆开（`sgf/src/tests.rs`），两边都低于 1500 行。
 
 ### crate 边界（越界就是 bug）
 
 | crate | 允许 | 禁止 |
 |---|---|---|
-| `goban` | 纯计算、盘面/历史、规则语义 | 任何 IO、字符串坐标、UI 概念 |
+| `goban` | 纯计算、盘面/历史、规则语义；`Color::sgf_char` / 中文名作为跨 crate 常量 | 任何 IO、UI 状态 |
 | `sgf` | 文件内容字符串 ↔ 结构体、规则名映射 | 知道引擎存在 |
-| `engine` | spawn 进程、管道、JSON、超时、重建会话 | 知道 UI/规则细节（只收发坐标与胜率） |
+| `engine` | spawn 进程、管道、JSON、超时、重建会话；接收 `&Game` 只读快照以复用合法性与坐标转换 | 持有 UI 状态、替用户选规则 |
 | `review` | 输入 `TurnEval` + 规则，输出句子 | IO、时间、随机数（保证快照稳定） |
 | `app` | 状态机、分析缓存、存储、后台任务编排 | 画图、直接管理 GTP/进程（交给 `engine`） |
-| `tui`/`gui` | 渲染、输入映射成 `Controller` 调用 | 自己实现规则、算胜率、spawn 分析 |
+| `tui`/`gui` | 渲染、输入映射成 `Controller` 调用、选择文件路径 | 自己实现规则、算胜率、spawn 分析、读文件/解析 SGF（走 `App::open_path`） |
+| `cli` | 无状态复盘：自己解析 SGF、调 `engine`、输出文本 | 依赖 App/前端状态；这是刻意例外，不强制走 `app` |
 
 ## 三、核心数据结构（当前实现）
 
@@ -305,7 +307,7 @@ pub struct EngineConfig {
 | 端到端 | `crates/app/tests/e2e_fixtures.rs` + 7 份 fixtures：PL[W]、HA+AB、Pass、变化、collection、未知 RU、AGA |
 | GUI | `scripts/gui-smoke.sh`：Xvfb 启动、按键、切换棋谱、CPU 上限 |
 | TUI | `scripts/tui-smoke.py`：真实 pty 120×40，启动→列表→分析失败→帮助→退出 |
-| CI | fmt / clippy -D warnings / test / build / GUI smoke / TUI smoke |
+| CI | fmt / clippy -D warnings / test / build / GUI smoke / TUI smoke / `msrv (1.92)`（`cargo check --workspace --all-targets`） |
 
 ## 十、打包
 

@@ -10,7 +10,7 @@
 weiqi-study 是一套本地围棋学习工具。它驱动本机的 KataGo，把引擎的数字翻译成能读的东西：
 这一手亏了多少、引擎会下哪里、之后大概走成什么样。
 
-包含两个前端：`go-review` 读一盘 SGF，输出逐手表格和你失误手的讲评；`weiqi-tui` 是终端
+包含两个交互前端（TUI、GTK4）和一个 CLI：`go-review` 读一盘 SGF，输出逐手表格和你失误手的讲评；`weiqi-tui` 是终端
 棋盘，可以和引擎对下；每落一子就显示胜率变化、候选点，以及这一手的讲解——由棋盘上的
 事实（几路、是否接触、提子、打吃）加上引擎的评估和预演变化拼出来。
 
@@ -35,7 +35,7 @@ nix build github:cyjx007/weiqi-study
 ./result/bin/weiqi-gui        # 原生窗口
 ```
 
-或者把两个二进制装进 profile：
+或者把三个二进制装进 profile：
 
 ```bash
 nix profile install github:cyjx007/weiqi-study
@@ -82,9 +82,11 @@ weiqi-gui --version            # 三个二进制都能自报版本
 `weiqi-gui` 不接受棋谱路径：启动后打开棋谱库里最近的一盘（没有就空盘）。
 `-h/--help`、`-V/--version` 在 GTK 初始化前处理，没有图形环境也能用。
 
-图形界面用鼠标：点交叉点落子，悬停预览；按钮对应 TUI 的快捷键（新局 / 分析 / 复盘 / 撤回），
+图形界面用鼠标：点交叉点落子，悬停预览；「导入」按钮（或按 `o`）通过文件对话框选 SGF 并复制进棋谱库；
+按钮对应 TUI 的快捷键（新局 / 分析 / 复盘 / 撤回），
 下拉框打开任意棋谱，`重命名` / `删除` 管理当前棋谱；强度卡片可以改 visits、开关拟人网和选段位，
-`变化` 预览引擎推荐、`采用` 写回主线；`EN/中文` 切语言，键盘快捷键和 TUI 一致。
+`变化` 预览引擎推荐、`采用` 写回主线；`EN/中文` 切语言，棋盘导航和主要操作用与 TUI 相同的按键（在 GUI 可用的范围内）；导入 SGF、棋谱列表、
+重命名/删除和 AI 设置走界面按钮。
 
 Nix 包装会安装 `packaging/weiqi-study.desktop`，所以 `weiqi-gui` 会出现在启动器里。
 
@@ -143,6 +145,7 @@ TUI 按键：
 | --- | --- | --- |
 | `KATAGO_BIN` | `PATH` 里的 `katago` | 引擎可执行文件 |
 | `KATAGO_MODEL` | 自动探测 `*.bin.gz` | 要加载的神经网络 |
+| `KATAGO_HUMAN_MODEL` | 自动探测 `*humanv0*.bin.gz` | 拟人网；自动探测不到时手动指定 |
 | `KATAGO_CFG` | `$XDG_CONFIG_HOME/weiqi-study/analysis.cfg` | 分析配置；首次运行时生成 |
 | `WEIQI_LANG` | 跟随 `LANG` | `zh` / `en`，界面**和讲评**的语言 |
 
@@ -203,9 +206,9 @@ crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）
 packaging/       图形界面的桌面入口
 scripts/         gui-smoke.sh：CI 用的无头 GUI 冒烟测试
                  tui-smoke.py：CI 用的 pty TUI 冒烟测试
-nix/package.nix  构建两个二进制的 Nix 包
+nix/package.nix  构建三个二进制的 Nix 包
 flake.nix        flake 输出：package 与 dev shell
-samples/         TUI 无参数时打开的示例棋谱
+samples/         TUI 无参数时在内存里打开的示例棋谱（不会复制进库）
 ```
 
 ## 开发

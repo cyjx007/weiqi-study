@@ -221,9 +221,10 @@ fn print_help() {
   -V, --version   显示版本
 
 环境变量：
-  KATAGO_BIN      默认 ~/go-study/katago/bin/katago
-  KATAGO_MODEL    默认 Steam 游戏 NinOneQi 里的 b18c384nbt 网络
-  KATAGO_CFG      默认 ~/go-study/analysis.cfg
+  KATAGO_BIN      默认 PATH 里的 katago；找不到再查 ~/go-study/katago/bin/katago、
+                  /usr/bin、/usr/local/bin
+  KATAGO_MODEL    自动探测 Steam 棋类合集里的 *.bin.gz（NinOneQi / Just Go）
+  KATAGO_CFG      默认 $XDG_CONFIG_HOME/weiqi-study/analysis.cfg（首次运行时生成）
   WEIQI_LANG      输出语言 zh|en（默认跟随 LANG）"
     );
 }

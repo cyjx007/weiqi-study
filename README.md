@@ -11,7 +11,7 @@ weiqi-study is a small toolkit for learning Go locally. It drives a local KataGo
 turns its numbers into things you can read: how much a move cost, what the engine would have
 played instead, and what the follow-up would look like.
 
-It ships two front-ends. `go-review` takes an SGF and prints a per-move table plus a written
+It ships two interactive front-ends (TUI and GTK4) plus a CLI. `go-review` takes an SGF and prints a per-move table plus a written
 review of your worst moves. `weiqi-tui` is a terminal board for playing against the engine:
 after every move it shows the evaluation, the top candidate moves, and a one-paragraph
 explanation of the move just played.
@@ -37,7 +37,7 @@ nix build github:cyjx007/weiqi-study
 ./result/bin/weiqi-gui        # native window
 ```
 
-Or install both binaries into a profile:
+Or install all three binaries into a profile:
 
 ```bash
 nix profile install github:cyjx007/weiqi-study
@@ -81,14 +81,16 @@ weiqi-gui
 weiqi-gui --version            # all three binaries can self-report their version
 ```
 
-`weiqi-gui` takes no game path: it opens the most recent game in the store (or an empty board).
+`weiqi-gui` takes no game path: it opens the most recent readable game in the store (or an
+empty board). The **Import** button (or the `o` key) opens an SGF via a file dialog and copies it into the library.
 `-h/--help` and `-V/--version` are handled before GTK starts, so they work without a display.
 
 The GUI uses the mouse: click an intersection to play, hover to preview. Buttons mirror the TUI
 keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved game, and the
 `Rename` / `Delete` buttons manage the selected file. A strength card sets visits and toggles the
 humanv0 net/rank; `Variation` previews the engine line and `Use` commits it. `EN/中文` switches
-the interface language. Keyboard shortcuts are the same as the TUI.
+the interface language. Board navigation and the main actions use the same keys as the TUI where available; the GUI
+adds buttons for importing an SGF, the game list, rename/delete and AI settings.
 
 The Nix package installs `packaging/weiqi-study.desktop`, so `weiqi-gui` appears in the
 application launcher.
@@ -208,9 +210,9 @@ crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
 packaging/       desktop entry for the GUI
 scripts/         gui-smoke.sh: headless GUI smoke test used by CI
                  tui-smoke.py: pty-driven TUI smoke test used by CI
-nix/package.nix  Nix package building both binaries
+nix/package.nix  Nix package building all three binaries
 flake.nix        flake outputs: package and dev shell
-samples/         demo SGF used by the TUI fallback
+samples/         demo SGF opened in memory by the TUI fallback (never copied into the library)
 ```
 
 ## Development
