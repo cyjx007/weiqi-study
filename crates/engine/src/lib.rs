@@ -515,11 +515,7 @@ impl AnalysisSession {
                     expected.len()
                 ));
             };
-            let turn = value
-                .get("turnNumber")
-                .and_then(|x| x.as_u64())
-                .ok_or_else(|| format!("响应缺少 turnNumber: {line}"))?
-                as u16;
+            let turn = response_turn(&value).map_err(|e| format!("{e}（id={id}）"))?;
             if !allowed.contains(&turn) {
                 return Err(format!(
                     "响应 turnNumber 越界: id={id} turn={turn}（该批次负责 {} 个 turn）",
@@ -543,6 +539,15 @@ impl Drop for AnalysisSession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// 解析响应里的 `turnNumber`；超出 `u16` 范围必须报错，不能截断成小数字。
+fn response_turn(value: &Value) -> Result<u16, String> {
+    let n = value
+        .get("turnNumber")
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| "响应缺少 turnNumber".to_string())?;
+    u16::try_from(n).map_err(|_| format!("响应 turnNumber 超出 u16 范围: {n}"))
 }
 
 /// 提交给 KataGo 的历史手：`[[颜色, 坐标], ...]`。
@@ -967,6 +972,37 @@ done
         game.play(Move::Play(Point::new(2, 2))).unwrap();
         assert_eq!(history_json(&game), vec![json!(["B", "C7"])]);
         assert_eq!(setup_json(&game), vec![json!(["B", "A9"])]);
+    }
+
+    #[test]
+    fn response_turn_rejects_values_above_u16() {
+        assert_eq!(response_turn(&json!({"turnNumber": 0})).unwrap(), 0);
+        assert_eq!(
+            response_turn(&json!({"turnNumber": 65535})).unwrap(),
+            65535,
+            "u16 最大值应当接受"
+        );
+        let err = response_turn(&json!({"turnNumber": 65536})).unwrap_err();
+        assert!(err.contains("超出"), "{err}");
+        let err = response_turn(&json!({"turnNumber": 1_000_000})).unwrap_err();
+        assert!(err.contains("超出"), "{err}");
+        assert!(response_turn(&json!({})).is_err());
+    }
+
+    #[test]
+    fn huge_turn_number_in_a_response_is_an_error() {
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":70000,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+done
+"#,
+        );
+        let err = engine.analyze_position(&Game::new(9, 7.5)).unwrap_err();
+        assert!(err.contains("超出"), "{err}");
+        assert!(!err.contains("重复"), "不能被截断成合法回合：{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
