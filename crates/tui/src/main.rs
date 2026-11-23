@@ -285,6 +285,9 @@ fn event_loop(
                             KeyCode::Enter => {
                                 let _ = ctrl.play_at_cursor();
                             }
+                            KeyCode::Char('P') => {
+                                let _ = ctrl.play_pass();
+                            }
                             KeyCode::Char('t') => ctrl.start_play(),
                             KeyCode::Char('T') => {
                                 let sel = match ctrl.app.size {

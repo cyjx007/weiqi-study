@@ -24,6 +24,7 @@ pub struct Panels {
     pub analyse_btn: gtk::Button,
     pub review_btn: gtk::Button,
     pub undo_btn: gtk::Button,
+    pub pass_btn: gtk::Button,
     pub prev_btn: gtk::Button,
     pub next_btn: gtk::Button,
     pub rename_btn: gtk::Button,
@@ -84,6 +85,7 @@ impl Panels {
         let analyse_btn = gtk::Button::with_label("");
         let review_btn = gtk::Button::with_label("");
         let undo_btn = gtk::Button::with_label("");
+        let pass_btn = gtk::Button::with_label("");
         let prev_btn = gtk::Button::with_label("‹");
         let next_btn = gtk::Button::with_label("›");
         let rename_btn = gtk::Button::with_label("");
@@ -221,6 +223,7 @@ impl Panels {
         actions.append(&analyse_btn);
         actions.append(&review_btn);
         actions.append(&undo_btn);
+        actions.append(&pass_btn);
         side.append(&actions);
 
         // 棋谱 + 翻手 + 管理
@@ -267,6 +270,7 @@ impl Panels {
             analyse_btn,
             review_btn,
             undo_btn,
+            pass_btn,
             prev_btn,
             next_btn,
             rename_btn,
@@ -340,6 +344,10 @@ impl Panels {
         self.analyse_btn.set_label(s.analyse_btn);
         self.review_btn.set_label(s.review_btn);
         self.undo_btn.set_label(s.undo_btn);
+        self.pass_btn.set_label(s.pass_btn);
+        self.pass_btn.set_sensitive(
+            !app.preview_active() && (!app.ai_enabled || app.to_move() == app.human),
+        );
         self.rename_btn.set_label(s.rename);
         self.delete_btn.set_label(s.delete);
         self.strength_label

@@ -44,6 +44,7 @@ pub fn build_ui(application: &adw::Application) {
     let analyse_btn = panels.analyse_btn.clone();
     let review_btn = panels.review_btn.clone();
     let undo_btn = panels.undo_btn.clone();
+    let pass_btn = panels.pass_btn.clone();
     let prev_btn = panels.prev_btn.clone();
     let next_btn = panels.next_btn.clone();
     let rename_btn = panels.rename_btn.clone();
@@ -141,6 +142,11 @@ pub fn build_ui(application: &adw::Application) {
                         ui.ctrl.app.cursor = p;
                     }
                     let _ = ui.ctrl.play_at_cursor();
+                }
+                gdk::Key::P => {
+                    if !ui.ctrl.app.preview_active() {
+                        let _ = ui.ctrl.play_pass();
+                    }
                 }
                 gdk::Key::u => {
                     if ui.ctrl.app.preview_active() {
@@ -269,6 +275,16 @@ pub fn build_ui(application: &adw::Application) {
                 return;
             };
             ui.ctrl.app.prev_move();
+            refresh(&mut ui);
+        });
+    }
+    {
+        let ui = ui.clone();
+        pass_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            let _ = ui.ctrl.play_pass();
             refresh(&mut ui);
         });
     }
