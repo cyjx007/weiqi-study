@@ -228,15 +228,33 @@ nix develop                         # GTK4 / libadwaita / pkg-config for the GUI
 nix build .#default                 # builds all binaries via Nix
 
 scripts/gui-smoke.sh                # GUI smoke test under Xvfb (needs Xvfb, optional xdotool)
-scripts/gui-smoke.sh --switch       # also try switching games via xdotool
+scripts/gui-smoke.sh --switch --import  # also switch games and import an SGF via the dialog
 WEIQI_TUI_BIN=target/release/weiqi-tui \
-  python3 scripts/tui-smoke.py       # TUI: start → games list → analyse (engine unavailable) → help → quit
+  python3 scripts/tui-smoke.py       # TUI: start → list → analyse (no engine) → help → import → 9×9 game
+WEIQI_TUI_BIN=target/release/weiqi-tui \
+  python3 scripts/tui-image-smoke.py # image encoders: force kitty / sixel in a pty, check escape sequences
 ```
 
 CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test --workspace`,
 `cargo build --release --workspace`, then starts the GUI under Xvfb with
-`scripts/gui-smoke.sh --switch` and fails if it crashes, panics, or idles above 80% CPU; it then
-runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with a missing engine → help → quit).
+`scripts/gui-smoke.sh --switch --import` and fails if it crashes, panics, idles above 80% CPU, or the
+file-dialog import does not land in the library; it then runs `scripts/tui-smoke.py` in a real pty
+(start → games list → analyse with a missing engine → help → import → 9×9 game) and
+`scripts/tui-image-smoke.py` (kitty/sixel encoders, not a visual test).
+
+### Real-terminal image check (manual)
+
+`tui-image-smoke.py` only proves the encoder emits graphics escapes. Look at the real thing once in
+each terminal family:
+
+```bash
+kitty weiqi-tui --mode image samples/demo.sgf        # kitty graphics
+nix shell nixpkgs#foot --command foot weiqi-tui --mode image samples/demo.sgf   # sixel
+```
+
+Check: the board is a real image (wood texture, round stones), `n`/`p` and `V` redraw, resizing
+does not blur the stones, and `--mode text` still gives the dot grid. Run `--mode image` in a
+non-image terminal (e.g. `xterm`) and confirm it fails with a clear error instead of a blank board.
 
 ## Notes
 

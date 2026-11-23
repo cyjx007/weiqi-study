@@ -223,6 +223,9 @@ nix develop                         # 图形界面需要 GTK4 / libadwaita / pkg
 nix build .#default                 # 用 Nix 构建全部二进制
 
 scripts/gui-smoke.sh                # Xvfb 里跑 GUI 冒烟（需要 Xvfb，xdotool 可选）
+scripts/gui-smoke.sh --switch --import  # 额外切换棋谱 + 通过文件对话框导入一盘 SGF
+WEIQI_TUI_BIN=target/release/weiqi-tui \
+  python3 scripts/tui-image-smoke.py # 图片编码：伪终端里强制 kitty/sixel，检查图形转义
 scripts/gui-smoke.sh --switch       # 额外用 xdotool 试着切换棋谱
 WEIQI_TUI_BIN=target/release/weiqi-tui \
   python3 scripts/tui-smoke.py       # TUI：启动 → 棋谱列表 → 分析（引擎不可用）→ 帮助 → 退出
@@ -232,6 +235,18 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 `cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch` 启动 GUI；
 接着用 `scripts/tui-smoke.py` 在真实 pty 里跑 TUI（启动 → 棋谱列表 → 分析失败 → 帮助 → 退出）：
 崩溃、panic 或空闲 CPU 超过 80% 都会让 CI 失败。
+
+### 真实终端图片人工检查
+
+`tui-image-smoke.py` 只证明编码器发出了图形转义序列；每个终端家族人工看一次：
+
+```bash
+kitty weiqi-tui --mode image samples/demo.sgf        # kitty graphics
+nix shell nixpkgs#foot --command foot weiqi-tui --mode image samples/demo.sgf   # sixel
+```
+
+检查：棋盘是图片（木纹、圆形棋子），`n`/`p` 与 `V` 会重绘，缩放窗口棋子不发糊，
+`--mode text` 仍是点阵；在不支持图片的终端（如 `xterm`）跑 `--mode image` 应明确报错而不是空白。
 
 ## 注意
 
