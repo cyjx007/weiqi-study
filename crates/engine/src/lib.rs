@@ -543,10 +543,12 @@ impl Drop for AnalysisSession {
 
 /// 解析响应里的 `turnNumber`；超出 `u16` 范围必须报错，不能截断成小数字。
 fn response_turn(value: &Value) -> Result<u16, String> {
-    let n = value
+    let raw = value
         .get("turnNumber")
-        .and_then(|x| x.as_u64())
         .ok_or_else(|| "响应缺少 turnNumber".to_string())?;
+    let n = raw
+        .as_u64()
+        .ok_or_else(|| format!("turnNumber 不是非负整数: {raw}"))?;
     u16::try_from(n).map_err(|_| format!("响应 turnNumber 超出 u16 范围: {n}"))
 }
 
@@ -987,6 +989,10 @@ done
         let err = response_turn(&json!({"turnNumber": 1_000_000})).unwrap_err();
         assert!(err.contains("超出"), "{err}");
         assert!(response_turn(&json!({})).is_err());
+        let err = response_turn(&json!({"turnNumber": -1})).unwrap_err();
+        assert!(err.contains("非负整数"), "{err}");
+        let err = response_turn(&json!({"turnNumber": 1.5})).unwrap_err();
+        assert!(err.contains("非负整数"), "{err}");
     }
 
     #[test]
