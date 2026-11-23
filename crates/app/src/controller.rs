@@ -291,6 +291,38 @@ mod tests {
     }
 
     #[test]
+    fn engine_failure_resets_busy_and_allows_another_analysis() {
+        use std::time::{Duration, Instant};
+
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+
+        ctrl.analyze();
+        assert!(ctrl.app.busy, "发起分析后应处于 busy");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctrl.app.busy && Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!ctrl.app.busy, "引擎失败后 busy 必须复位");
+        assert!(ctrl.app.analysis().is_none());
+        assert!(!ctrl.app.status.is_empty(), "失败原因要显示出来");
+
+        // 关键：失败之后还能再发起，不是永久卡死
+        ctrl.analyze();
+        assert!(ctrl.app.busy, "失败后应允许重新分析");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctrl.app.busy && Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!ctrl.app.busy);
+    }
+
+    #[test]
     fn play_at_cursor_plays_and_starts_analysis() {
         let mut ctrl = Controller::new(offline_app());
         ctrl.app.start_play();

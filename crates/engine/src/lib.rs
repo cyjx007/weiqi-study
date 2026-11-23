@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use goban::{Color, Game, Move, Point, RuleSet};
 use serde_json::{json, Value};
@@ -23,6 +24,8 @@ pub struct EngineConfig {
     pub visits: u32,
     /// 一次 query 分析多少个局面（控制内存与进度粒度）
     pub chunk: usize,
+    /// 等单条响应的超时；超时后杀掉会话，下一次调用会重新拉起进程
+    pub timeout: Duration,
 }
 
 impl Default for EngineConfig {
@@ -43,6 +46,7 @@ impl Default for EngineConfig {
                 .unwrap_or_else(|| ensure_config(config_dir().join("analysis.cfg"))),
             visits: 120,
             chunk: 30,
+            timeout: Duration::from_secs(90),
         }
     }
 }
@@ -477,10 +481,13 @@ impl AnalysisSession {
         }
         let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
         while evals.len() < total {
-            let line = match self.rx.recv_timeout(std::time::Duration::from_secs(90)) {
+            let line = match self.rx.recv_timeout(cfg.timeout) {
                 Ok(line) => line,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err("KataGo 分析超时（90s 无输出）".to_string())
+                    return Err(format!(
+                        "KataGo 分析超时（{}s 无输出）",
+                        cfg.timeout.as_secs().max(1)
+                    ))
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("KataGo 意外退出".to_string())
@@ -889,6 +896,36 @@ done
     }
 
     #[test]
+    fn timeout_kills_the_session_and_the_next_call_recovers() {
+        // 第一次调用不回话 → 超时；进程被丢掉后，第二次应重新拉起并成功
+        let (engine, dir) = fake_engine_with(
+            r#"#!/bin/sh
+d=$(dirname "$0")
+echo x >> "$d/count"
+n=$(wc -l < "$d/count")
+while IFS= read -r line; do
+  if [ "$n" -ge 2 ]; then
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}"
+  fi
+done
+"#,
+            30,
+            Duration::from_millis(200),
+        );
+        let game = Game::new(9, 7.5);
+        let err = engine.analyze_position(&game).unwrap_err();
+        assert!(err.contains("超时"), "{err}");
+
+        // 同一个 Engine 句柄，下一次分析要能恢复
+        let ev = engine
+            .analyze_position(&game)
+            .expect("超时后应能重新拉起引擎");
+        assert_eq!(ev.turn, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn missing_root_info_is_an_error() {
         let (engine, dir) = fake_engine(
             r#"#!/bin/sh
@@ -963,6 +1000,14 @@ done"#,
     }
 
     fn fake_engine_chunk(script: &str, chunk: usize) -> (Engine, std::path::PathBuf) {
+        fake_engine_with(script, chunk, Duration::from_secs(90))
+    }
+
+    fn fake_engine_with(
+        script: &str,
+        chunk: usize,
+        timeout: Duration,
+    ) -> (Engine, std::path::PathBuf) {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
@@ -999,6 +1044,7 @@ done"#,
             human_model: None,
             visits: 10,
             chunk,
+            timeout,
         });
         (engine, dir)
     }
