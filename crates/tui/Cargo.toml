@@ -17,3 +17,6 @@ font8x8 = "0.3"
 app = { path = "../app" }
 goban = { path = "../goban" }
 sgf = { path = "../sgf" }
+
+[dev-dependencies]
+engine = { path = "../engine" }

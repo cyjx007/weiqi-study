@@ -2,7 +2,7 @@
 
 use crate::image_board::ImageBoard;
 
-use app::i18n::{color_name, strings};
+use app::i18n::{color_name, strings, Strings};
 use app::{move_text, App};
 use goban::{Color, Move, Point};
 use ratatui::{
@@ -20,6 +20,17 @@ const CAND: C = C::Rgb(20, 40, 110);
 const CURSOR: C = C::Rgb(80, 136, 196);
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
 const CAND_LABELS: [&str; 3] = ["1", "2", "3"];
+
+/// 侧栏“轮到谁”的标签：PV 预览时跟着预览盘面，不能沿用主线的 to_move。
+fn turn_side_label(app: &App, s: &Strings) -> String {
+    if !app.ai_enabled {
+        s.review.to_string()
+    } else if app.display_to_move() == app.human {
+        s.you.to_string()
+    } else {
+        s.ai.to_string()
+    }
+}
 
 pub enum Overlay {
     ConfirmDelete,
@@ -265,13 +276,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
     frame.render_widget(gauge, chunks[0]);
 
     let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
-    let who = if !app.ai_enabled {
-        s.review.to_string()
-    } else if app.to_move() == app.human {
-        s.you.to_string()
-    } else {
-        s.ai.to_string()
-    };
+    let who = turn_side_label(app, s);
     let info = Paragraph::new(vec![
         Line::from(format!("{}   - {score:+.1}", s.score)),
         Line::from(format!(
@@ -351,7 +356,7 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
     if let Some(c) = &app.last_comment {
         text.push_str(c);
     }
-    if app.ai_enabled && app.to_move() == app.human {
+    if app.ai_enabled && !app.preview_active() && app.to_move() == app.human {
         if let Some(a) = app.analysis() {
             if let Some(best) = a.candidates.first() {
                 if !text.is_empty() {
@@ -613,6 +618,58 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("opening study"));
+    }
+
+    fn eval_for_preview() -> engine::TurnEval {
+        engine::TurnEval {
+            turn: 3,
+            to_move: Color::White,
+            winrate_black: 0.5,
+            score_black: 0.0,
+            candidates: vec![engine::Candidate {
+                mv: Move::Play(Point::new(4, 4)),
+                winrate_black: 0.5,
+                score_black: 0.0,
+                pv: vec![Move::Play(Point::new(4, 4))],
+                visits: 10,
+            }],
+            human_policy: None,
+        }
+    }
+
+    fn app_with_preview() -> App {
+        let mut app = test_app(); // 3 手，轮白
+        app.ai_enabled = true;
+        app.human = Color::White;
+        app.apply(app::AppEvent::Analysis {
+            generation: app.generation(),
+            pos: 3,
+            result: Ok(eval_for_preview()),
+        });
+        app.start_preview();
+        app
+    }
+
+    #[test]
+    fn preview_side_label_follows_the_preview_board() {
+        let mut app = app_with_preview();
+        app.preview_next(); // 预览走一手后轮到黑
+        let s = strings(app.lang);
+        assert_eq!(
+            turn_side_label(&app, s),
+            s.ai,
+            "预览盘面轮到黑，人执白，侧栏应显示 AI"
+        );
+    }
+
+    #[test]
+    fn preview_hides_the_mainline_suggestion() {
+        let app = app_with_preview();
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(
+            !s.contains("建议") && !s.contains("Suggestion"),
+            "预览期间不能显示主线建议：{s}"
+        );
     }
 
     #[test]

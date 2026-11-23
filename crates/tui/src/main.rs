@@ -6,12 +6,25 @@ mod ui;
 use std::time::Duration;
 
 use app::i18n::{fill, strings};
-use app::{App, AppConfig, Controller};
+use app::{App, AppConfig, Controller, VISITS_MAX, VISITS_MIN};
 use image_board::{ImageBoard, Mode};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 /// 事件轮询间隔；也决定 AI 应手、分析结果回到界面的节奏。
 const FRAME: Duration = Duration::from_millis(50);
+
+/// `--visits` 与 App / GUI / go-review 共用 10–5000 的范围。
+fn parse_visits(raw: &str) -> Result<u32, String> {
+    let v: u32 = raw
+        .parse()
+        .map_err(|_| format!("--visits 不是非负整数：{raw}"))?;
+    if !(VISITS_MIN..=VISITS_MAX).contains(&v) {
+        return Err(format!(
+            "--visits 必须在 {VISITS_MIN}–{VISITS_MAX} 之间，收到 {v}"
+        ));
+    }
+    Ok(v)
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -28,12 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--visits" | "-visits" => {
-                visits = Some(
-                    args.next()
-                        .ok_or("--visits 需要数字")?
-                        .parse()
-                        .map_err(|_| "--visits 不是数字")?,
-                );
+                visits = Some(parse_visits(&args.next().ok_or("--visits 需要数字")?)?);
             }
             "--mode" | "-mode" => {
                 let value = args.next().ok_or("--mode 需要 auto|image|text")?;
@@ -67,20 +75,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = match path {
         Some(path) => {
-            let text = std::fs::read_to_string(&path)?;
-            let sg = sgf::parse(&text)?;
-            let mut app = App::from_sgf(&sg, config)?;
-            app.open_sgf_file(std::path::PathBuf::from(path), &sg)?;
+            let mut app = App::new(19, app::DEFAULT_KOMI, config);
+            app.open_path(std::path::PathBuf::from(path))?;
             app.show_games = false;
             app
         }
         None => {
             let demo = std::path::Path::new("samples/demo.sgf");
             if demo.exists() {
-                let text = std::fs::read_to_string(demo)?;
-                let sg = sgf::parse(&text)?;
-                let mut app = App::from_sgf(&sg, config)?;
-                app.open_sgf_file(demo.to_path_buf(), &sg)?;
+                // 演示棋谱只在内存里打开：不要每次启动都往棋谱库复制一份。
+                let mut app = App::from_sgf_path(demo, config)?;
+                app.show_games = false;
+                app.status = strings(app.lang).demo_preview.to_string();
                 app
             } else {
                 App::new(19, 7.5, config)
@@ -245,5 +251,20 @@ fn event_loop(
         }
 
         dirty |= ctrl.tick();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visits_must_stay_within_the_app_range() {
+        assert_eq!(parse_visits("10").unwrap(), 10);
+        assert_eq!(parse_visits("5000").unwrap(), 5000);
+        for bad in ["0", "9", "5001", "-1", "abc", "1.5"] {
+            let err = parse_visits(bad).unwrap_err();
+            assert!(err.contains("--visits"), "{bad} 应被拒绝：{err}");
+        }
     }
 }
