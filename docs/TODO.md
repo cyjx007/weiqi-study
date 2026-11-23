@@ -51,3 +51,5 @@ analysis/review caches are keyed by linear move number; L1+ needs a new cache ke
 4. `area_score` does not judge life and death and only applies to area scoring.
 5. Switch the interface language at runtime in the TUI (only `WEIQI_LANG` at startup today).
 6. Add an `i` info overlay to the GUI (the side panel already shows the same information).
+7. Recognise two consecutive passes as "game over" (show a finished state; decide how scoring/review
+   behave). Passing is now possible, but the app does not yet end the game automatically.
