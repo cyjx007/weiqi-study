@@ -130,8 +130,8 @@ fn long_game(n: usize) -> App {
     let mut src = String::from("(;SZ[19]KM[7.5]");
     for i in 0..n {
         let color = if i.is_multiple_of(2) { 'B' } else { 'W' };
-        let x = (i % 19) as usize;
-        let y = (i / 19) as usize;
+        let x = i % 19;
+        let y = i / 19;
         src.push_str(&format!(
             ";{color}[{}{}]",
             letters[x] as char, letters[y] as char
