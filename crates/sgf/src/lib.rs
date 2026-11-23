@@ -197,11 +197,13 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                         "W" => Some(Color::White),
                         _ => None,
                     };
-                    if color.is_some() && pl.is_some() {
-                        out.warnings.push("重复的 PL，使用最后一个".to_string());
-                    }
                     match color {
-                        Some(c) if first_move_node.is_none_or(|m| node_idx <= m) => pl = Some(c),
+                        Some(c) if first_move_node.is_none_or(|m| node_idx <= m) => {
+                            if pl.is_some() {
+                                out.warnings.push("重复的 PL，使用最后一个".to_string());
+                            }
+                            pl = Some(c);
+                        }
                         Some(_) => out
                             .warnings
                             .push(format!("忽略第 {} 个节点的 PL", node_idx + 1)),
@@ -404,7 +406,8 @@ fn parse_tree(chars: &[char], i: &mut usize) -> Result<Vec<Props>, String> {
     loop {
         skip_ws(chars, i);
         if *i < chars.len() && chars[*i] == ';' {
-            nodes.push(parse_node(chars, i)?);
+            let node_no = nodes.len() + 1;
+            nodes.push(parse_node(chars, i).map_err(|e| format!("第 {node_no} 个节点：{e}"))?);
         } else {
             break;
         }
@@ -800,7 +803,8 @@ mod tests {
         for src in ["(;SZ[9];B[cc][dd];W[ee])", "(;SZ[9];B[cc];W[dd][ee])"] {
             let err = parse(src).unwrap_err();
             assert!(err.contains("只能有一个值"), "{src}: {err}");
-            assert!(err.contains("第 "), "要带位置：{err}");
+            assert!(err.contains("个节点"), "要带节点号：{err}");
+            assert!(err.contains("个字符"), "要带字符位置：{err}");
         }
     }
 
@@ -808,6 +812,23 @@ mod tests {
     fn one_node_cannot_hold_two_moves() {
         let err = parse("(;SZ[9];B[cc]W[dd])").unwrap_err();
         assert!(err.contains("同一节点不能同时有"), "{err}");
+    }
+
+    #[test]
+    fn ignored_pl_does_not_also_claim_it_won() {
+        let g = parse("(;SZ[9];B[cc];PL[W])").unwrap();
+        assert!(
+            g.warnings
+                .iter()
+                .any(|w| w.contains("忽略第 3 个节点的 PL")),
+            "{:?}",
+            g.warnings
+        );
+        assert!(
+            !g.warnings.iter().any(|w| w.contains("使用最后一个")),
+            "被忽略的 PL 不能说成生效：{:?}",
+            g.warnings
+        );
     }
 
     #[test]
