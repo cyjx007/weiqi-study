@@ -689,7 +689,9 @@ pub fn write_game(
         s
     }
     let mut out = String::from("(;GM[1]FF[4]CA[UTF-8]");
-    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[{}]", rule.name));
+    // 用最短往返表示（f32 Display），不要 `{:.1}`：6.25/5.75 会被静默舍成 6.2/5.8，
+    // 反复保存会让贴目持续漂移。调用方负责保证 komi 有限。
+    out.push_str(&format!("SZ[{size}]KM[{komi}]RU[{}]", rule.name));
     let blacks: Vec<String> = setup
         .iter()
         .filter(|(c, _)| *c == Color::Black)
@@ -775,6 +777,17 @@ mod tests {
         assert_eq!(back.size, 19);
         assert_eq!(back.komi, Some(7.5));
         assert_eq!(back.moves, moves);
+    }
+
+    #[test]
+    fn write_game_keeps_komi_precision() {
+        // `{:.1}` 会把 6.25/5.75/0.25 静默舍入；SGF 允许任意有限数值
+        let moves = vec![Move::Play(Point::new(2, 2))];
+        for komi in [7.5f32, 6.25, 5.75, 0.25, -7.5, 7.0] {
+            let text = write_game(9, komi, &[], &moves, RuleSet::default(), Color::Black);
+            let back = parse(&text).unwrap();
+            assert_eq!(back.komi, Some(komi), "贴目被改写：{text}");
+        }
     }
 
     #[test]

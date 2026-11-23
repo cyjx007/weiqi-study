@@ -27,14 +27,8 @@ struct Ui {
 pub fn build_ui(application: &adw::Application) {
     install_css();
     let mut app = App::new(19, 7.5, AppConfig::default());
-    app.refresh_games();
-    if let Some(first) = app.games.first() {
-        if let Ok(text) = app.store.read(&first.path) {
-            if let Ok(sg) = sgf::parse(&text) {
-                let _ = app.open_sgf_file(first.path.clone(), &sg);
-            }
-        }
-    }
+    // 打开最近一盘能解析的棋谱；损坏的条目不阻塞启动，失败原因进状态栏。
+    let _ = app.open_latest_game();
 
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);

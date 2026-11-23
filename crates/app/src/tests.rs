@@ -420,7 +420,9 @@ fn autosave_switches_to_a_conflict_copy_when_the_file_changed() {
     app.store = test_store();
     app.start_play();
     let file = app.current_file.clone().expect("新局应有文件");
-    assert!(app.file_stamp.is_some(), "开局保存后要记住指纹");
+    // 空局不落盘；先落一手拿到指纹
+    app.play_move(Move::Play(Point::new(0, 0))).unwrap();
+    assert!(app.file_stamp.is_some(), "第一手保存后要记住指纹");
 
     // 另一个进程改了这个文件；我们手上的 mtime 已经过期
     std::fs::write(&file, "(;SZ[9]KM[0.5];B[dd])").unwrap();
@@ -460,19 +462,22 @@ fn new_game_does_not_inherit_a_stale_mtime() {
     app.store = test_store();
     app.start_play();
     let first = app.current_file.clone().unwrap();
+    assert!(!first.exists(), "空局不落盘");
+    assert_eq!(app.file_stamp, None, "新局还没有指纹");
+
+    // 第一手写出文件、建立指纹
+    app.play_move(Move::Play(Point::new(0, 0))).unwrap();
     assert_eq!(
         app.file_stamp,
         super::storage::FileStamp::of(&first).unwrap()
     );
 
+    // 再开新局：不能沿用上一盘的文件名/指纹
     app.start_play();
     let second = app.current_file.clone().unwrap();
     assert_ne!(first, second);
-    assert_eq!(
-        app.file_stamp,
-        super::storage::FileStamp::of(&second).unwrap()
-    );
-    assert!(super::storage::FileStamp::of(&second).unwrap().is_some());
+    assert_eq!(app.file_stamp, None, "新局必须清掉上一盘的指纹");
+    assert!(!second.exists(), "新局第一手之前不落盘");
 }
 
 #[test]
@@ -644,6 +649,61 @@ fn cursor_is_clamped() {
     assert_eq!(app.cursor, Point::new(0, 0));
     app.move_cursor(100, 100);
     assert_eq!(app.cursor, Point::new(8, 8));
+}
+
+#[test]
+fn new_game_is_not_written_until_the_first_move() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    app.start_play();
+    let path = app.current_file.clone().expect("新局应预留文件名");
+    assert!(!path.exists(), "空局不应落盘");
+    assert!(app.games.is_empty(), "库里不应出现空棋谱");
+
+    app.play_at_cursor().unwrap();
+    assert!(path.exists(), "第一手后要自动保存");
+    let text = app.store.read(&path).unwrap();
+    assert!(
+        sgf::parse(&text).is_ok(),
+        "写出的必须是可解析的 SGF：{text}"
+    );
+    assert_eq!(app.games.len(), 1, "保存后棋谱列表要立刻更新");
+}
+
+#[test]
+fn new_game_resets_komi_from_the_previous_sgf() {
+    let sg = sgf::parse("(;SZ[9]KM[0.5]RU[Japanese];B[cc];W[gg])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.store = test_store();
+    assert_eq!(app.game().komi(), 0.5);
+
+    app.start_play();
+    assert_eq!(app.game().rules(), RuleSet::default(), "规则回到默认");
+    assert_eq!(app.komi, DEFAULT_KOMI, "新局不能继承上一盘的 0.5 贴目");
+    assert_eq!(app.game().komi(), DEFAULT_KOMI);
+}
+
+#[test]
+fn open_latest_skips_broken_files_and_reports_when_none_open() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    app.lang = Lang::Zh;
+    let dir = app.store.dir().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    // 最新的条目损坏，下一盘有效：应跳过坏的
+    std::fs::write(dir.join("game-9.sgf"), "not an sgf").unwrap();
+    std::fs::write(dir.join("game-2.sgf"), "(;SZ[9]KM[7.5];B[cc])").unwrap();
+
+    assert!(app.open_latest_game(), "应跳过损坏的最新文件");
+    assert_eq!(app.total_moves(), 1);
+
+    std::fs::remove_file(dir.join("game-2.sgf")).unwrap();
+    assert!(!app.open_latest_game(), "全都打不开时要返回失败");
+    assert!(
+        app.status.contains("打不开"),
+        "状态栏要说明原因：{}",
+        app.status
+    );
 }
 
 #[test]

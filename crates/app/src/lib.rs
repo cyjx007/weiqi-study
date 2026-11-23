@@ -337,6 +337,7 @@ impl App {
                 expected: self.file_stamp,
             },
         );
+        let saved = result.is_ok();
         match result {
             Ok(storage::SaveOutcome::Written(stamp)) => {
                 self.file_stamp = Some(stamp);
@@ -355,6 +356,11 @@ impl App {
             }
             Err(e) => self.status = e,
         }
+        // 保存可能创建了新文件（新局第一手）或冲突副本：立刻刷新库列表，
+        // GUI 的棋谱下拉框靠这个长度变化发现新条目。
+        if saved {
+            self.games = self.store.list();
+        }
     }
 
     /// 指定棋盘大小开新局（9/13/19）。
@@ -371,6 +377,8 @@ impl App {
         self.invalidate_review();
         self.rules = RuleSet::default();
         self.first = Color::Black;
+        // 新局用默认贴目：不能继承上一盘开过的 SGF 的 KM（规则已经切回 Chinese）
+        self.komi = DEFAULT_KOMI;
         self.warnings.clear();
         self.setup.clear();
         self.moves.clear();
@@ -391,7 +399,9 @@ impl App {
                 self.current_file = Some(path.clone());
                 // 新文件还没有“上次看到的指纹”，否则会误判成冲突
                 self.file_stamp = None;
-                self.autosave();
+                // 不在空盘时落盘：SGF 解析要求至少有一手（或摆子），
+                // 否则库里会多出一个“打不开”的空棋谱。第一手落子时 autosave
+                // 会用 expected=None 新建文件。
                 let st = strings(self.lang);
                 self.status = format!(
                     "{} · {}",
@@ -402,7 +412,12 @@ impl App {
                     i18n::fill(st.side_set, i18n::color_name(self.human, self.lang))
                 );
             }
-            Err(e) => self.status = e,
+            Err(e) => {
+                // 建不出新文件时不能留着上一盘的路径/指纹，否则下一手会覆盖旧棋谱
+                self.current_file = None;
+                self.file_stamp = None;
+                self.status = e;
+            }
         }
     }
 
@@ -560,6 +575,37 @@ impl App {
             },
             Err(e) => self.status = e,
         }
+    }
+
+    /// 打开棋谱库里最近的一盘**能解析**的棋谱（GUI 启动用）。
+    ///
+    /// 跳过损坏/不可读的文件，避免一个坏条目让整个界面回到空盘；
+    /// 全部失败时把最后一个原因写进状态栏。返回是否成功打开。
+    pub fn open_latest_game(&mut self) -> bool {
+        self.refresh_games();
+        let entries = self.games.clone();
+        let mut last_err: Option<String> = None;
+        for entry in entries {
+            let parsed = self
+                .store
+                .read(&entry.path)
+                .and_then(|text| sgf::parse(&text));
+            match parsed {
+                Ok(sg) => match self.open_sgf_file(entry.path.clone(), &sg) {
+                    Ok(()) => return true,
+                    Err(e) => last_err = Some(e),
+                },
+                Err(e) => last_err = Some(e),
+            }
+        }
+        if !self.games.is_empty() {
+            let st = strings(self.lang);
+            self.status = match last_err {
+                Some(e) => format!("{}：{e}", st.no_openable_games),
+                None => st.no_openable_games.to_string(),
+            };
+        }
+        false
     }
 
     pub fn toggle_ai(&mut self) {

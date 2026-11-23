@@ -128,6 +128,7 @@ pub struct Strings {
     pub no_blunders: &'static str,
     pub turn_ai: &'static str,
     pub game_loaded: &'static str,
+    pub no_openable_games: &'static str,
     pub renamed: &'static str,
     pub deleted: &'static str,
     /// 文件被外部修改，已另存副本
@@ -218,6 +219,7 @@ const ZH: Strings = Strings {
     no_blunders: "没有超过阈值的失误",
     turn_ai: "现在轮到 AI",
     game_loaded: "已载入 {}",
+    no_openable_games: "棋谱库里的文件都打不开（可能已损坏）",
     renamed: "已重命名为 {}",
     deleted: "已移到回收站：{}",
     conflict_saved: "文件被其它程序改过，已另存为 {}",
@@ -328,6 +330,7 @@ const EN: Strings = Strings {
     no_blunders: "No moves above the blunder threshold",
     turn_ai: "It is the engine's turn",
     game_loaded: "Loaded {}",
+    no_openable_games: "No readable game in the library (files may be corrupted)",
     renamed: "Renamed to {}",
     deleted: "Moved to trash: {}",
     conflict_saved: "File changed elsewhere; saved a copy as {}",
