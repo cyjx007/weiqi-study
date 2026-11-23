@@ -245,6 +245,13 @@ runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with
   Unknown values, and New Zealand (self-capture is not supported), fall back to Chinese and
   produce a visible warning — never a silent downgrade. Ing is approximated with situational
   superko; its cycle/special-end rules are not fully implemented.
+- SGF board sizes 2–25 are accepted and passed to KataGo unchanged. KataGo's official builds
+  default to `MAX_LEN=19`: 20×20 and larger need a custom build compiled with larger-board
+  support, and the official networks were not trained on those sizes. If the engine rejects the
+  size, its message is shown as-is with that hint in the status line.
+- Opening a game from the library puts the board into study mode: AI auto-replies are switched
+  off (`ai_enabled=false`) so the game is not re-analysed under you; the human-model preference
+  is kept for the next game you start.
 - The built-in area scorer does not judge life and death — it is a rough display only; real
   evaluation comes from KataGo's `scoreLead`.
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests

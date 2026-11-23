@@ -146,7 +146,7 @@ pub struct TurnEval {
     pub winrate_black: f32,
     pub score_black: f32,
     pub candidates: Vec<Candidate>,
-    pub human_policy: Option<Vec<f32>>,   // humanv0 的 row-major 概率，-1 为非法点
+    pub human_policy: Option<Vec<f32>>,   // humanv0 的 row-major 概率，长度 size*size+1，最后一位 pass，-1 为非法点
 }
 
 pub struct EngineConfig {
@@ -222,6 +222,9 @@ pub struct EngineConfig {
 | 请求 | 一批 `analyzeTurns`（默认 30/批），带 `initialStones`/`moves`/`rules`/`komi` |
 | 响应校验 | `(id, turn)` 必须同时匹配该批请求；未知 id、跨批 turn、重复 turn 都报错 |
 | 字段校验 | `move`/`winrate`/`scoreLead`/`visits` 必需；越界、负数、溢出、非有限值直接拒绝 |
+| 概率边界 | `winrate` 先在原始 f64 上查 `[0,1]` 再转 f32（防 `1.00000001` 舍入成 1.0）；`humanPolicy` 长度必须精确 `size²+1`，只允许精确 `-1` 哨兵或 `[0,1]`，坏数据整份丢弃但不影响候选 |
+| 回合边界 | `analyze_turns` 在建会话前拒绝 `turn > moves.len()`，参数错误不再变成引擎超时 |
+| 大棋盘 | 2–25 路都按原样传给 KataGo；官方构建默认 `MAX_LEN=19`，20 路以上需要自行编译，错误原文保留并附提示 |
 | 超时 | `EngineConfig.timeout`（默认 90s）；超时丢掉会话 |
 | 失败恢复 | 任何错误都丢弃会话（kill 子进程），下一次调用重新拉起；不会无限重试 |
 | 拟人网 | `-human-model` + `includePolicy` + `humanSLProfile`，按 `humanPolicy` 抽点 |
@@ -236,6 +239,9 @@ pub struct EngineConfig {
   过期结果**不写缓存、不改状态、不复位 busy**。
 - `evals` 以“手数”为键；改走分支时以**分支起点**为界清理，之后的旧分析全部作废。
 - `failed_pos` 记录分析失败的位置，避免对同一局面无限重试；改走分支会清空。
+- 打开棋谱（`open_sgf_file`）= 纯研究模式：`vs_ai` 和 `ai_enabled` 都关掉，
+  `human_enabled`（拟人偏好）保留，等用户主动重新打开 AI 开关；只清 `vs_ai` 不够，
+  `next_action` 看的是 `ai_enabled`。
 - 引擎失败后 `busy` 复位、状态栏显示原因，用户可以再次发起分析（有回归测试）。
 - 单纯 `prev/next/jump_to_turn()` 只是浏览旧棋谱，不递增 generation，前缀缓存继续可用。
 - 分析取消：没有独立的取消 API；用 generation 丢弃结果，线程自然结束。
