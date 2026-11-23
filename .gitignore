@@ -4,3 +4,4 @@
 *.sgf.out
 /result
 /analysis.cfg
+__pycache__/
