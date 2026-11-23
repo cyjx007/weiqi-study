@@ -257,10 +257,11 @@ impl App {
 
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
-        self.preview = None;
         let mut probe = self.snapshot();
-        // 先验合法性：失败时不能动 generation / 主线 / 缓存 / busy
+        // 先验合法性：失败时不能动 preview / generation / 主线 / 缓存 / busy
         probe.play(mv).map_err(|e| format!("{e}"))?;
+        // 合法落子才退出变化预览
+        self.preview = None;
 
         let base = self.pos;
         // 只有「从中间另一手改走」才是换线；在末尾续下时历史前缀没变，

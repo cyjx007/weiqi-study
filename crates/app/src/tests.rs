@@ -252,6 +252,23 @@ fn illegal_move_leaves_everything_untouched() {
 }
 
 #[test]
+fn illegal_move_does_not_cancel_the_active_preview() {
+    let mut app = long_game(10);
+    app.evals.insert(
+        4,
+        eval(4, Color::White, 0.5, Move::Play(Point::new(10, 10))),
+    );
+    app.jump_to_turn(4);
+    app.start_preview();
+    assert!(app.preview_active());
+
+    // (0,0) 上已经有子
+    app.cursor = Point::new(0, 0);
+    assert!(app.play_at_cursor().is_err());
+    assert!(app.preview_active(), "非法落子不应取消变化预览");
+}
+
+#[test]
 fn committing_a_preview_drops_evals_after_its_base() {
     let mut app = long_game(10);
     for k in 4..=7 {
