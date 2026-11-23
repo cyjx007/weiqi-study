@@ -266,6 +266,8 @@ pub struct EngineConfig {
 - **`expected: None` 表示新建**：目标已存在时同样落冲突副本，不覆盖。
 - **边界**：advisory 锁只约束同样遵守它的 `weiqi-study` 进程，挡不住任意外部编辑器；
   不承诺所有文件系统上的真正 CAS。外部编辑后保存会得到冲突副本，不会丢内容。
+  大小写不敏感文件系统（macOS/Windows）不在支持范围：`a.sgf` → `A.sgf` 会指向同一个
+  锁文件，同一进程二次 `flock` 可能等到超时。
 
 ## 九、测试策略
 
