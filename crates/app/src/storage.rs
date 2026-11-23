@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, TimeZone};
-use goban::{Color, KoRule, Move, Point};
+use goban::{Color, Move, Point, RuleSet};
 
 #[derive(Clone, Debug)]
 pub struct GameEntry {
@@ -20,7 +20,8 @@ pub struct GameEntry {
 /// 写 SGF 需要的规则参数（打包传，避免 save 参数过多）。
 #[derive(Clone, Copy, Debug)]
 pub struct WriteOptions {
-    pub ko: KoRule,
+    /// 完整规则集：写回 SGF 时用它的规范名（`RU[...]`）
+    pub rules: RuleSet,
     pub first: Color,
 }
 
@@ -79,7 +80,7 @@ impl GameStore {
         moves: &[Move],
         opts: WriteOptions,
     ) -> Result<(), String> {
-        let text = sgf::write_game(size, komi, setup, moves, opts.ko, opts.first);
+        let text = sgf::write_game(size, komi, setup, moves, opts.rules, opts.first);
         let tmp = path.with_extension("sgf.tmp");
         {
             let mut file =
@@ -257,7 +258,7 @@ mod tests {
                 &[],
                 &moves,
                 WriteOptions {
-                    ko: KoRule::default(),
+                    rules: RuleSet::default(),
                     first: Color::Black,
                 },
             )

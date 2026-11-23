@@ -87,6 +87,91 @@ impl KoRule {
     }
 }
 
+/// 计分方式。只影响对外呈现出与 KataGo 的规则预设，不改变死活判定。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scoring {
+    /// 数子：子 + 围空（中国 / AGA / Ing）。
+    #[default]
+    Area,
+    /// 数目：围空 + 提子（日本 / 韩国）。本工具不做死活标记，只用于选择规则。
+    Territory,
+}
+
+impl Scoring {
+    pub fn name_zh(self) -> &'static str {
+        match self {
+            Scoring::Area => "数子",
+            Scoring::Territory => "数目",
+        }
+    }
+}
+
+/// 一套完整规则：SGF `RU` 的语义载体，同时喂给 Goban 与 KataGo。
+///
+/// 只覆盖项目声明支持的规则；未识别的 `RU` 由调用方警告后回退默认，
+/// 不允许静默当成某一套“差不多”的规则。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RuleSet {
+    pub ko: KoRule,
+    pub scoring: Scoring,
+    /// 规范名（SGF `RU` 文本，同时也是 KataGo `rules` 预设名的小写形式）。
+    pub name: &'static str,
+}
+
+impl RuleSet {
+    pub const CHINESE: RuleSet = RuleSet {
+        ko: KoRule::PositionalSuperko,
+        scoring: Scoring::Area,
+        name: "Chinese",
+    };
+    pub const JAPANESE: RuleSet = RuleSet {
+        ko: KoRule::Simple,
+        scoring: Scoring::Territory,
+        name: "Japanese",
+    };
+    pub const KOREAN: RuleSet = RuleSet {
+        ko: KoRule::SituationalSuperko,
+        scoring: Scoring::Territory,
+        name: "Korean",
+    };
+    pub const AGA: RuleSet = RuleSet {
+        ko: KoRule::SituationalSuperko,
+        scoring: Scoring::Area,
+        name: "AGA",
+    };
+    pub const ING: RuleSet = RuleSet {
+        ko: KoRule::SituationalSuperko,
+        scoring: Scoring::Area,
+        name: "Ing",
+    };
+
+    /// 从 `KoRule` 近似还原（旧接口/无 `RU` 时的默认）。
+    pub fn from_ko(ko: KoRule) -> Self {
+        match ko {
+            KoRule::Simple => RuleSet::JAPANESE,
+            KoRule::PositionalSuperko => RuleSet::CHINESE,
+            KoRule::SituationalSuperko => RuleSet::KOREAN,
+        }
+    }
+
+    /// KataGo `rules` 字段用的预设名。
+    pub fn katago_name(self) -> &'static str {
+        match self.name {
+            "Chinese" => "chinese",
+            "Japanese" => "japanese",
+            "Korean" => "korean",
+            "AGA" => "aga",
+            _ => "ing",
+        }
+    }
+}
+
+impl Default for RuleSet {
+    fn default() -> Self {
+        RuleSet::CHINESE
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IllegalMove {
     OutOfBounds,
@@ -313,7 +398,7 @@ pub struct Game {
     size: u8,
     komi: f32,
     setup: Vec<(Color, Point)>,
-    ko: KoRule,
+    rule: RuleSet,
     /// 开局第一手由谁下。SGF 的 `PL`/首手颜色是文件事实，不能事后靠摆子猜。
     first: Color,
     positions: Vec<Position>,
@@ -358,6 +443,17 @@ impl Game {
         ko: KoRule,
         first: Color,
     ) -> Self {
+        Self::with_setup_rules_first(size, komi, setup, RuleSet::from_ko(ko), first)
+    }
+
+    /// 完整规则 + 明确先手（SGF `RU` + `PL` 的组合，唯一不会丢信息的构造方式）。
+    pub fn with_setup_rules_first(
+        size: u8,
+        komi: f32,
+        setup: Vec<(Color, Point)>,
+        rule: RuleSet,
+        first: Color,
+    ) -> Self {
         let mut pos = Position::new(size);
         for (c, p) in &setup {
             pos.board.set(*p, Some(*c));
@@ -369,7 +465,7 @@ impl Game {
             size,
             komi,
             setup,
-            ko,
+            rule,
             first,
             positions: vec![pos],
             board_hashes: vec![board_hash],
@@ -379,7 +475,12 @@ impl Game {
     }
 
     pub fn ko_rule(&self) -> KoRule {
-        self.ko
+        self.rule.ko
+    }
+
+    /// 当前棋局的完整规则集。
+    pub fn rules(&self) -> RuleSet {
+        self.rule
     }
 
     pub fn play(&mut self, mv: Move) -> Result<(), IllegalMove> {
@@ -387,7 +488,7 @@ impl Game {
         let board_hash = hash_board(&next);
         let situational = hash_position(&next);
         if mv != Move::Pass {
-            let repeated = match self.ko {
+            let repeated = match self.rule.ko {
                 KoRule::Simple => {
                     // 只禁止立即提回：和上一手之前的盘面比较
                     self.positions
@@ -477,7 +578,10 @@ impl Game {
         }
     }
 
-    /// 面积计子（中国规则），不做死活判定：把盘上所有子都当活棋。
+    /// 面积计子（中国 / AGA / Ing 规则），不做死活判定：把盘上所有子都当活棋。
+    ///
+    /// 只适用于 `Scoring::Area`；数目规则（日本 / 韩国）需要先标死子再算提子，
+    /// 本函数不适用。界面上的目差来自引擎 `scoreLead`，不依赖这个函数。
     pub fn area_score(&self) -> AreaScore {
         let board = &self.position().board;
         let mut black = 0u16;

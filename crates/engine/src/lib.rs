@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use goban::{Color, Game, KoRule, Move, Point};
+use goban::{Color, Game, Move, Point, RuleSet};
 use serde_json::{json, Value};
 
 const GTP_COLS: &[u8] = b"ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -451,7 +451,7 @@ impl AnalysisSession {
                 "id": format!("q{base}-{n}"),
                 "initialStones": setup_json,
                 "moves": moves_json,
-                "rules": katago_rules(game.ko_rule()),
+                "rules": game.rules().katago_name(),
                 "komi": game.komi(),
                 "boardXSize": size,
                 "boardYSize": size,
@@ -527,13 +527,9 @@ impl Drop for AnalysisSession {
     }
 }
 
-/// 本地劫规则 → KataGo 的 rules 名称。引擎侧只需要这个近似映射。
-fn katago_rules(ko: KoRule) -> &'static str {
-    match ko {
-        KoRule::Simple => "japanese",
-        KoRule::PositionalSuperko => "chinese",
-        KoRule::SituationalSuperko => "korean",
-    }
+/// 本地规则集 → KataGo 的 `rules` 预设名。直接用规范名，不再先折叠成 KoRule。
+pub fn katago_rules(rule: RuleSet) -> &'static str {
+    rule.katago_name()
 }
 
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
@@ -617,6 +613,7 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goban::KoRule;
 
     #[test]
     fn gtp_roundtrip() {
@@ -749,10 +746,13 @@ done"#,
     }
 
     #[test]
-    fn katago_rules_follow_ko_rule() {
-        assert_eq!(katago_rules(KoRule::Simple), "japanese");
-        assert_eq!(katago_rules(KoRule::PositionalSuperko), "chinese");
-        assert_eq!(katago_rules(KoRule::SituationalSuperko), "korean");
+    fn katago_rules_follow_the_rule_set() {
+        assert_eq!(katago_rules(RuleSet::CHINESE), "chinese");
+        assert_eq!(katago_rules(RuleSet::JAPANESE), "japanese");
+        assert_eq!(katago_rules(RuleSet::KOREAN), "korean");
+        // 以前 AGA / Ing 会被折叠成 korean，现在原样传下去
+        assert_eq!(katago_rules(RuleSet::AGA), "aga");
+        assert_eq!(katago_rules(RuleSet::ING), "ing");
     }
 
     #[test]
@@ -770,6 +770,25 @@ while IFS= read -r line; do
 done"#,
         );
         let game = Game::with_rule(9, 7.5, KoRule::Simple);
+        engine.analyze_position(&game).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_sends_aga_rules_verbatim() {
+        // AGA 有自己的计分/劫规则，不能被折叠成 korean
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"rules":"aga"'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}" ;;
+    *) echo '{"error":"rules not aga"}' ;;
+  esac
+done"#,
+        );
+        let game = Game::with_setup_rules_first(9, 7.5, Vec::new(), RuleSet::AGA, Color::Black);
         engine.analyze_position(&game).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

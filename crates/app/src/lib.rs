@@ -18,7 +18,7 @@ use i18n::{strings, Lang};
 use storage::{GameEntry, GameStore};
 
 use engine::{EngineConfig, TurnEval};
-use goban::{Color, Game, KoRule, Move, Point};
+use goban::{Color, Game, Move, Point, RuleSet};
 use review::Review;
 use sgf::SgfGame;
 
@@ -86,7 +86,8 @@ pub struct App {
     pub show_info: bool,
     pub game_cursor: usize,
     setup: Vec<(Color, Point)>,
-    ko: KoRule,
+    /// 当前棋局的完整规则（SGF `RU` 或默认 Chinese）
+    rules: RuleSet,
     /// 重放时的先手方（SGF 声明优先）
     first: Color,
     moves: Vec<Move>,
@@ -152,7 +153,7 @@ impl App {
             show_info: false,
             game_cursor: 0,
             setup: Vec::new(),
-            ko: KoRule::default(),
+            rules: RuleSet::default(),
             first: Color::Black,
             moves: Vec::new(),
             pos: 0,
@@ -170,7 +171,7 @@ impl App {
     pub fn from_sgf(sg: &SgfGame, config: AppConfig) -> Result<Self, String> {
         let mut app = Self::new(sg.size, sg.komi.unwrap_or(7.5), config);
         app.setup = sg.setup.clone();
-        app.ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+        app.rules = sgf::rule_set_from_rules(sg.rules.as_deref());
         app.first = sg.first_to_move();
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
@@ -184,11 +185,11 @@ impl App {
 
     fn rebuild(&mut self) -> Result<(), String> {
         // 先手是棋谱事实（SGF 首手颜色 / PL），不能用 with_setup_and_rule 重新猜
-        let mut game = Game::with_setup_rule_first(
+        let mut game = Game::with_setup_rules_first(
             self.size,
             self.komi,
             self.setup.clone(),
-            self.ko,
+            self.rules,
             self.first,
         );
         for (i, mv) in self.moves[..self.pos].iter().enumerate() {
@@ -228,11 +229,11 @@ impl App {
 
     /// 整盘快照（复盘用）。
     pub fn full_game(&self) -> Result<Game, String> {
-        let mut game = Game::with_setup_rule_first(
+        let mut game = Game::with_setup_rules_first(
             self.size,
             self.komi,
             self.setup.clone(),
-            self.ko,
+            self.rules,
             self.first,
         );
         for (i, mv) in self.moves.iter().enumerate() {
@@ -285,7 +286,7 @@ impl App {
             &setup,
             &self.moves,
             storage::WriteOptions {
-                ko: self.ko,
+                rules: self.rules,
                 first: self.first,
             },
         ) {
@@ -304,7 +305,7 @@ impl App {
     pub fn start_play(&mut self) {
         self.preview = None;
         self.next_generation();
-        self.ko = KoRule::default();
+        self.rules = RuleSet::default();
         self.first = Color::Black;
         self.warnings.clear();
         self.setup.clear();
@@ -344,12 +345,12 @@ impl App {
         // 任何一步失败都保持当前会话原样，避免"旧棋盘 + 新元数据"或覆盖旧文件。
         let size = sg.size;
         let komi = sg.komi.unwrap_or(7.5);
-        let ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+        let rules = sgf::rule_set_from_rules(sg.rules.as_deref());
         let first = sg.first_to_move();
         let setup = sg.setup.clone();
         let moves = sg.moves.clone();
 
-        let mut game = Game::with_setup_rule_first(size, komi, setup.clone(), ko, first);
+        let mut game = Game::with_setup_rules_first(size, komi, setup.clone(), rules, first);
         for (i, mv) in moves.iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -367,7 +368,7 @@ impl App {
                         komi,
                         &setup,
                         &moves,
-                        storage::WriteOptions { ko, first },
+                        storage::WriteOptions { rules, first },
                     )?;
                     Some(copy)
                 }
@@ -380,7 +381,7 @@ impl App {
         self.next_generation();
         self.size = size;
         self.komi = komi;
-        self.ko = ko;
+        self.rules = rules;
         self.first = first;
         self.setup = setup;
         self.moves = moves;
@@ -1033,7 +1034,7 @@ fn mix64(mut x: u64) -> u64 {
 mod tests {
     use super::*;
     use engine::Candidate;
-    use goban::Move;
+    use goban::{KoRule, Move};
 
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1058,19 +1059,54 @@ mod tests {
     }
 
     #[test]
-    fn sgf_rules_select_ko_rule() {
+    fn sgf_rules_select_the_full_rule_set() {
         let jp = sgf::parse("(;SZ[9]RU[Japanese];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&jp, AppConfig::default()).unwrap();
+        assert_eq!(app.game().rules(), RuleSet::JAPANESE);
         assert_eq!(app.game().ko_rule(), KoRule::Simple);
 
         let cn = sgf::parse("(;SZ[9]RU[Chinese];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&cn, AppConfig::default()).unwrap();
-        assert_eq!(app.game().ko_rule(), KoRule::PositionalSuperko);
+        assert_eq!(app.game().rules(), RuleSet::CHINESE);
+
+        // AGA 过去被折叠成 Korean，现在必须保住自己的名字和计分方式
+        let aga = sgf::parse("(;SZ[9]RU[AGA];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&aga, AppConfig::default()).unwrap();
+        assert_eq!(app.game().rules(), RuleSet::AGA);
+        assert_eq!(app.game().rules().scoring, goban::Scoring::Area);
 
         // 没有 RU 时保持默认
         let none = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&none, AppConfig::default()).unwrap();
+        assert_eq!(app.game().rules(), RuleSet::default());
         assert_eq!(app.game().ko_rule(), KoRule::default());
+    }
+
+    #[test]
+    fn unknown_rules_warn_and_fall_back_visibly() {
+        let sg = sgf::parse("(;SZ[9]RU[My House Rules];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        assert_eq!(app.game().rules(), RuleSet::CHINESE, "未知规则回退默认");
+        assert!(
+            app.status.contains("My House Rules"),
+            "回退必须让用户看见：{}",
+            app.status
+        );
+
+        // 支持 AGA 后，写回不能退化成 Korean
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+        let sg = sgf::parse("(;SZ[9]RU[AGA];B[cc];W[gg])").unwrap();
+        app.open_sgf_file(std::env::temp_dir().join("weiqi-aga.sgf"), &sg)
+            .unwrap();
+        let saved = app.store.read(app.current_file.as_ref().unwrap()).unwrap();
+        assert!(saved.contains("RU[AGA]"), "写回丢了规则名：{saved}");
+        let back = sgf::parse(&saved).unwrap();
+        assert_eq!(
+            sgf::recognized_rule_set(back.rules.as_deref().unwrap()),
+            Some(RuleSet::AGA)
+        );
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
     }
 
     #[test]
@@ -1198,15 +1234,15 @@ mod tests {
         let jp = sgf::parse("(;SZ[9]RU[Japanese];B[cc];W[gg])").unwrap();
         let dir = std::env::temp_dir();
         app.open_sgf_file(dir.join("weiqi-ko-jp.sgf"), &jp).unwrap();
-        assert_eq!(app.game().ko_rule(), KoRule::Simple);
+        assert_eq!(app.game().rules(), RuleSet::JAPANESE);
 
         let cn = sgf::parse("(;SZ[9]RU[Chinese];B[cc];W[gg])").unwrap();
         app.open_sgf_file(dir.join("weiqi-ko-cn.sgf"), &cn).unwrap();
-        assert_eq!(app.game().ko_rule(), KoRule::PositionalSuperko);
+        assert_eq!(app.game().rules(), RuleSet::CHINESE);
 
         // 新开人机局要回到默认规则，不继承上一盘
         app.start_play();
-        assert_eq!(app.game().ko_rule(), KoRule::default());
+        assert_eq!(app.game().rules(), RuleSet::default());
     }
 
     fn eval(pos: usize, to_move: Color, wr: f32, best: Move) -> TurnEval {

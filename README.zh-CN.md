@@ -184,7 +184,7 @@ SGF ──> sgf（主线、摆子）
 ## 目录结构
 
 ```text
-crates/goban     规则：提子、自杀、可配置劫争（默认位置超级劫）、面积数子
+crates/goban     规则：提子、自杀、RuleSet（劫 + 计分）、面积数子
 crates/sgf       SGF 读取：跟随主线，跳过变化
 crates/engine    KataGo 进程管理与 analysis JSON 解析
 crates/review    讲评模板（纯函数、确定性）
@@ -221,7 +221,9 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 - SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
 - SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
 - 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
-- 提交给引擎的规则跟随 SGF 的 `RU`：日本/新西兰→`japanese`，AGA/Ing/韩国→`korean`，中国和未知值→`chinese`
+- 提交给引擎的规则走一个显式规则集：中国 / 日本 / 韩国 / AGA / Ing 原样传给 KataGo
+  （`chinese` / `japanese` / `korean` / `aga` / `ing`）。未知值以及 New Zealand（本工具不支持自杀）
+  会回退到中国规则并给出可见 warning，不会静默降级
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`
 - 第一次分析时启动 KataGo，之后整个会话复用同一个进程（不再重复加载模型）；
   关掉 TUI 或窗口时引擎随之退出

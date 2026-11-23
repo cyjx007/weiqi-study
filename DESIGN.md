@@ -103,10 +103,19 @@ pub struct Position {                               // 可落子的局面
     pub last_move: Option<Move>,
 }
 
-pub enum KoRule { Simple, PositionalSuperko, SituationalSuperko }  // 从 SGF RU 映射
+pub enum KoRule { Simple, PositionalSuperko, SituationalSuperko }
 
-pub struct Game {                                   // 整盘棋：历史 + 可配置劫争
-    ko: KoRule,                                     // 默认 PositionalSuperko
+pub enum Scoring { Area, Territory }
+
+pub struct RuleSet {                                // SGF RU 的完整语义
+    pub ko: KoRule,
+    pub scoring: Scoring,
+    pub name: &'static str,                         // Chinese / Japanese / Korean / AGA / Ing
+}
+
+pub struct Game {                                   // 整盘棋：历史 + 规则 + 先手
+    rule: RuleSet,                                  // 默认 Chinese（PSK + 数子）
+    first: Color,                                   // SGF PL / 首手颜色，不靠摆子猜
     positions: Vec<Position>,
     board_hashes: Vec<u64>,                         // 只哈希盘面（PSK）
     situational_hashes: Vec<u64>,                   // 盘面 + 行棋方（SSK）
@@ -116,7 +125,7 @@ pub struct Game {                                   // 整盘棋：历史 + 可�
 impl Game {
     pub fn play(&mut self, mv: Move) -> Result<(), IllegalMove>; // Pass 不受 superko 限制
     pub fn undo(&mut self) -> Option<Move>;
-    pub fn area_score(&self) -> AreaScore;          // 中国规则，不做死活判定
+    pub fn area_score(&self) -> AreaScore;          // 只适用于 Area 规则，不判死活
 }
 ```
 

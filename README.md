@@ -189,7 +189,7 @@ Key invariants:
 ## Project layout
 
 ```text
-crates/goban     rules only: captures, suicide, configurable ko (PSK default), area scoring
+crates/goban     rules only: captures, suicide, RuleSet (ko + scoring), area scoring
 crates/sgf       SGF reader: follows the main line, skips variations
 crates/engine    KataGo process management and analysis JSON parsing
 crates/review    commentary templates (pure, deterministic)
@@ -226,7 +226,10 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
 - SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. Root `PL` (explicit next player) is honoured; handicap setups default to White to move.
 - Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal.
 - Malformed `KM`, out-of-turn moves and unrecognised `PL` are reported as warnings (status bar / stderr); `go-review --strict` turns them into errors.
-- Engine queries follow the SGF `RU`: Japanese/New Zealand map to `japanese`, AGA/Ing/Korean to `korean`, Chinese and unknown values to `chinese`.
+- Engine queries follow the SGF `RU` through an explicit rule set: Chinese, Japanese, Korean,
+  AGA and Ing are passed to KataGo verbatim (`chinese` / `japanese` / `korean` / `aga` / `ing`).
+  Unknown values, and New Zealand (self-capture is not supported), fall back to Chinese and
+  produce a visible warning — never a silent downgrade.
 - The built-in area scorer does not judge life and death — it is a rough display only; real
   evaluation comes from KataGo's `scoreLead`.
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests

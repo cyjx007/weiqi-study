@@ -70,9 +70,9 @@ fn run() -> Result<(), String> {
         eprintln!("警告：{w}");
     }
     let komi = komi.or(sg.komi).unwrap_or(7.5);
-    let ko = sgf::ko_rule_from_rules(sg.rules.as_deref());
+    let rules = sgf::rule_set_from_rules(sg.rules.as_deref());
     let mut game =
-        Game::with_setup_rule_first(sg.size, komi, sg.setup.clone(), ko, sg.first_to_move());
+        Game::with_setup_rules_first(sg.size, komi, sg.setup.clone(), rules, sg.first_to_move());
     for (i, mv) in sg.moves.iter().enumerate() {
         game.play(*mv).map_err(|e| {
             let coord = match mv {

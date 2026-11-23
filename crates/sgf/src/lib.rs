@@ -3,7 +3,7 @@
 //! 支持：`SZ` `KM` `RU` `B` `W` `AB` `AW`。
 //! 分支规则按 SGF 规范：第一个子分支就是主线。
 
-use goban::{Color, KoRule, Move, Point};
+use goban::{Color, KoRule, Move, Point, RuleSet};
 
 #[derive(Clone, Debug, Default)]
 pub struct SgfGame {
@@ -219,6 +219,10 @@ pub fn parse(src: &str) -> Result<SgfGame, String> {
     if out.moves.is_empty() && out.setup.is_empty() {
         return Err("没有找到任何落子（可能是空棋谱或只含变化图）".to_string());
     }
+    // 规则不认识就明确告警，不能静默按 Chinese 处理
+    if let Some(w) = rules_warning(out.rules.as_deref()) {
+        out.warnings.push(w);
+    }
     // 状态栏只有一行，warning 太多反而看不清
     if out.warnings.len() > 5 {
         let rest = out.warnings.len() - 5;
@@ -381,34 +385,56 @@ fn parse_move(s: &str, size: u8) -> Result<Move, String> {
     parse_coord(s, size).map(Move::Play)
 }
 
-/// 从 SGF `RU` 属性猜规则；认不出来就用默认（位置超级劫）。
+/// 精确识别 SGF `RU`（大小写不敏感，允许 `Australian rules` 这类后缀）。
 ///
-/// 宁可放宽也不要收紧：映射错了顶多漏禁一手，收紧会让合法棋谱打不开。
-/// - 日本 / 新西兰：只禁简单劫（NZ 允许循环局面）
-/// - AGA / Ing / 韩国：情境超级劫（把行棋方算进重复判定）
-/// - 中国及未知值：位置超级劫（默认）
-pub fn ko_rule_from_rules(rules: Option<&str>) -> KoRule {
-    let Some(r) = rules else {
-        return KoRule::default();
-    };
-    let r = r.trim().to_ascii_lowercase();
-    // 用前缀而不是 contains：否则 "something else" 会因为含 "ing" 被认成 Ing 规则
-    if r.starts_with("japanese") || r.starts_with("new zealand") {
-        KoRule::Simple
-    } else if r.starts_with("aga") || r.starts_with("ing") || r.starts_with("korean") {
-        KoRule::SituationalSuperko
+/// 只返回项目**声明支持**的规则集；New Zealand 因允许自杀暂不支持，
+/// Ing 的超级劫/循环处理也只按通用 SSK 近似。
+pub fn recognized_rule_set(ru: &str) -> Option<RuleSet> {
+    let r = ru.trim().to_ascii_lowercase();
+    if r.starts_with("chinese") {
+        Some(RuleSet::CHINESE)
+    } else if r.starts_with("japanese") {
+        Some(RuleSet::JAPANESE)
+    } else if r.starts_with("korean") {
+        Some(RuleSet::KOREAN)
+    } else if r.starts_with("aga") {
+        Some(RuleSet::AGA)
+    } else if r.starts_with("ing") {
+        Some(RuleSet::ING)
     } else {
-        KoRule::PositionalSuperko
+        None
     }
+}
+
+/// SGF `RU` → 内部规则集。未识别时回退默认（Chinese），
+/// 调用方应同时用 [`rules_warning`] 告诉用户发生了回退，不能静默。
+pub fn rule_set_from_rules(rules: Option<&str>) -> RuleSet {
+    rules.and_then(recognized_rule_set).unwrap_or_default()
+}
+
+/// 规则不认识或被近似处理时的提示；明确支持的规则返回 `None`。
+pub fn rules_warning(rules: Option<&str>) -> Option<String> {
+    let trimmed = rules?.trim();
+    if trimmed.is_empty() || recognized_rule_set(trimmed).is_some() {
+        return None;
+    }
+    if trimmed.to_ascii_lowercase().starts_with("new zealand") {
+        // NZ 允许自杀（自己填气也算合法），本工具 Goban 一律禁止自杀
+        return Some(format!(
+            "暂不支持 RU[{trimmed}]（允许自杀），按 Chinese 处理"
+        ));
+    }
+    Some(format!("无法识别的 RU[{trimmed}]，按 Chinese 处理"))
+}
+
+/// 从 SGF `RU` 只取劫规则（保留给只需要 KoRule 的调用方）。
+pub fn ko_rule_from_rules(rules: Option<&str>) -> KoRule {
+    rule_set_from_rules(rules).ko
 }
 
 /// 写回 SGF `RU` 时用的名字。
 pub fn rules_for_ko(ko: KoRule) -> &'static str {
-    match ko {
-        KoRule::Simple => "Japanese",
-        KoRule::PositionalSuperko => "Chinese",
-        KoRule::SituationalSuperko => "Korean",
-    }
+    RuleSet::from_ko(ko).name
 }
 
 /// 把局面写回 SGF（只写主线，带摆子和贴目）。
@@ -417,7 +443,7 @@ pub fn write_game(
     komi: f32,
     setup: &[(Color, Point)],
     moves: &[Move],
-    ko: KoRule,
+    rule: RuleSet,
     first: Color,
 ) -> String {
     fn coord(p: Point) -> String {
@@ -427,7 +453,7 @@ pub fn write_game(
         s
     }
     let mut out = String::from("(;GM[1]FF[4]CA[UTF-8]");
-    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[{}]", rules_for_ko(ko)));
+    out.push_str(&format!("SZ[{size}]KM[{komi:.1}]RU[{}]", rule.name));
     let blacks: Vec<String> = setup
         .iter()
         .filter(|(c, _)| *c == Color::Black)
@@ -478,6 +504,7 @@ pub fn point_from_sgf(s: &str, size: u8) -> Option<Point> {
 mod tests {
     use super::*;
     use goban::Move;
+    use goban::Scoring;
 
     #[test]
     fn parses_basic_game() {
@@ -507,7 +534,7 @@ mod tests {
             Move::Pass,
             Move::Play(Point::new(3, 15)),
         ];
-        let text = write_game(19, 7.5, &[], &moves, KoRule::default(), Color::Black);
+        let text = write_game(19, 7.5, &[], &moves, RuleSet::default(), Color::Black);
         let back = parse(&text).unwrap();
         assert_eq!(back.size, 19);
         assert_eq!(back.komi, Some(7.5));
@@ -517,7 +544,7 @@ mod tests {
     #[test]
     fn writes_and_reparses_two_passes() {
         let moves = vec![Move::Play(Point::new(2, 2)), Move::Pass, Move::Pass];
-        let text = write_game(9, 7.5, &[], &moves, KoRule::default(), Color::Black);
+        let text = write_game(9, 7.5, &[], &moves, RuleSet::default(), Color::Black);
         let back = parse(&text).unwrap();
         assert_eq!(back.moves, moves);
     }
@@ -641,7 +668,7 @@ mod tests {
                 7.5,
                 &[],
                 game.moves(),
-                KoRule::default(),
+                RuleSet::default(),
                 Color::Black,
             );
             let back = parse(&text).unwrap_or_else(|e| panic!("seed {seed}: 解析失败：{e}"));
@@ -672,7 +699,7 @@ mod tests {
             (Color::White, Point::new(6, 2)),
         ];
         let moves = vec![Move::Play(Point::new(4, 4)), Move::Pass];
-        let text = write_game(9, 0.5, &setup, &moves, KoRule::default(), Color::White);
+        let text = write_game(9, 0.5, &setup, &moves, RuleSet::default(), Color::White);
         let back = parse(&text).unwrap();
 
         assert_eq!(back.size, 9);
@@ -690,7 +717,7 @@ mod tests {
     fn consecutive_passes_round_trip_at_every_size() {
         for size in [5u8, 9, 13, 19] {
             let moves = vec![Move::Pass, Move::Pass, Move::Pass];
-            let text = write_game(size, 7.5, &[], &moves, KoRule::default(), Color::Black);
+            let text = write_game(size, 7.5, &[], &moves, RuleSet::default(), Color::Black);
             let back = parse(&text).unwrap();
             assert_eq!(back.moves, moves, "{size} 路盘连续 Pass 必须读回");
         }
@@ -698,29 +725,88 @@ mod tests {
 
     #[test]
     fn ru_survives_write_and_parse() {
-        for ko in [
-            KoRule::Simple,
-            KoRule::PositionalSuperko,
-            KoRule::SituationalSuperko,
+        for rule in [
+            RuleSet::CHINESE,
+            RuleSet::JAPANESE,
+            RuleSet::KOREAN,
+            RuleSet::AGA,
+            RuleSet::ING,
         ] {
             let text = write_game(
                 9,
                 7.5,
                 &[],
                 &[Move::Play(Point::new(2, 2))],
-                ko,
+                rule,
                 Color::Black,
             );
             let back = parse(&text).unwrap();
-            assert_eq!(ko_rule_from_rules(back.rules.as_deref()), ko, "{text}");
+            assert_eq!(
+                recognized_rule_set(back.rules.as_deref().unwrap()),
+                Some(rule),
+                "规则名必须原样往返：{text}"
+            );
         }
+    }
+
+    #[test]
+    fn rule_mapping_is_explicit() {
+        let rs = |s| rule_set_from_rules(Some(s));
+        assert_eq!(rs("Japanese"), RuleSet::JAPANESE);
+        assert_eq!(rs("Japanese rules"), RuleSet::JAPANESE);
+        assert_eq!(rs("Korean"), RuleSet::KOREAN);
+        assert_eq!(rs("Chinese"), RuleSet::CHINESE);
+        // AGA / Ing 以前被折叠成 Korean，现在要保住规范名
+        assert_eq!(rs("AGA"), RuleSet::AGA);
+        assert_eq!(rs("Ing"), RuleSet::ING);
+        assert_eq!(rs("Ing rules (SST)"), RuleSet::ING);
+        assert_eq!(rs(" chinese "), RuleSet::CHINESE);
+        // 大小写不能混进来："something else" 含 ing，但不是 Ing 规则
+        assert_eq!(rs("something else"), RuleSet::default());
+        assert_eq!(rule_set_from_rules(None), RuleSet::default());
+
+        // 计分方式不能丢：日本/韩国是数目，其余是数子
+        assert_eq!(RuleSet::JAPANESE.scoring, Scoring::Territory);
+        assert_eq!(RuleSet::KOREAN.scoring, Scoring::Territory);
+        assert_eq!(RuleSet::CHINESE.scoring, Scoring::Area);
+        assert_eq!(RuleSet::AGA.scoring, Scoring::Area);
+        assert_eq!(RuleSet::ING.scoring, Scoring::Area);
+    }
+
+    #[test]
+    fn unknown_or_unsupported_rules_warn() {
+        // 明确支持的不该有警告
+        for ru in ["Chinese", "Japanese", "Korean", "AGA", "Ing"] {
+            assert_eq!(rules_warning(Some(ru)), None, "{ru}");
+        }
+        // 不认识和暂不支持的都要说清楚，不能静默
+        let w = rules_warning(Some("New Zealand")).unwrap();
+        assert!(w.contains("New Zealand") && w.contains("自杀"), "{w}");
+        let w = rules_warning(Some("My House Rules")).unwrap();
+        assert!(w.contains("My House Rules"), "{w}");
+        assert_eq!(rules_warning(None), None);
+
+        // parse 要把警告带出来
+        let g = parse("(;SZ[9]RU[Some Odd Rules];B[dd])").unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("Some Odd Rules")),
+            "{:?}",
+            g.warnings
+        );
+        assert_eq!(rule_set_from_rules(g.rules.as_deref()), RuleSet::CHINESE);
+
+        let g = parse("(;SZ[9]RU[New Zealand];B[dd])").unwrap();
+        assert!(
+            g.warnings.iter().any(|w| w.contains("New Zealand")),
+            "{:?}",
+            g.warnings
+        );
     }
 
     #[test]
     fn ko_rule_mapping() {
         assert_eq!(ko_rule_from_rules(Some("Japanese")), KoRule::Simple);
         assert_eq!(ko_rule_from_rules(Some("Japanese rules")), KoRule::Simple);
-        assert_eq!(ko_rule_from_rules(Some("New Zealand")), KoRule::Simple);
         assert_eq!(ko_rule_from_rules(Some("AGA")), KoRule::SituationalSuperko);
         assert_eq!(
             ko_rule_from_rules(Some("Korean")),
@@ -734,6 +820,12 @@ mod tests {
         assert_eq!(
             ko_rule_from_rules(Some("something else")),
             KoRule::default()
+        );
+        // New Zealand 允许自杀，本工具不支持：回退 Chinese（PSK）并告警，
+        // 不再错误地映射成「只禁单劫」
+        assert_eq!(
+            ko_rule_from_rules(Some("New Zealand")),
+            KoRule::PositionalSuperko
         );
     }
 
@@ -760,14 +852,14 @@ mod tests {
         // AB + PL[B]：写回时不能按"有摆子就白先"翻转颜色
         let setup = vec![(Color::Black, Point::new(3, 3))];
         let moves = vec![Move::Play(Point::new(2, 2))];
-        let text = write_game(9, 7.5, &setup, &moves, KoRule::default(), Color::Black);
+        let text = write_game(9, 7.5, &setup, &moves, RuleSet::default(), Color::Black);
         let back = parse(&text).unwrap();
         assert_eq!(back.first, Some(Color::Black));
         assert_eq!(back.first_to_move(), Color::Black);
         assert_eq!(back.moves, moves);
 
         // 只有摆子时写 PL，重载后先手不丢
-        let text = write_game(9, 7.5, &setup, &[], KoRule::default(), Color::White);
+        let text = write_game(9, 7.5, &setup, &[], RuleSet::default(), Color::White);
         assert!(text.contains("PL[W]"), "{text}");
         let back = parse(&text).unwrap();
         assert_eq!(back.first_to_move(), Color::White);
