@@ -454,13 +454,18 @@ impl GameStore {
             Some(self.acquire_name_lock(second)?)
         };
 
-        if target.exists() {
-            return Err(format!(
-                "{} 已存在",
-                target.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-            ));
+        // 直接 no-replace 原子移动：不依赖 exists() 预检查，外部程序在检查与
+        // rename 之间创建目标也不会被覆盖。
+        match rename_noreplace(path, &target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "{} 已存在",
+                    target.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+                ));
+            }
+            Err(e) => return Err(format!("重命名 {} 失败：{e}", path.display())),
         }
-        fs::rename(path, &target).map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
         // 注意：锁文件**永远不删**。unlink 会让另一个已经 open 了旧 inode、
         // 正在等锁的进程拿到一把“已脱链”的锁，两个进程就会各锁一个 inode。
         // 每个锁文件只有几十字节，留在 .locks/ 里复用即可。
@@ -494,12 +499,21 @@ impl GameStore {
         let pid = std::process::id();
         let mut target = trash.join(format!("{name}.{stamp}-{pid}"));
         let mut i = 1u32;
-        while target.exists() {
-            target = trash.join(format!("{name}.{stamp}-{pid}-{i}"));
-            i += 1;
+        loop {
+            match rename_noreplace(path, &target) {
+                Ok(()) => break,
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    target = trash.join(format!("{name}.{stamp}-{pid}-{i}"));
+                    i += 1;
+                    if i > 1000 {
+                        return Err("无法生成不冲突的回收站文件名".to_string());
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("移入回收站 {} 失败：{e}", path.display()));
+                }
+            }
         }
-        fs::rename(path, &target)
-            .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
         // 跨目录：源目录、games/ 和 .trash/ 都同步（源可能是 games/sub/）
         if let Some(src_dir) = path.parent() {
             sync_dir(src_dir);
@@ -538,7 +552,56 @@ fn data_home() -> PathBuf {
         })
 }
 
-/// rename 之后同步父目录，保证目录项本身也落盘（失败不致命）。
+/// 原子“目标已存在就失败”的 rename。
+///
+/// Linux 用 `renameat2(RENAME_NOREPLACE)`；其它平台退回 `hard_link + remove`，
+/// 但中途失败可能留下两份，只作为兜底（项目目标平台是 Linux）。
+#[cfg(target_os = "linux")]
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::ffi::{c_char, c_int, c_uint, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    const AT_FDCWD: c_int = -100;
+    const RENAME_NOREPLACE: c_uint = 1;
+
+    extern "C" {
+        fn renameat2(
+            olddirfd: c_int,
+            oldpath: *const c_char,
+            newdirfd: c_int,
+            newpath: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+    }
+
+    let from = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "路径含 NUL"))?;
+    let to = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "路径含 NUL"))?;
+    // SAFETY: 两个 CString 在调用期间有效，指针可空检查由 CString 保证
+    let rc = unsafe {
+        renameat2(
+            AT_FDCWD,
+            from.as_ptr(),
+            AT_FDCWD,
+            to.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::hard_link(from, to)?;
+    fs::remove_file(from)
+}
+
+/// rename 之后同步父目录，保证目录项本身也落盘。
 fn sync_dir(dir: &Path) {
     if let Ok(f) = fs::File::open(dir) {
         let _ = f.sync_all();
@@ -1098,6 +1161,30 @@ mod tests {
         assert!(stamp.is_some());
         assert!(!path.exists());
         release.join().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn rename_never_overwrites_an_existing_target() {
+        let store = temp_store();
+        let a = store.dir().join("a.sgf");
+        let b = store.dir().join("b.sgf");
+        std::fs::write(&a, "(;SZ[9];B[aa])").unwrap();
+        std::fs::write(&b, "(;SZ[9];B[bb])").unwrap();
+
+        let err = store.rename(&a, "b").unwrap_err();
+        assert!(err.contains("已存在"), "{err}");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "(;SZ[9];B[aa])");
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "(;SZ[9];B[bb])",
+            "目标内容不能被覆盖"
+        );
+
+        // 直接测底层 no-replace：目标已存在必须返回 AlreadyExists
+        let err = rename_noreplace(&a, &b).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AlreadyExists);
+        assert!(a.exists() && b.exists());
         let _ = std::fs::remove_dir_all(store.dir());
     }
 

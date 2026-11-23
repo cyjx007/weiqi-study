@@ -131,7 +131,7 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
     // 第一遍：读盘面参数（根节点在前）
     // `move_nodes` 是源文件里的手节点序号（含被跳过的乱序手），只用于报错定位。
     let mut move_nodes = 0usize;
-    let (mut saw_sz, mut saw_ha, mut saw_re) = (false, false, false);
+    let (mut saw_sz, mut saw_km, mut saw_ha, mut saw_re) = (false, false, false, false);
     for (node_idx, props) in nodes.iter().enumerate() {
         for (ident, values) in props {
             match ident.as_str() {
@@ -160,9 +160,13 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                     out.size = w;
                 }
                 "KM" => {
-                    if out.komi.is_some() {
+                    // 用独立标记：第一个 KM 即使非法/为空，也算“已经出现过”
+                    if saw_km {
                         out.warnings.push("重复的 KM，只取第一个".to_string());
-                    } else {
+                        continue;
+                    }
+                    saw_km = true;
+                    {
                         let Some(v) = values.first() else { continue };
                         if values.len() > 1 {
                             out.warnings.push("KM 有多个值，只取第一个".to_string());
@@ -1323,6 +1327,33 @@ mod tests {
         assert_eq!(g.handicap, None);
         assert!(
             g.warnings.iter().any(|w| w.contains("让子数")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn duplicate_km_uses_the_first_even_when_it_is_invalid() {
+        let g = parse("(;SZ[9]KM[bad]KM[6.5];B[cc])").unwrap();
+        assert_eq!(g.komi, None, "第一个 KM 无效时不能采用第二个");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("重复的 KM")),
+            "{:?}",
+            g.warnings
+        );
+
+        let g = parse("(;SZ[9]KM[]KM[6.5];B[cc])").unwrap();
+        assert_eq!(g.komi, None, "第一个 KM 为空时不能采用第二个");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("重复的 KM")),
+            "{:?}",
+            g.warnings
+        );
+
+        let g = parse("(;SZ[9]KM[6.5]KM[7.5];B[cc])").unwrap();
+        assert_eq!(g.komi, Some(6.5), "两个都有效时取第一个");
+        assert!(
+            g.warnings.iter().any(|w| w.contains("重复的 KM")),
             "{:?}",
             g.warnings
         );
