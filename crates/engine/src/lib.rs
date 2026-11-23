@@ -598,6 +598,16 @@ fn finite_f64(v: &Value, key: &str) -> Result<f64, String> {
     Ok(x)
 }
 
+/// 有限 f64 再转 f32；转换后仍须有限（例如 1e100 会变成 inf）。
+fn finite_f32(v: &Value, key: &str) -> Result<f32, String> {
+    let x = finite_f64(v, key)?;
+    let y = x as f32;
+    if !y.is_finite() {
+        return Err(format!("{key} 超出 f32 范围: {x}"));
+    }
+    Ok(y)
+}
+
 /// 解析一条候选。协议必需字段（move/winrate/scoreLead/visits）缺任何一个都返回 Err，
 /// 由调用方跳过该候选；只有 `pv` 是可选字段（缺省为空）。
 fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candidate, String> {
@@ -607,25 +617,25 @@ fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candida
         .ok_or_else(|| "候选缺少 move".to_string())?;
     let mv = parse_gtp_move(raw, game.size()).map_err(|e| format!("move={raw}: {e}"))?;
 
-    let cwr = finite_f64(m, "winrate")?;
+    let cwr = finite_f32(m, "winrate")?;
     if !(0.0..=1.0).contains(&cwr) {
         return Err(format!("winrate 越界: {cwr}"));
     }
-    let csc = finite_f64(m, "scoreLead")?;
+    let csc = finite_f32(m, "scoreLead")?;
 
-    let raw_visits = finite_f64(m, "visits")?;
-    if raw_visits < 0.0 {
-        return Err(format!("visits 为负: {raw_visits}"));
-    }
-    if raw_visits > u32::MAX as f64 {
-        return Err(format!("visits 溢出 u32: {raw_visits}"));
-    }
-    let visits = raw_visits as u32;
+    // visits 是整数：`1.9` 不能被 `as u32` 截断成 1
+    let raw_visits = m
+        .get("visits")
+        .ok_or_else(|| "候选缺少 visits".to_string())?;
+    let raw = raw_visits
+        .as_u64()
+        .ok_or_else(|| format!("visits 不是非负整数: {raw_visits}"))?;
+    let visits = u32::try_from(raw).map_err(|_| format!("visits 溢出 u32: {raw}"))?;
 
     let (cwr_b, csc_b) = if to_move == Color::Black {
-        (cwr as f32, csc as f32)
+        (cwr, csc)
     } else {
-        (1.0 - cwr as f32, -(csc as f32))
+        (1.0 - cwr, -csc)
     };
     let pv = m
         .get("pv")
@@ -647,22 +657,45 @@ fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candida
     })
 }
 
+/// `humanPolicy` 是 row-major 概率，-1 表示非法点（项目约定）。
+/// 任何非数字、非有限值、或 -1 之外的负数/大于 1 的值，都视为整份数据损坏。
+fn human_policy_from_json(v: &Value) -> Option<Vec<f32>> {
+    let arr = v.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for x in arr {
+        let p = x.as_f64()? as f32;
+        if !p.is_finite() {
+            return None;
+        }
+        if p != -1.0 && !(0.0..=1.0).contains(&p) {
+            return None;
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
     let to_move = game.to_move_at(turn);
     let root = v.get("rootInfo").ok_or("结果缺少 rootInfo")?;
-    let wr = finite_f64(root, "winrate").map_err(|e| format!("rootInfo {e}"))? as f32;
+    let wr = finite_f32(root, "winrate").map_err(|e| format!("rootInfo {e}"))?;
     if !(0.0..=1.0).contains(&wr) {
         return Err(format!("rootInfo.winrate 越界: {wr}"));
     }
-    let score = finite_f64(root, "scoreLead").map_err(|e| format!("rootInfo {e}"))? as f32;
+    let score = finite_f32(root, "scoreLead").map_err(|e| format!("rootInfo {e}"))?;
     let (winrate_black, score_black) = if to_move == Color::Black {
         (wr, score)
     } else {
         (1.0 - wr, -score)
     };
 
+    let arr = match v.get("moveInfos") {
+        Some(Value::Array(a)) => a,
+        Some(other) => return Err(format!("moveInfos 不是数组: {other}")),
+        None => return Err("响应缺少 moveInfos".to_string()),
+    };
     let mut candidates = Vec::new();
-    if let Some(arr) = v.get("moveInfos").and_then(|x| x.as_array()) {
+    {
         // 先过滤再截断：否则前 8 条全坏时，第 9 条好棋会被误判成"全部无法解析"
         let mut first_err: Option<String> = None;
         for m in arr.iter() {
@@ -686,11 +719,8 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
         candidates.truncate(8);
     }
 
-    let human_policy = v.get("humanPolicy").and_then(|x| x.as_array()).map(|a| {
-        a.iter()
-            .map(|x| x.as_f64().unwrap_or(-1.0) as f32)
-            .collect::<Vec<f32>>()
-    });
+    // 可选字段：缺失就是 None；一旦出现，任何一个坏值都丢掉整份策略
+    let human_policy = v.get("humanPolicy").and_then(human_policy_from_json);
 
     Ok(TurnEval {
         turn,
@@ -807,7 +837,7 @@ mod tests {
         // rootInfo 的必需字段同样不能缺
         let v = json!({"rootInfo": {"winrate": 0.5}, "moveInfos": []});
         assert!(eval_from_json(&v, &game, 0).is_err());
-        let v = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+        let v = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}, "moveInfos": []});
         assert!(eval_from_json(&v, &game, 0).is_ok());
 
         // 字段齐全的候选照常通过
@@ -894,8 +924,8 @@ done
             r#"#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
-  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}"
+  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}"
 done
 "#,
         );
@@ -1009,6 +1039,88 @@ done
         assert!(err.contains("超出"), "{err}");
         assert!(!err.contains("重复"), "不能被截断成合法回合：{err}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn visits_must_be_an_integer_in_u32_range() {
+        let game = Game::new(9, 7.5);
+        let base = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+        for bad in [
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 1.9}),
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": -1}),
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 5e9}),
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": "10"}),
+        ] {
+            let mut v = base.clone();
+            v["moveInfos"] = json!([bad]);
+            let err = eval_from_json(&v, &game, 0).unwrap_err();
+            assert!(err.contains("visits"), "{err}");
+        }
+        let mut v = base;
+        v["moveInfos"] = json!([
+            {"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 1}
+        ]);
+        assert_eq!(
+            eval_from_json(&v, &game, 0).unwrap().candidates[0].visits,
+            1
+        );
+    }
+
+    #[test]
+    fn scores_that_overflow_f32_are_rejected() {
+        let game = Game::new(9, 7.5);
+        let v = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 1e100}, "moveInfos": []});
+        let err = eval_from_json(&v, &game, 0).unwrap_err();
+        assert!(err.contains("scoreLead") && err.contains("f32"), "{err}");
+
+        let v = json!({
+            "rootInfo": {"winrate": 0.5, "scoreLead": 0.0},
+            "moveInfos": [{"move": "D4", "winrate": 0.5, "scoreLead": 1e100, "visits": 1}]
+        });
+        let err = eval_from_json(&v, &game, 0).unwrap_err();
+        assert!(err.contains("scoreLead") && err.contains("f32"), "{err}");
+    }
+
+    #[test]
+    fn human_policy_with_bad_values_is_dropped_entirely() {
+        let game = Game::new(9, 7.5);
+        let root = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}, "moveInfos": []});
+
+        for bad in [
+            json!(["0.5", "0.5"]),   // 字符串
+            json!([0.5, -2.0, 0.5]), // -1 之外的负数
+            json!([0.5, 1.5]),       // 概率大于 1
+            json!([0.5, 1e100]),     // 超 f32
+        ] {
+            let mut v = root.clone();
+            v["humanPolicy"] = bad;
+            let ev = eval_from_json(&v, &game, 0).unwrap();
+            assert!(ev.human_policy.is_none(), "坏策略必须整份丢弃");
+            assert_eq!(ev.winrate_black, 0.5, "root 分析仍然有效");
+        }
+
+        // 合法的 -1 哨兵与正常概率
+        let mut v = root;
+        v["humanPolicy"] = json!([0.3, -1.0, 0.7]);
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.human_policy.as_deref(), Some(&[0.3, -1.0, 0.7][..]));
+    }
+
+    #[test]
+    fn move_infos_must_be_present_and_an_array() {
+        let game = Game::new(9, 7.5);
+        let root = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+        let err = eval_from_json(&root, &game, 0).unwrap_err();
+        assert!(err.contains("缺少 moveInfos"), "{err}");
+
+        let mut v = root.clone();
+        v["moveInfos"] = json!({"not": "array"});
+        let err = eval_from_json(&v, &game, 0).unwrap_err();
+        assert!(err.contains("不是数组"), "{err}");
+
+        let mut v = root;
+        v["moveInfos"] = json!([]);
+        assert!(eval_from_json(&v, &game, 0).is_ok(), "空数组是合法的");
     }
 
     #[test]
