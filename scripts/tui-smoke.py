@@ -27,19 +27,34 @@ import tempfile
 import termios
 import time
 
-# (等待秒数, 要发的键)。空 bytes 表示只等待。
-SCRIPT: list[tuple[float, bytes]] = [
-    (1.0, b""),  # 等首帧
-    (0.3, b"L"),  # 棋谱列表
-    (0.5, b"\x1b"),  # Esc 关闭
-    (0.4, b"a"),  # 发起分析（引擎不可用，应显示错误）
-    (0.8, b""),  # 等错误回填
-    (0.3, b"?"),  # 帮助
-    (0.3, b"?"),  # 关帮助
-    (0.3, b"s"),  # 换边（人执白）
-    (0.3, b"s"),  # 换回执黑
-    (0.3, b"q"),  # 退出
-]
+def script_for(import_path: str) -> list[tuple[float, bytes]]:
+    """(等待秒数, 要发的键)。空 bytes 表示只等待。"""
+    return [
+        (1.0, b""),  # 等首帧
+        (0.3, b"L"),  # 棋谱列表
+        (0.5, b"\x1b"),  # Esc 关闭
+        (0.4, b"a"),  # 发起分析（引擎不可用，应显示错误）
+        (0.8, b""),  # 等错误回填
+        (0.3, b"?"),  # 帮助
+        (0.3, b"?"),  # 关帮助
+        (0.3, b"s"),  # 换边（人执白）
+        (0.3, b"s"),  # 换回执黑
+        (0.3, b"T"),  # 新局尺寸浮层
+        (0.3, b"\x1b"),  # 关闭
+        (0.3, b"o"),  # 导入浮层
+        (0.3, b"\x1b"),  # 关闭
+        # 真正导入一个外部 SGF
+        (0.3, b"o"),
+        (0.2, import_path.encode()),
+        (0.4, b"\r"),
+        # 新局 9×9，再落一手让它落盘
+        (0.4, b"T"),
+        (0.2, b"1"),
+        (0.3, b"\r"),
+        (0.5, b"\r"),
+        (0.5, b""),
+        (0.3, b"q"),
+    ]
 
 ROWS, COLS = 40, 120
 
@@ -80,6 +95,10 @@ def main() -> int:
 
     workdir = tempfile.mkdtemp(prefix="weiqi-tui-smoke-")
     sgf = write_fixture(workdir)
+    external = os.path.join(workdir, "import-me.sgf")
+    external_text = "(;GM[1]FF[4]SZ[9]KM[7.5]RU[Chinese];B[ee];W[cc])\n"
+    with open(external, "w", encoding="utf-8") as f:
+        f.write(external_text)
     env = os.environ.copy()
     # 不碰真实棋谱库，也不真的去加载 KataGo 模型
     env["XDG_DATA_HOME"] = os.path.join(workdir, "data")
@@ -101,7 +120,8 @@ def main() -> int:
 
     out = bytearray()
     idx = 0
-    next_at = time.time() + SCRIPT[0][0]
+    script = script_for(external)
+    next_at = time.time() + script[0][0]
     deadline = time.time() + args.timeout
     status: int | None = None
 
@@ -118,12 +138,12 @@ def main() -> int:
                         out.extend(chunk)
 
             now = time.time()
-            if idx < len(SCRIPT) and now >= next_at:
-                if SCRIPT[idx][1]:
-                    os.write(fd, SCRIPT[idx][1])
+            if idx < len(script) and now >= next_at:
+                if script[idx][1]:
+                    os.write(fd, script[idx][1])
                 idx += 1
-                if idx < len(SCRIPT):
-                    next_at = now + SCRIPT[idx][0]
+                if idx < len(script):
+                    next_at = now + script[idx][0]
 
             done, wstatus = os.waitpid(pid, os.WNOHANG)
             if done:
@@ -167,6 +187,33 @@ def main() -> int:
         missing.append("分析失败提示")
     if missing:
         print(f"FAIL: 没看到 {'、'.join(missing)}", file=sys.stderr)
+        return 1
+
+    # 导入 + 9×9 新局必须真的落盘
+    games_dir = os.path.join(workdir, "data", "weiqi-study", "games")
+    try:
+        files = [
+            os.path.join(games_dir, n)
+            for n in os.listdir(games_dir)
+            if n.endswith(".sgf")
+        ]
+    except OSError:
+        files = []
+    if len(files) < 3:
+        print(f"FAIL: 棋谱库应至少有 3 盘（启动导入/会话导入/新局），实际 {len(files)}", file=sys.stderr)
+        return 1
+    with open(external, encoding="utf-8") as f:
+        if f.read() != external_text:
+            print("FAIL: 导入改写了外部 SGF 原文件", file=sys.stderr)
+            return 1
+    newest = max(files, key=os.path.getmtime)
+    with open(newest, encoding="utf-8") as f:
+        saved = f.read()
+    if "SZ[9]" not in saved:
+        print(f"FAIL: 新局不是 9×9：{saved}", file=sys.stderr)
+        return 1
+    if saved.count(";B[") + saved.count(";W[") != 1:
+        print(f"FAIL: 新局应只有一手：{saved}", file=sys.stderr)
         return 1
 
     print(f"PASS: {os.path.realpath(binary)}（{len(text)} bytes 输出，正常退出）")

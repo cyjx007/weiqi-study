@@ -136,6 +136,68 @@ fn event_loop(
                         return Ok(());
                     }
 
+                    let global_overlay = matches!(
+                        overlay,
+                        Some(ui::Overlay::OpenPath(_)) | Some(ui::Overlay::NewGameSize(_))
+                    );
+                    if global_overlay {
+                        let mut close = false;
+                        let mut import_path: Option<String> = None;
+                        let mut new_size: Option<u8> = None;
+                        if let Some(ov) = overlay.as_mut() {
+                            match ov {
+                                ui::Overlay::OpenPath(text) => match key.code {
+                                    KeyCode::Enter => {
+                                        import_path = Some(text.clone());
+                                        close = true;
+                                    }
+                                    KeyCode::Esc => close = true,
+                                    KeyCode::Backspace => {
+                                        text.pop();
+                                    }
+                                    KeyCode::Char(c) => text.push(c),
+                                    _ => {}
+                                },
+                                ui::Overlay::NewGameSize(sel) => match key.code {
+                                    KeyCode::Left | KeyCode::Char('h') => *sel = (*sel + 2) % 3,
+                                    KeyCode::Right | KeyCode::Char('l') => *sel = (*sel + 1) % 3,
+                                    KeyCode::Char('1') => *sel = 0,
+                                    KeyCode::Char('2') => *sel = 1,
+                                    KeyCode::Char('3') => *sel = 2,
+                                    KeyCode::Enter => {
+                                        new_size = Some([9u8, 13, 19][*sel]);
+                                        close = true;
+                                    }
+                                    KeyCode::Esc => close = true,
+                                    _ => {}
+                                },
+                                _ => {}
+                            }
+                        }
+                        if close {
+                            overlay = None;
+                        }
+                        if let Some(size) = new_size {
+                            ctrl.start_play_on(size);
+                        }
+                        if let Some(path) = import_path {
+                            match ctrl.open_path(std::path::PathBuf::from(&path)) {
+                                Ok(()) => {
+                                    ctrl.app.refresh_games();
+                                    let name = std::path::Path::new(&path)
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("?");
+                                    ctrl.app.status =
+                                        fill(strings(ctrl.app.lang).game_loaded, name);
+                                }
+                                Err(e) => ctrl.app.status = e,
+                            }
+                        }
+                        ctrl.invalidate();
+                        continue;
+                    }
+
                     if ctrl.app.preview_active() {
                         match key.code {
                             KeyCode::Right | KeyCode::Char('n') | KeyCode::Char(']') => {
@@ -175,6 +237,8 @@ fn event_loop(
                                     KeyCode::Char(c) => text.push(c),
                                     _ => {}
                                 },
+                                // 全局浮层在进入这里之前已处理
+                                _ => {}
                             }
                         } else {
                             match key.code {
@@ -222,6 +286,17 @@ fn event_loop(
                                 let _ = ctrl.play_at_cursor();
                             }
                             KeyCode::Char('t') => ctrl.start_play(),
+                            KeyCode::Char('T') => {
+                                let sel = match ctrl.app.size {
+                                    9 => 0,
+                                    13 => 1,
+                                    _ => 2,
+                                };
+                                overlay = Some(ui::Overlay::NewGameSize(sel));
+                            }
+                            KeyCode::Char('o') => {
+                                overlay = Some(ui::Overlay::OpenPath(String::new()));
+                            }
                             KeyCode::Char('s') => ctrl.swap_sides(),
                             KeyCode::Char('v') => ctrl.toggle_ai(),
                             KeyCode::Char('V') => ctrl.start_preview(),

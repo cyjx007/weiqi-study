@@ -730,6 +730,7 @@ fn switching_sides_lets_the_engine_open() {
     assert!(app.generation() > gen, "换边要让旧事件失效");
     assert_eq!(app.next_action(), Action::Analyze);
     assert!(app.status.contains('白'), "{}", app.status);
+    assert!(app.status.contains("AI 先行"), "{}", app.status);
 
     // 空盘已有分析时，AI 直接落第一子，不需要重新分析
     let best = Move::Play(Point::new(2, 2));
@@ -742,6 +743,7 @@ fn switching_sides_lets_the_engine_open() {
     // 换回执黑：轮到你，已有分析就不再重复分析
     app.swap_sides();
     assert_eq!(app.human, Color::Black);
+    assert!(app.status.contains("你先手"), "{}", app.status);
     assert_eq!(app.next_action(), Action::None);
 }
 

@@ -35,6 +35,10 @@ fn turn_side_label(app: &App, s: &Strings) -> String {
 pub enum Overlay {
     ConfirmDelete,
     Rename(String),
+    /// 会话内导入：输入一个 SGF 路径。
+    OpenPath(String),
+    /// 新局棋盘尺寸：索引 0/1/2 = 9/13/19。
+    NewGameSize(usize),
 }
 
 pub fn draw(
@@ -292,6 +296,11 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
             who
         )),
         Line::from(format!(
+            "{}   {}",
+            s.side_title,
+            color_name(app.human, app.lang)
+        )),
+        Line::from(format!(
             "{}   {} {}",
             s.strength, app.config.engine.visits, s.visits_unit
         )),
@@ -444,27 +453,51 @@ fn draw_games(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_overlay(frame: &mut Frame, app: &App, area: Rect, overlay: &Overlay) {
     let s = strings(app.lang);
-    let (body, hint) = match overlay {
-        Overlay::ConfirmDelete => (s.trash_confirm.to_string(), "d / Esc"),
-        Overlay::Rename(text) => (format!("{}: {}_", s.rename, text), s.rename_hint),
+    let (title, body, hint): (&str, Vec<String>, String) = match overlay {
+        Overlay::ConfirmDelete => (
+            s.games,
+            vec![s.trash_confirm.to_string()],
+            "d / Esc".to_string(),
+        ),
+        Overlay::Rename(text) => (
+            s.games,
+            vec![format!("{}: {}_", s.rename, text)],
+            s.rename_hint.to_string(),
+        ),
+        Overlay::OpenPath(text) => (
+            s.import_btn,
+            vec![format!("{}: {}_", s.import_title, text)],
+            s.import_hint.to_string(),
+        ),
+        Overlay::NewGameSize(selected) => {
+            let mut body = Vec::new();
+            for (i, size) in [9u8, 13, 19].iter().enumerate() {
+                let mark = if i == *selected { "▶ " } else { "  " };
+                body.push(format!("{mark}{size}×{size}"));
+            }
+            (s.new_game_btn, body, s.size_hint.to_string())
+        }
     };
     let w = 60.min(area.width);
     let h = 7.min(area.height);
     let rect = centered(area, w, h);
     frame.render_widget(Clear, rect);
-    let lines = vec![
-        Line::from(Span::styled(
-            body,
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(hint, Style::default().fg(C::Gray))),
-    ];
+    let mut lines: Vec<Line> = body
+        .into_iter()
+        .map(|text| {
+            Line::from(Span::styled(
+                text,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(hint, Style::default().fg(C::Gray))));
     let p = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} ", s.games)),
+                .title(format!(" {} ", title)),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(p, rect);
@@ -531,6 +564,58 @@ mod tests {
 
     fn compact(s: String) -> String {
         s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    fn render_overlay_to_string(app: &App, overlay: &Overlay, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut image = None;
+        terminal
+            .draw(|f| draw(f, app, &mut image, Some(overlay)))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn side_panel_shows_your_color() {
+        let mut app = test_app();
+        app.lang = app::i18n::Lang::Zh; // CI/doCheck 是 C/en，断言语义必须固定语言
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("你执"), "侧栏应常驻显示当前执子：{s}");
+    }
+
+    #[test]
+    fn new_game_size_overlay_lists_three_sizes() {
+        let app = test_app();
+        let s = compact(render_overlay_to_string(
+            &app,
+            &Overlay::NewGameSize(1),
+            100,
+            30,
+        ));
+        assert!(
+            s.contains("9×9") && s.contains("13×13") && s.contains("19×19"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn import_overlay_shows_the_typed_path() {
+        let app = test_app();
+        let s = compact(render_overlay_to_string(
+            &app,
+            &Overlay::OpenPath("/tmp/study.sgf".to_string()),
+            100,
+            30,
+        ));
+        assert!(s.contains("/tmp/study.sgf"), "{s}");
     }
 
     #[test]

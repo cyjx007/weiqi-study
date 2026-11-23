@@ -423,7 +423,7 @@ impl App {
                         st.new_game,
                         path.file_name().and_then(|n| n.to_str()).unwrap_or("?")
                     ),
-                    i18n::fill(st.side_set, i18n::color_name(self.human, self.lang))
+                    self.side_status()
                 );
             }
             Err(e) => {
@@ -643,6 +643,17 @@ impl App {
         };
     }
 
+    /// “你执黑/白 + 谁先手”的状态文案；换边、开新局共用。
+    fn side_status(&self) -> String {
+        let st = strings(self.lang);
+        let template = if self.human == self.first {
+            st.side_you_first
+        } else {
+            st.side_ai_first
+        };
+        i18n::fill(template, i18n::color_name(self.human, self.lang))
+    }
+
     /// 选择人机对局里你执哪一方。
     ///
     /// 分析缓存是黑方视角、与“谁是 AI”无关，因此保留；但即时点评会按
@@ -656,8 +667,7 @@ impl App {
         self.failed_pos = None;
         self.last_comment = None;
         self.next_generation();
-        let st = strings(self.lang);
-        self.status = i18n::fill(st.side_set, i18n::color_name(color, self.lang));
+        self.status = self.side_status();
     }
 
     /// 交换人机双方的执子颜色（TUI/快捷键用）。
