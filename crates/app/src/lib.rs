@@ -48,6 +48,8 @@ pub enum AppEvent {
     },
     Review {
         generation: u64,
+        /// 全盘复盘自己的版本号：末尾追加落子也要让旧复盘失效
+        revision: u64,
         result: Result<Review, String>,
     },
 }
@@ -112,6 +114,8 @@ pub struct App {
     pub warnings: Vec<String>,
     /// 棋局/引擎设置版本；旧的分析结果回来时按这个丢弃
     generation: u64,
+    /// 全盘复盘的版本；任何改变整盘内容的操作都递增（追加落子也算）
+    review_revision: u64,
     /// 引擎推荐变化的临时预览（不动主线）
     preview: Option<Preview>,
 }
@@ -177,6 +181,7 @@ impl App {
             vs_ai: false,
             warnings: Vec::new(),
             generation: 0,
+            review_revision: 0,
             preview: None,
         }
     }
@@ -224,6 +229,16 @@ impl App {
     /// 棋局/引擎设置版本；分析线程带着它回来，过期的结果直接丢弃。
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// 全盘复盘的版本；旧复盘事件必须带同样的值才会被接受。
+    pub fn review_revision(&self) -> u64 {
+        self.review_revision
+    }
+
+    /// 整盘内容变了（落子/换线/换谱/新局）：旧复盘一律作废。
+    fn invalidate_review(&mut self) {
+        self.review_revision = self.review_revision.wrapping_add(1);
     }
 
     /// 换了棋局或引擎设置：旧分析作废，允许立刻发起新的分析。
@@ -277,6 +292,8 @@ impl App {
         probe.play(mv).map_err(|e| format!("{e}"))?;
         // 合法落子才退出变化预览
         self.preview = None;
+        // 整盘内容变了（追加也算）：旧的全盘复盘不再对应这盘棋
+        self.invalidate_review();
 
         let base = self.pos;
         // 只有「从中间另一手改走」才是换线；在末尾续下时历史前缀没变，
@@ -351,6 +368,7 @@ impl App {
     pub fn start_play(&mut self) {
         self.preview = None;
         self.next_generation();
+        self.invalidate_review();
         self.rules = RuleSet::default();
         self.first = Color::Black;
         self.warnings.clear();
@@ -456,6 +474,7 @@ impl App {
         // 到这里才动 self
         self.preview = None;
         self.next_generation();
+        self.invalidate_review();
         self.size = size;
         self.komi = komi;
         self.rules = rules;
@@ -914,8 +933,13 @@ impl App {
                     }
                 }
             }
-            AppEvent::Review { generation, result } => {
-                if generation != self.generation {
+            AppEvent::Review {
+                generation,
+                revision,
+                result,
+            } => {
+                if generation != self.generation || revision != self.review_revision {
+                    // 旧复盘：不写结果、不动 busy（由 Controller 在物理任务结束后统一处理）
                     return;
                 }
                 match result {

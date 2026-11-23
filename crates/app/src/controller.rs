@@ -60,9 +60,15 @@ impl Controller {
         }
         // 工作期间用户又落了子/换了局面：合并成一次补分析，
         // 而不是每落一手就新起一个线程排队堵在引擎锁后面。
-        if finished && self.pending {
-            self.pending = false;
-            self.spawn_analysis();
+        if finished {
+            if self.pending {
+                self.pending = false;
+                self.spawn_analysis();
+            } else {
+                // 物理任务结束、也没有排队的分析：即使结果是过期被丢弃，也要放开 busy，
+                // 否则界面会永远停在“分析中”。
+                self.app.busy = false;
+            }
         }
         self.pump();
         std::mem::take(&mut self.dirty)
@@ -151,12 +157,17 @@ impl Controller {
         let engine = self.app.engine.clone();
         let english = !self.app.lang.is_zh();
         let generation = self.app.generation();
+        let revision = self.app.review_revision();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let result = engine
                 .analyze_game(&game, |_, _| {})
                 .map(|evals| review::build(english, &game, &evals, 5.0));
-            let _ = tx.send(AppEvent::Review { generation, result });
+            let _ = tx.send(AppEvent::Review {
+                generation,
+                revision,
+                result,
+            });
         });
     }
 
@@ -326,6 +337,57 @@ mod tests {
         assert!(ctrl.tick(), "收到分析结果后需要重画");
         assert!(ctrl.app.analysis().is_some());
         assert!(!ctrl.app.busy);
+    }
+
+    #[test]
+    fn stale_review_releases_busy_without_touching_review() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+        // 模拟：Review 物理任务还在跑
+        ctrl.working = true;
+        ctrl.app.busy = true;
+        // 隔离：不让收尾后的 pump() 自动补分析，否则 busy 会因“新任务”变回 true
+        ctrl.app.ai_enabled = false;
+        let (gen, rev) = (ctrl.app.generation(), ctrl.app.review_revision());
+
+        ctrl.app.play_move(Move::Play(Point::new(2, 2))).unwrap();
+        ctrl.sender()
+            .send(AppEvent::Review {
+                generation: gen,
+                revision: rev,
+                result: Err("旧复盘".to_string()),
+            })
+            .unwrap();
+        ctrl.tick();
+
+        assert!(ctrl.app.review.is_none());
+        assert!(!ctrl.app.busy, "物理任务结束后不能一直卡在 busy");
+    }
+
+    #[test]
+    fn stale_review_with_pending_analysis_spawns_exactly_once() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+        ctrl.working = true;
+        ctrl.pending = true;
+        ctrl.app.busy = true;
+        let (gen, rev) = (ctrl.app.generation(), ctrl.app.review_revision());
+        ctrl.app.play_move(Move::Play(Point::new(2, 2))).unwrap();
+
+        ctrl.sender()
+            .send(AppEvent::Review {
+                generation: gen,
+                revision: rev,
+                result: Err("旧复盘".to_string()),
+            })
+            .unwrap();
+        ctrl.tick();
+
+        assert_eq!(ctrl.spawns, 1, "只补发一次分析");
+        assert!(!ctrl.pending);
+        assert!(ctrl.app.busy);
     }
 
     #[test]

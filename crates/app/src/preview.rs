@@ -127,6 +127,7 @@ impl App {
         let step = p.step;
         let base = p.base;
         self.next_generation();
+        self.invalidate_review();
         self.moves.truncate(base);
         self.moves.extend(p.pv.iter().take(step).copied());
         self.pos = self.moves.len();

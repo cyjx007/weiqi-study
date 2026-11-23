@@ -194,6 +194,7 @@ fn stale_events_from_the_old_branch_are_ignored() {
     });
     app.apply(AppEvent::Review {
         generation: old_gen,
+        revision: app.review_revision(),
         result: Err("旧分支的复盘".to_string()),
     });
 
@@ -249,6 +250,74 @@ fn illegal_move_leaves_everything_untouched() {
         ),
         before
     );
+}
+
+fn dummy_review() -> Review {
+    Review {
+        english: false,
+        size: 9,
+        header: "旧的复盘".to_string(),
+        deltas: Vec::new(),
+        phases: Vec::new(),
+        blunders: Vec::new(),
+        summary: Vec::new(),
+        details: Vec::new(),
+    }
+}
+
+#[test]
+fn appending_a_move_invalidates_review_but_keeps_analysis_generation() {
+    let mut app = long_game(5);
+    app.evals.insert(5, eval(5, Color::Black, 0.5, Move::Pass));
+    let gen = app.generation();
+    let rev = app.review_revision();
+
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+
+    assert_eq!(app.generation(), gen, "追加落子不换分析版本");
+    assert_ne!(app.review_revision(), rev, "但整盘复盘必须失效");
+    assert!(app.evals.contains_key(&5), "上一手分析仍然有效");
+}
+
+#[test]
+fn stale_review_after_append_is_dropped() {
+    let mut app = long_game(5);
+    let (gen, rev) = (app.generation(), app.review_revision());
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+
+    app.busy = true;
+    app.apply(AppEvent::Review {
+        generation: gen,
+        revision: rev,
+        result: Ok(dummy_review()),
+    });
+    assert!(app.review.is_none(), "旧复盘不能显示");
+    assert!(app.busy, "旧复盘不改 busy（由 Controller 统一收尾）");
+
+    // 失败事件同样不能覆盖状态
+    let status = app.status.clone();
+    app.apply(AppEvent::Review {
+        generation: gen,
+        revision: rev,
+        result: Err("旧错误".to_string()),
+    });
+    assert_eq!(app.status, status);
+}
+
+#[test]
+fn branching_and_new_game_also_invalidate_review() {
+    let mut app = long_game(25);
+    app.jump_to_turn(20);
+    let rev = app.review_revision();
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+    assert_ne!(app.review_revision(), rev);
+
+    let rev = app.review_revision();
+    app.start_play();
+    assert_ne!(app.review_revision(), rev);
 }
 
 #[test]
