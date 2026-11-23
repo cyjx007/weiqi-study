@@ -318,11 +318,15 @@ fn autosave_switches_to_a_conflict_copy_when_the_file_changed() {
     app.store = test_store();
     app.start_play();
     let file = app.current_file.clone().expect("新局应有文件");
-    assert!(app.file_mtime.is_some(), "开局保存后要记住 mtime");
+    assert!(app.file_stamp.is_some(), "开局保存后要记住指纹");
 
     // 另一个进程改了这个文件；我们手上的 mtime 已经过期
     std::fs::write(&file, "(;SZ[9]KM[0.5];B[dd])").unwrap();
-    app.file_mtime = Some(std::time::UNIX_EPOCH);
+    app.file_stamp = Some(super::storage::FileStamp {
+        mtime: std::time::UNIX_EPOCH,
+        len: 0,
+        hash: 0,
+    });
 
     app.play_move(Move::Play(Point::new(3, 3))).unwrap();
 
@@ -343,7 +347,7 @@ fn autosave_switches_to_a_conflict_copy_when_the_file_changed() {
         "(;SZ[9]KM[0.5];B[dd])"
     );
     // 下一次保存走新副本，不再反复产生冲突
-    app.file_mtime = super::storage::mtime(&current);
+    app.file_stamp = super::storage::FileStamp::of(&current);
     app.play_move(Move::Play(Point::new(4, 4))).unwrap();
     assert_eq!(app.current_file, Some(current));
 }
@@ -354,13 +358,13 @@ fn new_game_does_not_inherit_a_stale_mtime() {
     app.store = test_store();
     app.start_play();
     let first = app.current_file.clone().unwrap();
-    assert_eq!(app.file_mtime, super::storage::mtime(&first));
+    assert_eq!(app.file_stamp, super::storage::FileStamp::of(&first));
 
     app.start_play();
     let second = app.current_file.clone().unwrap();
     assert_ne!(first, second);
-    assert_eq!(app.file_mtime, super::storage::mtime(&second));
-    assert!(super::storage::mtime(&second).is_some());
+    assert_eq!(app.file_stamp, super::storage::FileStamp::of(&second));
+    assert!(super::storage::FileStamp::of(&second).is_some());
 }
 
 #[test]

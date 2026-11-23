@@ -84,8 +84,8 @@ pub struct App {
     pub engine: Arc<engine::Engine>,
     pub store: GameStore,
     pub current_file: Option<PathBuf>,
-    /// 上次读/写 `current_file` 时看到的修改时间，用于并发冲突检测
-    pub file_mtime: Option<SystemTime>,
+    /// 上次读/写 `current_file` 时看到的版本指纹（mtime + 长度 + 内容哈希）
+    pub file_stamp: Option<storage::FileStamp>,
     pub games: Vec<GameEntry>,
     pub show_games: bool,
     pub show_info: bool,
@@ -145,7 +145,7 @@ impl App {
             lang: Lang::from_env(),
             store: GameStore::open(),
             current_file: None,
-            file_mtime: None,
+            file_stamp: None,
             games: Vec::new(),
             show_games: false,
             show_info: false,
@@ -294,15 +294,15 @@ impl App {
             storage::WriteOptions {
                 rules: self.rules,
                 first: self.first,
-                expected_mtime: self.file_mtime,
+                expected: self.file_stamp,
             },
         );
         match result {
             Ok(storage::SaveOutcome::Written) => {
-                self.file_mtime = storage::mtime(&path);
+                self.file_stamp = storage::FileStamp::of(&path);
             }
             Ok(storage::SaveOutcome::Conflict(alt)) => {
-                self.file_mtime = storage::mtime(&alt);
+                self.file_stamp = storage::FileStamp::of(&alt);
                 self.current_file = Some(alt.clone());
                 self.status = i18n::fill(
                     strings(self.lang).conflict_saved,
@@ -345,8 +345,8 @@ impl App {
         match self.store.create() {
             Ok(path) => {
                 self.current_file = Some(path.clone());
-                // 新文件还没有“上次看到的时间”，否则会误判成冲突
-                self.file_mtime = None;
+                // 新文件还没有“上次看到的指纹”，否则会误判成冲突
+                self.file_stamp = None;
                 self.autosave();
                 self.status = i18n::fill(
                     strings(self.lang).new_game,
@@ -392,7 +392,7 @@ impl App {
                         storage::WriteOptions {
                             rules,
                             first,
-                            expected_mtime: None,
+                            expected: None,
                         },
                     )?;
                     Some(copy)
@@ -418,7 +418,7 @@ impl App {
         self.cursor = Point::new(size / 2, size / 2);
         self.game = game;
         self.vs_ai = false;
-        self.file_mtime = new_file.as_deref().and_then(storage::mtime);
+        self.file_stamp = new_file.as_deref().and_then(storage::FileStamp::of);
         self.current_file = new_file;
         self.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&self.warnings) {
@@ -585,7 +585,7 @@ impl App {
         let new_path = self.store.rename(&entry.path, name)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
             self.current_file = Some(new_path.clone());
-            self.file_mtime = storage::mtime(&new_path);
+            self.file_stamp = storage::FileStamp::of(&new_path);
         }
         self.refresh_games();
         let label = new_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -601,7 +601,7 @@ impl App {
         let trashed = self.store.trash(&entry.path)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
             self.current_file = None;
-            self.file_mtime = None;
+            self.file_stamp = None;
         }
         self.refresh_games();
         self.game_cursor = self.game_cursor.min(self.games.len().saturating_sub(1));

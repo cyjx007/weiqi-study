@@ -1,8 +1,15 @@
 //! 棋谱持久化：`$XDG_DATA_HOME/weiqi-study/games/*.sgf`。
 //!
 //! 写入规则：先写同目录的**唯一**临时文件（`create_new`），`fsync` 后原子 rename，
-//! 再 `fsync` 父目录。多个进程同时保存同一棋谱不会互相踩临时文件；
-//! 若目标在「上次看到它之后」被别的进程改过，则另存为 `.conflict-*` 副本，不覆盖别人的内容。
+//! 再 `fsync` 父目录。保存过程用 `<文件名>.lock` 上的 advisory 排它锁（`File::lock`）
+//! 把「比较版本 → rename」包成一个临界区，进程退出/关闭句柄时自动释放。
+//!
+//! 版本用内容指纹（修改时间 + 长度 + FNV-1a）判断，而不是只看 mtime；
+//! 目标被别的进程改过就另存 `*.conflict-*` 副本（`create_new`，绝不覆盖已有副本）。
+//!
+//! 边界：advisory 锁只能约束同样遵守它的 `weiqi-study` 进程，挡不住任意编辑器；
+//! 也不保证所有文件系统上都是真正的 CAS。
+//!
 //! 删除不真删：移到 `games/.trash/`，文件名带时间戳，可手动找回。
 
 use std::fs;
@@ -19,14 +26,47 @@ pub struct GameEntry {
     pub label: String,
 }
 
+/// 文件版本指纹：比单独 mtime 可靠（同一秒内写入、或 mtime 被外部工具保留都能区分）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub mtime: SystemTime,
+    pub len: u64,
+    /// 内容 FNV-1a；SGF 只有几 KB，读一遍代价可以忽略
+    pub hash: u64,
+}
+
+impl FileStamp {
+    /// 读文件并计算指纹；文件不存在返回 `None`。
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let meta = fs::metadata(path).ok()?;
+        let mtime = meta.modified().ok()?;
+        let bytes = fs::read(path).ok()?;
+        Some(FileStamp {
+            mtime,
+            len: bytes.len() as u64,
+            hash: fnv1a(&bytes),
+        })
+    }
+}
+
+/// FNV-1a 64：够用、无依赖、几十行就能解释清楚。
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// 写 SGF 需要的规则参数（打包传，避免 save 参数过多）。
 #[derive(Clone, Copy, Debug)]
 pub struct WriteOptions {
     /// 完整规则集：写回 SGF 时用它的规范名（`RU[...]`）
     pub rules: RuleSet,
     pub first: Color,
-    /// 上次读/写这个文件时看到的修改时间；`None` = 新文件，不做冲突检查。
-    pub expected_mtime: Option<SystemTime>,
+    /// 上次读/写这个文件时看到的指纹；`None` = 新文件，不做冲突检查。
+    pub expected: Option<FileStamp>,
 }
 
 /// 一次保存的结果。
@@ -97,6 +137,11 @@ impl GameStore {
         opts: WriteOptions,
     ) -> Result<SaveOutcome, String> {
         let text = sgf::write_game(size, komi, setup, moves, opts.rules, opts.first);
+
+        // 锁覆盖「写临时文件 → 比较版本 → rename」：另一个 weiqi-study 进程
+        // 同时保存同一文件时，会在这里排队，而不是两边都看到旧指纹。
+        let _lock = self.acquire_lock(path)?;
+
         let (tmp, mut file) = self.create_tmp(path)?;
         if let Err(e) = file.write_all(text.as_bytes()) {
             let _ = fs::remove_file(&tmp);
@@ -109,14 +154,9 @@ impl GameStore {
         drop(file); // 先关掉，rename 才能跨平台可靠
 
         // 版本校验：磁盘上的文件不是我们上次看到的那个，就另存副本
-        if let Some(expected) = opts.expected_mtime {
-            if mtime(path) != Some(expected) {
-                let alt = self.conflict_path(path);
-                fs::rename(&tmp, &alt).map_err(|e| {
-                    let _ = fs::remove_file(&tmp);
-                    format!("保存冲突副本 {} 失败：{e}", alt.display())
-                })?;
-                sync_dir(&self.dir);
+        if let Some(expected) = opts.expected {
+            if FileStamp::of(path) != Some(expected) {
+                let alt = self.create_conflict_copy(&tmp, path)?;
                 return Ok(SaveOutcome::Conflict(alt));
             }
         }
@@ -127,6 +167,26 @@ impl GameStore {
         })?;
         sync_dir(&self.dir);
         Ok(SaveOutcome::Written)
+    }
+
+    /// 在 `games/.locks/<文件名>` 上取排它 advisory 锁；返回的 File 关闭即释放。
+    fn acquire_lock(&self, path: &Path) -> Result<fs::File, String> {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("game.sgf");
+        let locks = self.dir.join(".locks");
+        fs::create_dir_all(&locks).map_err(|e| format!("创建锁目录失败：{e}"))?;
+        let lock_path = locks.join(name);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| format!("打开锁文件 {} 失败：{e}", lock_path.display()))?;
+        file.lock()
+            .map_err(|e| format!("锁住 {} 失败：{e}", lock_path.display()))?;
+        Ok(file)
     }
 
     /// 在目标目录里 `create_new` 一个唯一临时文件；只清理自己建的那个。
@@ -153,12 +213,45 @@ impl GameStore {
         Err("无法创建唯一临时文件".to_string())
     }
 
-    /// 冲突副本路径：同目录、可被 `list()` 看到，也便于用户手动对比。
-    fn conflict_path(&self, path: &Path) -> PathBuf {
+    /// 把 tmp 的内容落成一份冲突副本；用 `create_new` 保证不覆盖已有副本。
+    fn create_conflict_copy(&self, tmp: &Path, path: &Path) -> Result<PathBuf, String> {
         let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or("game");
         let stamp = unix_nanos();
         let pid = std::process::id();
-        self.dir.join(format!("{stem}.conflict-{stamp}-{pid}.sgf"))
+        for i in 0..1000u32 {
+            let suffix = if i == 0 {
+                format!("{stamp}-{pid}")
+            } else {
+                format!("{stamp}-{pid}-{i}")
+            };
+            let alt = self.dir.join(format!("{stem}.conflict-{suffix}.sgf"));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&alt)
+            {
+                Ok(mut out) => {
+                    let result = fs::read(tmp)
+                        .and_then(|data| out.write_all(&data))
+                        .and_then(|()| out.sync_all());
+                    drop(out);
+                    let _ = fs::remove_file(tmp);
+                    result.map_err(|e| {
+                        let _ = fs::remove_file(&alt);
+                        format!("写冲突副本 {} 失败：{e}", alt.display())
+                    })?;
+                    sync_dir(&self.dir);
+                    return Ok(alt);
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    let _ = fs::remove_file(tmp);
+                    return Err(format!("创建冲突副本 {} 失败：{e}", alt.display()));
+                }
+            }
+        }
+        let _ = fs::remove_file(tmp);
+        Err("无法生成不冲突的副本文件名".to_string())
     }
 
     pub fn list(&self) -> Vec<GameEntry> {
@@ -271,7 +364,8 @@ fn data_home() -> PathBuf {
         })
 }
 
-/// 文件的修改时间；读不到就是 `None`。
+/// 文件的修改时间；读不到就是 `None`（版本判断请用 [`FileStamp`]）。
+#[allow(dead_code)]
 pub fn mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -333,7 +427,7 @@ mod tests {
                 WriteOptions {
                     rules: RuleSet::default(),
                     first: Color::Black,
-                    expected_mtime: None,
+                    expected: None,
                 },
             )
             .unwrap();
@@ -347,12 +441,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(store.dir());
     }
 
-    fn opts(expected: Option<SystemTime>) -> WriteOptions {
+    fn opts(expected: Option<FileStamp>) -> WriteOptions {
         WriteOptions {
             rules: RuleSet::default(),
             first: Color::Black,
-            expected_mtime: expected,
+            expected,
         }
+    }
+
+    /// 一个保证和真实文件对不上的指纹（模拟“我们手里的版本过期了”）。
+    fn stale() -> Option<FileStamp> {
+        Some(FileStamp {
+            mtime: UNIX_EPOCH,
+            len: 0,
+            hash: 0,
+        })
     }
 
     fn tmp_files(dir: &Path) -> Vec<String> {
@@ -381,7 +484,7 @@ mod tests {
 
         let other = vec![Move::Play(Point::new(4, 4))];
         let out = store
-            .save(&path, 9, 7.5, &[], &other, opts(Some(UNIX_EPOCH)))
+            .save(&path, 9, 7.5, &[], &other, opts(stale()))
             .unwrap();
         let SaveOutcome::Conflict(alt) = out else {
             panic!("应当另存副本，实际 {out:?}");
@@ -449,6 +552,153 @@ mod tests {
 
         assert!(res.is_err(), "目录不可写时保存必须失败");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn concurrent_edits_with_the_same_stamp_never_silently_overwrite() {
+        let store = temp_store();
+        let path = store.dir().join("shared.sgf");
+        store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(1, 1))],
+                opts(None),
+            )
+            .unwrap();
+        let stamp = FileStamp::of(&path).unwrap();
+
+        // 两个进程都拿着「同一份旧版本」去保存：一个成功，另一个必须拿到副本
+        let a = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(2, 2))],
+                opts(Some(stamp)),
+            )
+            .unwrap();
+        let b = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(3, 3))],
+                opts(Some(stamp)),
+            )
+            .unwrap();
+        assert_eq!(a, SaveOutcome::Written);
+        let SaveOutcome::Conflict(alt) = b else {
+            panic!("第二次保存应当另存副本，实际 {b:?}");
+        };
+        assert!(alt.exists());
+        // 落盘的是 a 的内容，b 的内容在副本里，谁都没丢
+        let main = sgf::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(main.moves, vec![Move::Play(Point::new(2, 2))]);
+        let copy = sgf::parse(&std::fs::read_to_string(&alt).unwrap()).unwrap();
+        assert_eq!(copy.moves, vec![Move::Play(Point::new(3, 3))]);
+
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn concurrent_threads_produce_exactly_one_writer() {
+        let store = temp_store();
+        let path = store.dir().join("race.sgf");
+        store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(1, 1))],
+                opts(None),
+            )
+            .unwrap();
+        let stamp = FileStamp::of(&path).unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..4u8 {
+            let store = store.clone();
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                store
+                    .save(
+                        &path,
+                        9,
+                        7.5,
+                        &[],
+                        &[Move::Play(Point::new(i + 2, 2))],
+                        opts(Some(stamp)),
+                    )
+                    .unwrap()
+            }));
+        }
+        let mut written = 0;
+        let mut conflicts = Vec::new();
+        for h in handles {
+            match h.join().unwrap() {
+                SaveOutcome::Written => written += 1,
+                SaveOutcome::Conflict(p) => conflicts.push(p),
+            }
+        }
+        assert_eq!(written, 1, "只有第一个能写主文件");
+        assert_eq!(conflicts.len(), 3);
+        for c in &conflicts {
+            assert!(c.exists(), "冲突副本必须落盘：{}", c.display());
+        }
+        assert_eq!(
+            sgf::parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .moves
+                .len(),
+            1
+        );
+        assert!(tmp_files(store.dir()).is_empty());
+
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn conflict_copies_never_overwrite_each_other() {
+        let store = temp_store();
+        let path = store.dir().join("multi.sgf");
+        store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(1, 1))],
+                opts(None),
+            )
+            .unwrap();
+
+        let mut alts = Vec::new();
+        for i in 0..2u8 {
+            let out = store
+                .save(
+                    &path,
+                    9,
+                    7.5,
+                    &[],
+                    &[Move::Play(Point::new(i + 2, 2))],
+                    opts(stale()),
+                )
+                .unwrap();
+            let SaveOutcome::Conflict(alt) = out else {
+                panic!("应当另存副本");
+            };
+            alts.push(alt);
+        }
+        assert_ne!(alts[0], alts[1], "两次冲突不能落到同一个文件名");
+        assert!(alts.iter().all(|p| p.exists()));
+
         let _ = std::fs::remove_dir_all(store.dir());
     }
 
