@@ -90,7 +90,8 @@ keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved gam
 `Rename` / `Delete` buttons manage the selected file. A strength card sets visits and toggles the
 humanv0 net/rank; `Variation` previews the engine line and `Use` commits it. `EN/中文` switches
 the interface language. Board navigation and the main actions use the same keys as the TUI where available; the GUI
-adds buttons for importing an SGF, the game list, rename/delete and AI settings.
+adds buttons for importing an SGF, the game list, rename/delete and AI settings, and `?`
+opens a shortcut cheat-sheet.
 
 The Nix package installs `packaging/weiqi-study.desktop`, so `weiqi-gui` appears in the
 application launcher.
@@ -113,6 +114,8 @@ TUI keys:
 | `Enter` | play at the cursor |
 | `t` | start a human-vs-engine game (keeps your side) |
 | `s` | swap sides (you play Black / White) |
+| `T` | start a new game and pick 9×9 / 13×13 / 19×19 |
+| `o` | import an SGF by typing a path |
 | `v` | toggle automatic engine replies |
 | `u` | undo one move |
 | `n` / `p` | next / previous move |
