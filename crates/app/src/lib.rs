@@ -52,7 +52,8 @@ pub enum AppEvent {
     },
 }
 
-/// SGF 没有声明贴目时的默认值（CLI/TUI/GUI 共用这一处，避免各自硬编码）。
+/// SGF 没有声明贴目时的默认值（app 内部 from_sgf/open_sgf_file 的唯一来源；
+/// CLI 不依赖 app，仍用自己的默认值）。
 pub const DEFAULT_KOMI: f32 = 7.5;
 
 /// 拟人网可选段位（KataGo humanv0 的 profile 名）。
@@ -113,6 +114,17 @@ pub struct App {
     generation: u64,
     /// 引擎推荐变化的临时预览（不动主线）
     preview: Option<Preview>,
+}
+
+/// 规则比较键：归一化后的规则集 + 是否属于“无法识别、回退默认”。
+///
+/// 只比 RuleSet 会漏掉 `Chinese → New Zealand/乱写` 这种“归一到同一套规则”的改动；
+/// 只比原始字符串又会被大小写/后缀误报。
+fn rules_key(rules: Option<&str>) -> (goban::RuleSet, bool) {
+    (
+        sgf::rule_set_from_rules(rules),
+        rules.is_some_and(|r| sgf::recognized_rule_set(r).is_none()),
+    )
 }
 
 /// 状态栏用的 warning 摘要（只显示第一条 + 总数）。
@@ -409,7 +421,7 @@ impl App {
                 || current.size != size
                 || current.komi.unwrap_or(DEFAULT_KOMI) != komi
                 || current.first_to_move() != first
-                || sgf::rule_set_from_rules(current.rules.as_deref()) != rules
+                || rules_key(current.rules.as_deref()) != rules_key(sg.rules.as_deref())
             {
                 return Err("棋谱在打开期间被其他程序修改，请重新打开".to_string());
             }

@@ -428,7 +428,8 @@ impl GameStore {
             format!("{stem}.sgf")
         });
         if target == path {
-            return Ok((target.clone(), None));
+            // 名字没变：文件也没变，指纹必须可用，否则下次保存会被当成“新建”
+            return Ok((target.clone(), FileStamp::of(&target)?));
         }
         let old_name = path
             .file_name()
@@ -464,7 +465,10 @@ impl GameStore {
         // 正在等锁的进程拿到一把“已脱链”的锁，两个进程就会各锁一个 inode。
         // 每个锁文件只有几十字节，留在 .locks/ 里复用即可。
         let stamp = FileStamp::of(&target)?;
-        // 目录项变更也要落盘（同目录 rename，源/目标同属 games/）
+        // 目录项变更也要落盘：源可能是 games/sub/，目标固定在 games/
+        if let Some(src_dir) = path.parent() {
+            sync_dir(src_dir);
+        }
         sync_dir(&self.dir);
         drop(lock2);
         drop(lock1);
@@ -496,7 +500,10 @@ impl GameStore {
         }
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
-        // 跨目录：源目录和目标目录都同步
+        // 跨目录：源目录、games/ 和 .trash/ 都同步（源可能是 games/sub/）
+        if let Some(src_dir) = path.parent() {
+            sync_dir(src_dir);
+        }
         sync_dir(&self.dir);
         sync_dir(&trash);
         drop(lock);
@@ -1091,6 +1098,30 @@ mod tests {
         assert!(stamp.is_some());
         assert!(!path.exists());
         release.join().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn renaming_to_the_same_name_keeps_a_usable_stamp() {
+        let store = temp_store();
+        let path = store.dir().join("same.sgf");
+        std::fs::write(&path, "(;SZ[9];B[cc])").unwrap();
+
+        let (same, stamp) = store.rename(&path, "same").unwrap();
+        assert_eq!(same, path);
+        let stamp = stamp.expect("改成原名也要返回指纹");
+        // 用这个指纹保存应当正常写入，而不是因为 expected=None 裂出副本
+        let out = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(2, 2))],
+                opts(Some(stamp)),
+            )
+            .unwrap();
+        assert!(matches!(out, SaveOutcome::Written(_)));
         let _ = std::fs::remove_dir_all(store.dir());
     }
 

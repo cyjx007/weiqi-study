@@ -417,7 +417,9 @@ fn open_detects_size_komi_or_rule_changes_between_reads() {
     for changed in [
         "(;SZ[13]KM[7.5];B[cc];W[gg])",            // 只改棋盘大小
         "(;SZ[9]KM[0.5];B[cc];W[gg])",             // 只改贴目
-        "(;SZ[9]KM[7.5]RU[Japanese];B[cc];W[gg])", // 只改规则
+        "(;SZ[9]KM[7.5]RU[Japanese];B[cc];W[gg])", // 只改规则（映射到不同 RuleSet）
+        // 归一到同一个 RuleSet、但“是否可识别”变了，也必须发现
+        "(;SZ[9]KM[7.5]RU[New Zealand];B[cc];W[gg])",
     ] {
         std::fs::write(&path, original).unwrap();
         app.open_sgf_file(path.clone(), &sg).unwrap();
