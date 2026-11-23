@@ -425,24 +425,8 @@ impl AnalysisSession {
         self.seq += 1;
         let base = self.seq;
         let size = game.size();
-        let moves_json: Vec<Value> = game
-            .moves()
-            .iter()
-            .enumerate()
-            .map(|(i, mv)| {
-                let color = game.color_of_move(i as u16 + 1);
-                let coord = match mv {
-                    Move::Play(p) => gtp_coord(*p, size),
-                    Move::Pass => "pass".to_string(),
-                };
-                json!([color.sgf_char().to_string(), coord])
-            })
-            .collect();
-        let setup_json: Vec<Value> = game
-            .setup()
-            .iter()
-            .map(|(c, p)| json!([c.sgf_char().to_string(), gtp_coord(*p, size)]))
-            .collect();
+        let moves_json = history_json(game);
+        let setup_json = setup_json(game);
 
         let mut expected_ids = std::collections::HashSet::new();
         for (n, chunk) in turns.chunks(cfg.chunk.max(1)).enumerate() {
@@ -525,6 +509,35 @@ impl Drop for AnalysisSession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// 提交给 KataGo 的历史手：`[[颜色, 坐标], ...]`。
+///
+/// 颜色必须来自 `Game`（SGF 首手 / `PL` 决定），不能按“第一手是黑”硬编码；
+/// 白先棋谱整盘黑白对调就是这么来的（review v6 P1）。
+fn history_json(game: &Game) -> Vec<Value> {
+    let size = game.size();
+    game.moves()
+        .iter()
+        .enumerate()
+        .map(|(i, mv)| {
+            let color = game.color_of_move(i as u16 + 1);
+            let coord = match mv {
+                Move::Play(p) => gtp_coord(*p, size),
+                Move::Pass => "pass".to_string(),
+            };
+            json!([color.sgf_char().to_string(), coord])
+        })
+        .collect()
+}
+
+/// 提交给 KataGo 的开局摆子（AB/AW）。
+fn setup_json(game: &Game) -> Vec<Value> {
+    let size = game.size();
+    game.setup()
+        .iter()
+        .map(|(c, p)| json!([c.sgf_char().to_string(), gtp_coord(*p, size)]))
+        .collect()
 }
 
 /// 本地规则集 → KataGo 的 `rules` 预设名。直接用规范名，不再先折叠成 KoRule。
@@ -725,24 +738,28 @@ done
     }
 
     #[test]
-    fn query_sends_declared_first_player_colors() {
-        // 白先棋谱：历史里第一手必须是 W，不能因为 setup 为空就写成 B
-        let (engine, dir) = fake_engine(
-            r#"#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'["W","'*)
-      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-      echo "{\"id\":\"$id\",\"turnNumber\":1,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}" ;;
-    *) echo '{"error":"wrong move colors"}' ;;
-  esac
-done"#,
-        );
+    fn history_json_uses_declared_colors() {
+        // 白先棋谱：第一手必须是 W，不能因为空盘就写死 B
         let mut game =
-            Game::with_setup_rule_first(9, 7.5, Vec::new(), KoRule::default(), Color::White);
+            Game::with_setup_rules_first(9, 7.5, Vec::new(), RuleSet::CHINESE, Color::White);
         game.play(Move::Play(Point::new(2, 2))).unwrap();
-        engine.analyze_position(&game).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+        game.play(Move::Play(Point::new(6, 6))).unwrap();
+        assert_eq!(
+            history_json(&game),
+            vec![json!(["W", "C7"]), json!(["B", "G3"])]
+        );
+
+        // 黑先 + 摆子：仍然听文件的
+        let mut game = Game::with_setup_rules_first(
+            9,
+            7.5,
+            vec![(Color::Black, Point::new(0, 0))],
+            RuleSet::CHINESE,
+            Color::Black,
+        );
+        game.play(Move::Play(Point::new(2, 2))).unwrap();
+        assert_eq!(history_json(&game), vec![json!(["B", "C7"])]);
+        assert_eq!(setup_json(&game), vec![json!(["B", "A9"])]);
     }
 
     #[test]
@@ -770,25 +787,6 @@ while IFS= read -r line; do
 done"#,
         );
         let game = Game::with_rule(9, 7.5, KoRule::Simple);
-        engine.analyze_position(&game).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn query_sends_aga_rules_verbatim() {
-        // AGA 有自己的计分/劫规则，不能被折叠成 korean
-        let (engine, dir) = fake_engine(
-            r#"#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"rules":"aga"'*)
-      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-      echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}" ;;
-    *) echo '{"error":"rules not aga"}' ;;
-  esac
-done"#,
-        );
-        let game = Game::with_setup_rules_first(9, 7.5, Vec::new(), RuleSet::AGA, Color::Black);
         engine.analyze_position(&game).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }

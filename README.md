@@ -152,6 +152,8 @@ Command-line flags (`--help` is authoritative):
 | `--all` | off | Show every move in the table |
 | `--komi K` | from SGF (`7.5` fallback) | Override komi |
 | `--no-engine` | off | Parse the SGF only, skip the engine |
+| `--strict` | off | Treat any SGF warning as an error |
+| `-V`, `--version` | — | Print the version (useful after `nix profile upgrade`) |
 
 Auto-detection looks for `katago` on `PATH` and for a network shipped with a Steam
 board-game collection; set the variables explicitly if either is missing.

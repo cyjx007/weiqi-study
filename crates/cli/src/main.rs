@@ -28,6 +28,10 @@ fn run() -> Result<(), String> {
                 print_help();
                 return Ok(());
             }
+            "-V" | "--version" => {
+                println!("go-review {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             "--visits" => {
                 cfg.visits = args
                     .next()
@@ -127,6 +131,7 @@ fn print_help() {
   --no-engine     只解析棋谱，不调用引擎（自检用）
   --strict        棋谱有任何 warning 就报错（默认只警告）
   -h, --help      显示帮助
+  -V, --version   显示版本
 
 环境变量：
   KATAGO_BIN      默认 ~/go-study/katago/bin/katago
