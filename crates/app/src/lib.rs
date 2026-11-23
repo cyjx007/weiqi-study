@@ -489,6 +489,9 @@ impl App {
         self.cursor = Point::new(size / 2, size / 2);
         self.game = game;
         self.vs_ai = false;
+        // 打开棋谱 = 纯研究模式：不再自动分析/应手。AI 开关是显式偏好，
+        // 用户想人机对局时自己重新打开；只关 vs_ai 不足以停掉自动应手（next_action 看 ai_enabled）。
+        self.ai_enabled = false;
         self.file_stamp = stamp;
         self.current_file = new_file;
         self.warnings = sg.warnings.clone();
@@ -819,14 +822,15 @@ impl App {
     }
 
     /// 按 humanPolicy 概率抽一手；最后一位是 pass。
+    /// 长度必须精确是 `size*size + 1`：少 Pass 槽或多元素都不可信，直接放弃这份策略。
     fn sample_human_policy(&self, policy: &[f32]) -> Option<Move> {
         let size = self.size as usize;
         let cells = size * size;
-        if policy.len() < cells {
+        if policy.len() != cells + 1 {
             return None;
         }
         let mut choices: Vec<(usize, f32)> = Vec::new();
-        for (i, p) in policy.iter().take(cells + 1).enumerate() {
+        for (i, p) in policy.iter().enumerate() {
             if *p <= 0.0 {
                 continue;
             }

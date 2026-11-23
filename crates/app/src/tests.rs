@@ -543,6 +543,32 @@ fn opening_sgf_file_updates_ko_rule() {
     assert_eq!(app.game().rules(), RuleSet::default());
 }
 
+#[test]
+fn opening_a_stored_game_enters_study_mode() {
+    // 从人机对局切到棋谱：打开后不能继续自动分析/应手（只清 vs_ai 不够）
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.store = test_store();
+    start(&mut app);
+    app.ai_enabled = true;
+    app.human_enabled = true; // 拟人偏好本身保留，用户想再对局时重新开 AI
+    assert!(matches!(
+        app.next_action(),
+        Action::AiMove(_) | Action::Analyze
+    ));
+
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg])").unwrap();
+    app.open_sgf_file(std::env::temp_dir().join("weiqi-study-mode.sgf"), &sg)
+        .unwrap();
+
+    assert!(!app.ai_enabled, "打开棋谱应进入纯研究模式");
+    assert!(app.human_enabled, "拟人偏好保留，等用户重新开 AI");
+    assert_eq!(app.next_action(), Action::None, "不会自动分析或应手");
+
+    // 用户显式重新开启 AI 后仍然可用
+    app.toggle_ai();
+    assert!(app.ai_enabled);
+}
+
 fn eval(pos: usize, to_move: Color, wr: f32, best: Move) -> TurnEval {
     TurnEval {
         turn: pos as u16,
@@ -867,6 +893,40 @@ fn human_policy_drives_the_ai_move() {
     e.human_policy = Some(policy);
     app.evals.insert(3, e);
     assert_eq!(app.ai_choice(), Some(Move::Pass));
+}
+
+#[test]
+fn human_policy_length_must_match_the_board_exactly() {
+    let sg = sgf::parse("(;SZ[9];B[cc];W[gg];B[dd])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.ai_enabled = true;
+    app.human = Color::Black; // 轮白，AI
+    app.human_enabled = true;
+    let fallback = Move::Play(Point::new(0, 0));
+
+    // 恰好缺 Pass 槽（9*9=81）→ 整份策略作废，回退普通候选
+    let mut policy = vec![0.0f32; 9 * 9];
+    policy[4 * 9 + 4] = 1.0; // E5
+    let mut e = eval(3, Color::White, 0.5, fallback);
+    e.human_policy = Some(policy);
+    app.evals.insert(3, e);
+    assert_eq!(app.ai_choice(), Some(fallback));
+
+    // 多一个元素同样作废
+    let mut policy = vec![0.0f32; 9 * 9 + 2];
+    policy[4 * 9 + 4] = 1.0;
+    let mut e = eval(3, Color::White, 0.5, fallback);
+    e.human_policy = Some(policy);
+    app.evals.insert(3, e);
+    assert_eq!(app.ai_choice(), Some(fallback));
+
+    // 完整 82 位才按策略走
+    let mut policy = vec![0.0f32; 9 * 9 + 1];
+    policy[4 * 9 + 4] = 1.0;
+    let mut e = eval(3, Color::White, 0.5, fallback);
+    e.human_policy = Some(policy);
+    app.evals.insert(3, e);
+    assert_eq!(app.ai_choice(), Some(Move::Play(Point::new(4, 4))));
 }
 
 #[test]

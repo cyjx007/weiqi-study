@@ -277,7 +277,7 @@ mod tests {
     use crate::i18n::Lang;
     use crate::storage::GameStore;
     use crate::AppConfig;
-    use engine::{Candidate, TurnEval};
+    use engine::{Candidate, EngineConfig, TurnEval};
     use goban::{Color, Move, Point};
 
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -489,6 +489,83 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!ctrl.app.busy);
+    }
+
+    #[test]
+    fn unsupported_board_size_error_is_visible_and_does_not_stick_busy() {
+        use std::path::PathBuf;
+        use std::time::{Duration, Instant};
+
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("weiqi-ctrl-board-{}-{}", std::process::id(), n));
+        std::fs::create_dir(&dir).unwrap();
+        let model = dir.join("model.bin.gz");
+        let config = dir.join("analysis.cfg");
+        std::fs::write(&model, "fake").unwrap();
+        std::fs::write(&config, "fake").unwrap();
+
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  echo '{"error":"boardXSize 25 is larger than compiled MAX_LEN 19"}'
+done
+"#;
+        let config = AppConfig {
+            engine: EngineConfig {
+                katago: PathBuf::from("/bin/sh"),
+                model,
+                config,
+                human_model: None,
+                visits: 10,
+                chunk: 30,
+                timeout: Duration::from_secs(10),
+                extra_args: vec![
+                    "-c".to_string(),
+                    script.to_string(),
+                    dir.to_string_lossy().into_owned(),
+                ],
+            },
+        };
+        let mut app = App::new(25, 7.5, config);
+        app.store = test_store();
+        app.lang = Lang::Zh;
+        app.start_play_on(25);
+
+        let mut ctrl = Controller::new(app);
+        ctrl.app.busy = false;
+        ctrl.analyze();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctrl.app.busy && Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        ctrl.tick();
+
+        assert!(!ctrl.app.busy, "错误必须让 busy 复位，不能永久卡住");
+        assert!(
+            ctrl.app.status.contains("boardXSize"),
+            "用户要能看到引擎原始错误：{}",
+            ctrl.app.status
+        );
+        assert!(
+            ctrl.app.status.contains("MAX_LEN>19"),
+            "用户要看到可操作提示：{}",
+            ctrl.app.status
+        );
+        assert_eq!(ctrl.app.last_failed_pos(), Some(0), "同一局面不自动重试");
+
+        // 失败后仍能手动重新发起分析
+        ctrl.analyze();
+        assert!(ctrl.app.busy, "失败之后应允许重新分析");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ctrl.app.busy && Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!ctrl.app.busy);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
