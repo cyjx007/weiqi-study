@@ -153,6 +153,7 @@ Command-line flags (`--help` is authoritative):
 | `--komi K` | from SGF (`7.5` fallback) | Override komi |
 | `--no-engine` | off | Parse the SGF only, skip the engine |
 | `--strict` | off | Treat any SGF warning as an error |
+| `--game N` | `1` | Pick the N-th game when the file is an SGF collection |
 | `-V`, `--version` | — | Print the version (useful after `nix profile upgrade`) |
 
 Auto-detection looks for `katago` on `PATH` and for a network shipped with a Steam
@@ -226,6 +227,7 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
 ## Notes
 
 - SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. Root `PL` (explicit next player) is honoured; handicap setups default to White to move.
+- SGF collections (several game trees in one file) are parsed in full: the TUI/GUI open the first game with a visible warning, `go-review --game N` picks another. Leading/trailing junk is a parse error with a character position, never silently ignored.
 - Illegal SGF/GTP coordinates are parse errors, never silently turned into passes. Two consecutive passes are legal.
 - Malformed `KM`, out-of-turn moves and unrecognised `PL` are reported as warnings (status bar / stderr); `go-review --strict` turns them into errors.
 - Engine queries follow the SGF `RU` through an explicit rule set: Chinese, Japanese, Korean,

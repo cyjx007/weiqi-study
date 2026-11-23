@@ -152,6 +152,7 @@ TUI 按键：
 | `--komi K` | 取自 SGF（缺省 `7.5`） | 覆盖贴目 |
 | `--no-engine` | 关 | 只解析 SGF，不调引擎 |
 | `--strict` | 关 | 棋谱有任何 warning 就报错 |
+| `--game N` | `1` | 文件是多盘 SGF collection 时选第 N 盘 |
 | `-V`, `--version` | — | 显示版本（升级后确认装的是新版） |
 
 自动探测会找 `PATH` 里的 `katago`，以及 Steam 棋类合集自带的网络；找不到就显式设置上面
@@ -221,6 +222,7 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 ## 注意
 
 - SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
+- 一个文件里有多盘棋（SGF collection）会完整解析：TUI/GUI 打开第一盘并显示 warning，`go-review --game N` 可选其它盘；文件前后的多余内容会带字符位置报错，不再静默忽略
 - SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
 - 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
 - 提交给引擎的规则走一个显式规则集：中国 / 日本 / 韩国 / AGA / Ing 原样传给 KataGo

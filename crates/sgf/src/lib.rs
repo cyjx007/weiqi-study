@@ -33,17 +33,59 @@ impl SgfGame {
 
 type Props = Vec<(String, Vec<String>)>;
 
-pub fn parse(src: &str) -> Result<SgfGame, String> {
+/// 解析一个 SGF collection：标准允许一个文件里放多盘棋。
+///
+/// 每盘只读主线；盘内的其它分支仍然跳过（变化树另见 DESIGN）。
+pub fn parse_collection(src: &str) -> Result<Vec<SgfGame>, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut i = 0usize;
+    // 起始括号前只允许空白 / BOM，别的内容要报位置
     while i < chars.len() && chars[i] != '(' {
+        let c = chars[i];
+        if !c.is_whitespace() && c != '\u{feff}' {
+            return Err(format!("SGF 之前有多余内容：第 {} 个字符 {:?}", i + 1, c));
+        }
         i += 1;
     }
     if i >= chars.len() {
         return Err("不是 SGF：找不到起始的 (".to_string());
     }
-    let nodes = parse_tree(&chars, &mut i)?;
 
+    let mut games = Vec::new();
+    loop {
+        skip_ws(&chars, &mut i);
+        if i >= chars.len() {
+            break;
+        }
+        if chars[i] != '(' {
+            return Err(format!(
+                "SGF 尾部有多余内容：第 {} 个字符 {:?}",
+                i + 1,
+                chars[i]
+            ));
+        }
+        let nodes = parse_tree(&chars, &mut i)?;
+        games.push(build_game(&nodes)?);
+    }
+    if games.is_empty() {
+        return Err("不是 SGF：找不到起始的 (".to_string());
+    }
+    Ok(games)
+}
+
+/// 只读第一盘；文件里还有更多棋谱时给 warning，绝不静默截断。
+pub fn parse(src: &str) -> Result<SgfGame, String> {
+    let mut games = parse_collection(src)?;
+    let mut first = games.remove(0);
+    if !games.is_empty() {
+        first
+            .warnings
+            .push(format!("文件含 {} 盘棋，只打开第一盘", games.len() + 1));
+    }
+    Ok(first)
+}
+
+fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
     let mut out = SgfGame {
         size: 19,
         ..Default::default()
@@ -595,6 +637,56 @@ mod tests {
         // 第 2 手乱序被跳过，第 3 手坐标非法：报错要按源文件的手数
         let err = parse("(;SZ[9];B[dd];B[cc];W[zz])").unwrap_err();
         assert!(err.contains("第 3 手"), "{err}");
+    }
+
+    #[test]
+    fn parses_a_collection_of_games() {
+        let src = "(;SZ[9]KM[5.5];B[cc];W[gg])(;SZ[13]RU[Japanese];B[dd];W[ee])";
+        let games = parse_collection(src).unwrap();
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].size, 9);
+        assert_eq!(games[0].moves.len(), 2);
+        assert_eq!(games[1].size, 13);
+        assert_eq!(games[1].rules.as_deref(), Some("Japanese"));
+
+        // 单盘读取只拿第一盘，但必须提示还有别的，不能静默截断
+        let first = parse(src).unwrap();
+        assert_eq!(first.size, 9);
+        assert!(
+            first.warnings.iter().any(|w| w.contains("2 盘棋")),
+            "{:?}",
+            first.warnings
+        );
+        // --strict 会把这条 warning 变成错误
+        assert!(parse_strict(src).unwrap_err().contains("盘棋"));
+    }
+
+    #[test]
+    fn collection_boundaries_survive_brackets_and_variations() {
+        // 注释里的括号不能打乱树边界；第一盘里面的变化分支要跳过，
+        // 第二个顶层 tree 仍然要能读到。
+        let src = "(;SZ[9]C[a ) and ( inside];B[cc](;W[dd])(;W[gg]))(;SZ[9];B[ff])";
+        let games = parse_collection(src).unwrap();
+        assert_eq!(games.len(), 2);
+        assert_eq!(
+            games[0].moves,
+            vec![Move::Play(Point::new(2, 2)), Move::Play(Point::new(3, 3))]
+        );
+        assert_eq!(games[1].moves, vec![Move::Play(Point::new(5, 5))]);
+    }
+
+    #[test]
+    fn trailing_and_leading_junk_report_position() {
+        let err = parse("(;SZ[9];B[cc]) oops").unwrap_err();
+        assert!(err.contains("尾部有多余内容"), "{err}");
+        assert!(err.contains("第 "), "要报字符位置：{err}");
+
+        let err = parse("junk(;SZ[9];B[cc])").unwrap_err();
+        assert!(err.contains("之前有多余内容"), "{err}");
+
+        // 空白和 BOM 是合法的前缀
+        assert!(parse("\u{feff}\n  (;SZ[9];B[cc])").is_ok());
+        assert!(parse("(;SZ[9];B[cc])\n\n").is_ok());
     }
 
     #[test]

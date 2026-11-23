@@ -20,6 +20,7 @@ fn run() -> Result<(), String> {
     let mut show_all = false;
     let mut no_engine = false;
     let mut strict = false;
+    let mut game_no = 1usize;
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -57,19 +58,42 @@ fn run() -> Result<(), String> {
             "--all" => show_all = true,
             "--no-engine" => no_engine = true,
             "--strict" => strict = true,
+            "--game" => {
+                game_no = args
+                    .next()
+                    .ok_or("--game 需要序号")?
+                    .parse()
+                    .map_err(|_| "--game 不是数字")?;
+                if game_no == 0 {
+                    return Err("--game 从 1 开始".to_string());
+                }
+            }
             other if other.starts_with('-') => return Err(format!("未知参数 {other}")),
             other => path = Some(other.to_string()),
         }
     }
 
-    let path =
-        path.ok_or("用法：go-review <棋谱.sgf> [--visits N] [--min-loss P] [--all] [--strict]")?;
+    let path = path.ok_or(
+        "用法：go-review <棋谱.sgf> [--visits N] [--min-loss P] [--all] [--strict] [--game N]",
+    )?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读不了 {path}：{e}"))?;
-    let sg = if strict {
-        sgf::parse_strict(&text)?
-    } else {
-        sgf::parse(&text)?
-    };
+    // SGF collection：默认第一盘，--game N 选其它盘；不静默丢后面的棋谱
+    let games = sgf::parse_collection(&text)?;
+    if game_no > games.len() {
+        return Err(format!(
+            "文件只有 {} 盘棋，--game {game_no} 超出范围",
+            games.len()
+        ));
+    }
+    if games.len() > 1 {
+        eprintln!("文件含 {} 盘棋，已选第 {game_no} 盘", games.len());
+    }
+    let sg = &games[game_no - 1];
+    if strict {
+        if let Some(w) = sg.warnings.first() {
+            return Err(format!("严格模式：{w}（共 {} 条警告）", sg.warnings.len()));
+        }
+    }
     for w in &sg.warnings {
         eprintln!("警告：{w}");
     }
@@ -130,6 +154,7 @@ fn print_help() {
   --komi K        覆盖贴目
   --no-engine     只解析棋谱，不调用引擎（自检用）
   --strict        棋谱有任何 warning 就报错（默认只警告）
+  --game N        多盘棋（SGF collection）里选第 N 盘，默认 1
   -h, --help      显示帮助
   -V, --version   显示版本
 
