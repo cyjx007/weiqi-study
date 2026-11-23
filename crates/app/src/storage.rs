@@ -464,6 +464,8 @@ impl GameStore {
         // 正在等锁的进程拿到一把“已脱链”的锁，两个进程就会各锁一个 inode。
         // 每个锁文件只有几十字节，留在 .locks/ 里复用即可。
         let stamp = FileStamp::of(&target)?;
+        // 目录项变更也要落盘（同目录 rename，源/目标同属 games/）
+        sync_dir(&self.dir);
         drop(lock2);
         drop(lock1);
         Ok((target, stamp))
@@ -476,6 +478,7 @@ impl GameStore {
         }
         let trash = self.dir.join(".trash");
         fs::create_dir_all(&trash).map_err(|e| format!("创建回收站失败：{e}"))?;
+        sync_dir(&self.dir);
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -493,6 +496,9 @@ impl GameStore {
         }
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
+        // 跨目录：源目录和目标目录都同步
+        sync_dir(&self.dir);
+        sync_dir(&trash);
         drop(lock);
         Ok(target)
     }
