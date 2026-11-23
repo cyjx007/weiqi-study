@@ -33,11 +33,15 @@ jobs:
         run: |
           sudo apt-get install -y xvfb xdotool
           WEIQI_SMOKE_REQUIRE=1 WEIQI_GUI_BIN=target/release/weiqi-gui \
-            timeout 120 ./scripts/gui-smoke.sh --switch
+            timeout 180 ./scripts/gui-smoke.sh --switch --import
       - name: TUI smoke (pty)
         run: |
           WEIQI_TUI_BIN=target/release/weiqi-tui \
             timeout 60 python3 scripts/tui-smoke.py
+      - name: TUI image protocol smoke (kitty/sixel encoders)
+        run: |
+          WEIQI_TUI_BIN=target/release/weiqi-tui \
+            timeout 90 python3 scripts/tui-image-smoke.py
 
   # 最低支持版本必须和 Cargo.toml 的 rust-version、README 一致。
   # 依赖声明的 MSRV 里最高的是 gtk4/glib 0.22 一代（1.92）。
