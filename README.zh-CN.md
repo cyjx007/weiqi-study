@@ -221,6 +221,7 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 
 ## 注意
 
+- SGF 支持的属性：`SZ` `KM` `RU` `PL` `HA` `RE` `AB` `AW` `AE` `B` `W`，其余当元数据；`AE` 清除开局摆子（中途 `AE` 会报错）。常见元数据（`GM/FF/CA/PB/PW/DT/C/LB` 等）静默忽略，真正不认识的属性汇总成一条 warning
 - SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
 - 因此工具存进 `games/` 的副本只保留主线，**原来的变化分支会丢**；原始文件不会被改（copy-on-open），需要分支就留好原文件。`go-review` 同样只分析主线
 - 一个文件里有多盘棋（SGF collection）会完整解析：TUI/GUI 打开第一盘并显示 warning，`go-review --game N` 可选其它盘；文件前后的多余内容会带字符位置报错，不再静默忽略

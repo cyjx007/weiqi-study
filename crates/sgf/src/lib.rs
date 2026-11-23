@@ -12,6 +12,10 @@ pub struct SgfGame {
     pub rules: Option<String>,
     /// 先手方：根 PL 或首手 B/W；两者都没有时为 None（交给 `first_to_move` 推断）
     pub first: Option<Color>,
+    /// 让子数（`HA`）。只作为元数据保留，先手推断会在缺 `PL`/首手时参考它。
+    pub handicap: Option<u8>,
+    /// 对局结果（`RE`），原样保留。
+    pub result: Option<String>,
     pub setup: Vec<(Color, Point)>,
     pub moves: Vec<Move>,
     /// 宽松解析时遇到的问题（非法 KM、乱序手、无法识别的 PL 等）
@@ -22,7 +26,9 @@ impl SgfGame {
     /// 重放时的先手方：优先用文件声明的颜色，没有落子再按让子惯例推断。
     pub fn first_to_move(&self) -> Color {
         self.first.unwrap_or_else(|| {
-            if self.setup.iter().any(|(c, _)| *c == Color::Black) {
+            // 让子棋白先：有黑摆子，或 HA 声明了让子数
+            let handicap = self.handicap.is_some_and(|n| n >= 2);
+            if handicap || self.setup.iter().any(|(c, _)| *c == Color::Black) {
                 Color::White
             } else {
                 Color::Black
@@ -32,6 +38,20 @@ impl SgfGame {
 }
 
 type Props = Vec<(String, Vec<String>)>;
+
+/// 本工具真正解析的属性。
+const SUPPORTED_PROPS: &[&str] = &[
+    "SZ", "KM", "PL", "RU", "AB", "AW", "AE", "B", "W", "HA", "RE",
+];
+
+/// 常见但不影响对局语义的 SGF 属性：读到就跳过，不报“不支持”。
+/// 白名单是有意放宽的——否则一般棋谱（PB/PW/DT/C/LB...）全会被 warning 淹掉。
+const KNOWN_METADATA: &[&str] = &[
+    "GM", "FF", "CA", "ST", "AP", "DT", "PB", "PW", "BR", "WR", "BT", "WT", "US", "AN", "SO", "CP",
+    "ON", "GC", "TM", "OT", "GN", "EV", "RO", "PC", "C", "N", "V", "DM", "GB", "GW", "PM", "FG",
+    "VW", "LB", "TR", "SQ", "CR", "MA", "DD", "AR", "LN", "MN", "TB", "TW", "BL", "WL", "OB", "OW",
+    "TC", "AT", "M",
+];
 
 /// 解析一个 SGF collection：标准允许一个文件里放多盘棋。
 ///
@@ -181,6 +201,24 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                         out.rules = Some(v.trim().to_string());
                     }
                 }
+                "HA" => {
+                    let raw = values.first().map(|s| s.trim()).unwrap_or("");
+                    match raw.parse::<u8>() {
+                        Ok(n) if n >= 2 => out.handicap = Some(n),
+                        Ok(n) => out
+                            .warnings
+                            .push(format!("HA[{n}] 不是有效让子数（至少 2），已忽略")),
+                        Err(_) => out.warnings.push(format!("HA[{raw}] 不是数字，已忽略")),
+                    }
+                }
+                "RE" => {
+                    if let Some(v) = values.first() {
+                        let v = v.trim();
+                        if !v.is_empty() {
+                            out.result = Some(v.to_string());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -203,6 +241,8 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
     // 第二遍：摆子 + 落子
     // 摆子只在还没有任何 B/W 之前允许（根节点拆成多个节点也兼容）
     let mut saw_move = false;
+    let mut cleared: Vec<Point> = Vec::new();
+    let mut ignored_props: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (node_idx, props) in nodes.iter().enumerate() {
         // 按节点判断：同一节点里 AB 写在 B 后面也算开局摆子
         let move_before_node = saw_move;
@@ -225,6 +265,16 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                         let p = parse_coord(v, out.size)
                             .map_err(|e| format!("{ident} 摆子坐标非法 [{v}]：{e}"))?;
                         out.setup.push((color, p));
+                    }
+                }
+                "AE" => {
+                    if move_before_node {
+                        return Err(format!("不支持中途清子：第 {} 个节点的 AE", node_idx + 1));
+                    }
+                    for v in values {
+                        let p = parse_coord(v, out.size)
+                            .map_err(|e| format!("AE 坐标非法 [{v}]：{e}"))?;
+                        cleared.push(p);
                     }
                 }
                 "B" | "W" => {
@@ -253,10 +303,21 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
                         .map_err(|e| format!("第 {move_nodes} 手坐标非法 [{raw}]：{e}"))?;
                     out.moves.push(mv);
                 }
-                _ => {}
+                _ => {
+                    // 常见元数据静默跳过；真正不认识的属性汇总成一条提示。
+                    // 不要逐个 warning：实战棋谱动辄十几个属性，会把状态栏淹掉。
+                    if !SUPPORTED_PROPS.contains(&ident.as_str())
+                        && !KNOWN_METADATA.contains(&ident.as_str())
+                    {
+                        ignored_props.insert(ident.clone());
+                    }
+                }
             }
         }
     }
+
+    // AE 在 AB/AW 之后统一生效（同一节点里的先后顺序不影响结果）
+    out.setup.retain(|(_, p)| !cleared.contains(p));
 
     if out.moves.is_empty() && out.setup.is_empty() {
         return Err("没有找到任何落子（可能是空棋谱或只含变化图）".to_string());
@@ -264,6 +325,19 @@ fn build_game(nodes: &[Props]) -> Result<SgfGame, String> {
     // 规则不认识就明确告警，不能静默按 Chinese 处理
     if let Some(w) = rules_warning(out.rules.as_deref()) {
         out.warnings.push(w);
+    }
+    if !ignored_props.is_empty() {
+        let total = ignored_props.len();
+        let mut list: Vec<String> = ignored_props.into_iter().collect();
+        list.truncate(8);
+        let more = if total > list.len() {
+            format!(" 等 {total} 个")
+        } else {
+            String::new()
+        };
+        // 状态栏只显示前 5 条，这条插到最前才不会被挤掉
+        out.warnings
+            .insert(0, format!("忽略了不支持的属性：{}{more}", list.join(", ")));
     }
     // 状态栏只有一行，warning 太多反而看不清
     if out.warnings.len() > 5 {
@@ -922,6 +996,108 @@ mod tests {
     }
 
     /// 文件里的 B/W 是事实：有开局摆子也不能把第一手吞掉。
+    #[test]
+    fn ae_clears_setup_stones() {
+        // AE 只清开局摆子；同节点里 AB/AW/AE 的先后顺序不影响结果
+        // 没有 B/W 时先手才由摆子/HA 推断
+        let g = parse("(;SZ[9]AB[dd][gg]AW[cc]AE[dd])").unwrap();
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+        let points: Vec<(Color, Point)> = g.setup.clone();
+        assert!(
+            !points.iter().any(|(_, p)| *p == Point::new(3, 3)),
+            "dd 应被 AE 清掉：{points:?}"
+        );
+        assert!(points.contains(&(Color::Black, Point::new(6, 6))));
+        assert!(points.contains(&(Color::White, Point::new(2, 2))));
+        // 清掉的正好是黑子 dd，剩下的还有黑子 gg → 仍是白先
+        assert_eq!(g.first_to_move(), Color::White);
+
+        // 有显式首手时以文件为准（B[ee] 就是黑先），不能被摆子推翻
+        let g = parse("(;SZ[9]AB[gg];B[ee])").unwrap();
+        assert_eq!(g.first_to_move(), Color::Black);
+
+        // 把所有黑子都清掉：回到黑先
+        let g = parse("(;SZ[9]AB[dd]AE[dd];B[cc])").unwrap();
+        assert!(g.setup.is_empty());
+        assert_eq!(g.first_to_move(), Color::Black);
+    }
+
+    #[test]
+    fn mid_game_ae_is_rejected() {
+        let err = parse("(;SZ[9];B[cc];AE[cc])").unwrap_err();
+        assert!(err.contains("中途清子"), "{err}");
+        assert!(err.contains("第 3 个节点"), "{err}");
+    }
+
+    #[test]
+    fn handicap_is_kept_and_drives_white_first() {
+        let g = parse("(;SZ[19]HA[2]AB[pd][dp];W[dd])").unwrap();
+        assert_eq!(g.handicap, Some(2));
+        assert_eq!(g.first_to_move(), Color::White);
+
+        // 只有 HA、没有 AB 的棋谱也该白先
+        let g = parse("(;SZ[19]HA[3];W[dd])").unwrap();
+        assert_eq!(g.handicap, Some(3));
+        assert_eq!(g.first_to_move(), Color::White);
+
+        // 非法值只警告，不崩溃
+        let g = parse("(;SZ[19]HA[x];B[dd])").unwrap();
+        assert_eq!(g.handicap, None);
+        assert!(
+            g.warnings.iter().any(|w| w.contains("HA")),
+            "{:?}",
+            g.warnings
+        );
+
+        let g = parse("(;SZ[19]HA[1];B[dd])").unwrap();
+        assert_eq!(g.handicap, None);
+        assert!(
+            g.warnings.iter().any(|w| w.contains("让子数")),
+            "{:?}",
+            g.warnings
+        );
+    }
+
+    #[test]
+    fn result_metadata_is_kept_without_warning() {
+        let g = parse("(;SZ[9]RE[W+2.5];B[cc];W[gg])").unwrap();
+        assert_eq!(g.result.as_deref(), Some("W+2.5"));
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
+
+        let g = parse("(;SZ[9]RE[];B[cc])").unwrap();
+        assert_eq!(g.result, None, "空 RE 不当作结果");
+    }
+
+    #[test]
+    fn unknown_props_are_summarised_once() {
+        // SGF 属性名必须大写；小写会被当成格式错误（这是规范行为）
+        let g = parse("(;SZ[9]XFOO[1]YBAR[2];B[cc];W[gg])").unwrap();
+        let hits: Vec<&String> = g
+            .warnings
+            .iter()
+            .filter(|w| w.contains("不支持的属性"))
+            .collect();
+        assert_eq!(hits.len(), 1, "只汇总一条：{:?}", g.warnings);
+        assert!(
+            hits[0].contains("XFOO") && hits[0].contains("YBAR"),
+            "{}",
+            hits[0]
+        );
+    }
+
+    #[test]
+    fn common_metadata_is_silent_so_strict_mode_still_works() {
+        let src = "(;GM[1]FF[4]CA[UTF-8]AP[app:1.0]DT[2026-01-01]PB[a]PW[b]BR[1d]WR[2d]\
+RE[W+R]C[hello]LB[dd:A]TR[cc];B[cc];W[gg])";
+        let g = parse(src).unwrap();
+        assert!(
+            g.warnings.is_empty(),
+            "常见元数据不该产生 warning：{:?}",
+            g.warnings
+        );
+        assert_eq!(g.result.as_deref(), Some("W+R"));
+    }
+
     #[test]
     fn first_to_move_infers_from_setup() {
         let ab = parse("(;SZ[9]AB[dd])").unwrap();

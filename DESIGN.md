@@ -64,7 +64,7 @@ weiqi-study/               # 实际放在 weiqi-study/
 ├─ Cargo.toml                # workspace
 ├─ crates/
 │  ├─ goban/                 # 规则：Board/Position/Game、提子、劫、禁入点、面积数子
-│  ├─ sgf/                   # SGF 子集：SZ/KM/RU/B/W/AB/AW/C，只读主线
+│  ├─ sgf/                   # SGF 子集：SZ/KM/RU/PL/HA/RE/B/W/AB/AW/AE，只读主线
 │  ├─ engine/                # KataGo 进程管理 + 协议
 │  ├─ review/                # 讲评模板（纯函数）
 │  ├─ app/                   # AppState（导航/落子/分析缓存）+ Controller（spawn/tick），M1 已实现

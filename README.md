@@ -226,6 +226,7 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
 
 ## Notes
 
+- SGF: supports `SZ` `KM` `RU` `PL` `HA` `RE` `AB` `AW` `AE` `B` `W`; the rest is metadata. `AE` clears setup stones (mid-game `AE` is rejected). Common metadata (`GM/FF/CA/PB/PW/DT/C/LB`...) is read and ignored silently; genuinely unknown properties produce one summarised warning.
 - SGF: main line only; variation trees in the file are ignored. `V` previews the engine PV, not SGF branches. Root `PL` (explicit next player) is honoured; handicap setups default to White to move.
 - Because only the main line is kept, the copy the tool saves into `games/` loses any extra branches. The original file is never modified (copy-on-open), so keep it if you need the variations; `go-review` likewise analyses the main line only.
 - SGF collections (several game trees in one file) are parsed in full: the TUI/GUI open the first game with a visible warning, `go-review --game N` picks another. Leading/trailing junk is a parse error with a character position, never silently ignored.
