@@ -15,6 +15,7 @@ pub struct Panels {
     pub comment: gtk::Label,
     pub status: gtk::Label,
     pub games: gtk::DropDown,
+    pub help_btn: gtk::Button,
     pub lang_btn: gtk::Button,
     pub new_btn: gtk::MenuButton,
     pub import_btn: gtk::Button,
@@ -76,6 +77,7 @@ impl Panels {
         let games = gtk::DropDown::from_strings(&["—"]);
         games.set_hexpand(true);
 
+        let help_btn = gtk::Button::with_label("?");
         let lang_btn = gtk::Button::with_label("EN");
         let new_btn = gtk::MenuButton::new();
         let import_btn = gtk::Button::with_label("");
@@ -238,8 +240,11 @@ impl Panels {
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         status.add_css_class("status-label");
         status.set_hexpand(true);
+        help_btn.add_css_class("pill");
+        help_btn.set_tooltip_text(None);
         lang_btn.add_css_class("pill");
         footer.append(&status);
+        footer.append(&help_btn);
         footer.append(&lang_btn);
         side.append(&footer);
 
@@ -253,6 +258,7 @@ impl Panels {
             comment,
             status,
             games,
+            help_btn,
             lang_btn,
             new_btn,
             import_btn,
@@ -416,6 +422,7 @@ impl Panels {
             self.rank.set_selected(app.human_rank as u32);
         }
         self.updating_controls = false;
+        self.help_btn.set_tooltip_text(Some(s.help));
         self.lang_btn
             .set_label(if app.lang.is_zh() { "EN" } else { "中文" });
 

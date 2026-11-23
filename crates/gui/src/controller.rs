@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use app::i18n::strings;
+use app::i18n::{strings, Lang};
 use app::{App, AppConfig, Controller, VISIT_PRESETS};
 use gtk::{gdk, gio, glib};
 
@@ -40,6 +40,7 @@ pub fn build_ui(application: &adw::Application) {
     let games = panels.games.clone();
     let lang_btn = panels.lang_btn.clone();
     let import_btn = panels.import_btn.clone();
+    let help_btn = panels.help_btn.clone();
     let analyse_btn = panels.analyse_btn.clone();
     let review_btn = panels.review_btn.clone();
     let undo_btn = panels.undo_btn.clone();
@@ -188,6 +189,12 @@ pub fn build_ui(application: &adw::Application) {
                 gdk::Key::a => ui.ctrl.analyze(),
                 gdk::Key::A => ui.ctrl.review(),
                 gdk::Key::b => ui.ctrl.app.next_blunder(),
+                gdk::Key::question => {
+                    let lang = ui.ctrl.app.lang;
+                    drop(ui);
+                    show_help_dialog(&window_c, lang);
+                    return glib::Propagation::Stop;
+                }
                 gdk::Key::q => {
                     window_c.close();
                     return glib::Propagation::Stop;
@@ -224,6 +231,16 @@ pub fn build_ui(application: &adw::Application) {
         let ui = ui.clone();
         let window_i = window.clone();
         import_btn.connect_clicked(move |_| open_import_dialog(ui.clone(), window_i.clone()));
+    }
+    {
+        let ui = ui.clone();
+        let window_h = window.clone();
+        help_btn.connect_clicked(move |_| {
+            let Ok(ui) = ui.try_borrow() else {
+                return;
+            };
+            show_help_dialog(&window_h, ui.ctrl.app.lang);
+        });
     }
     {
         let ui = ui.clone();
@@ -602,6 +619,24 @@ pub fn build_ui(application: &adw::Application) {
 fn refresh(ui: &mut Ui) {
     ui.panels.refresh(&mut ui.ctrl.app);
     ui.area.queue_draw();
+}
+
+/// 显示快捷键/操作说明；`?` 键和底部 `?` 按钮共用。
+fn show_help_dialog(window: &adw::ApplicationWindow, lang: Lang) {
+    let s = strings(lang);
+    let body = s
+        .help_lines
+        .iter()
+        .map(|(key, action)| format!("{key} — {action}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let dialog = adw::MessageDialog::builder()
+        .heading(s.help)
+        .body(body)
+        .build();
+    dialog.add_response("close", s.ok);
+    dialog.set_transient_for(Some(window));
+    dialog.present();
 }
 
 /// 打开“导入 SGF”文件对话框；按钮和 `o` 键共用。
