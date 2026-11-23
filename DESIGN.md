@@ -296,7 +296,7 @@ pub struct EngineConfig {
 | `goban` | 单测：劫（三种）、倒扑、禁入点、自杀、Pass/连续 Pass、面积数子、先手 |
 | `sgf` | 单测：属性值/截断/转义、PL/HA/AE、RU 映射、collection、写回往返 |
 | `engine` | 假引擎：`katago=/bin/sh -c <脚本>`（不写可执行文件，避免 ETXTBSY）；协议、字段、超时、恢复 |
-| `review` | 快照/语义断言：固定 `TurnEval` → 断言文本（语言显式固定） |
+| `review` | 快照/语义断言：固定 `TurnEval` → 断言文本（语言显式固定）；`build()` 校验 `evals` 精确覆盖 turn `0..=n`，返回 `Result` 而不是索引 panic |
 | `app` | 单测：导航、分支换线、缓存失效、存储冲突、预览、拟人策略 |
 | 端到端 | `crates/app/tests/e2e_fixtures.rs` + 7 份 fixtures：PL[W]、HA+AB、Pass、变化、collection、未知 RU、AGA |
 | GUI | `scripts/gui-smoke.sh`：Xvfb 启动、按键、切换棋谱、CPU 上限 |

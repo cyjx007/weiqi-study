@@ -162,7 +162,7 @@ impl Controller {
         std::thread::spawn(move || {
             let result = engine
                 .analyze_game(&game, |_, _| {})
-                .map(|evals| review::build(english, &game, &evals, 5.0));
+                .and_then(|evals| review::build(english, &game, &evals, 5.0));
             let _ = tx.send(AppEvent::Review {
                 generation,
                 revision,

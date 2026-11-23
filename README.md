@@ -151,11 +151,11 @@ Command-line flags (`--help` is authoritative):
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--visits N` | `120` | Visits per position: more is slower and stronger |
+| `--visits N` | `120` | Visits per position, 10–5000: more is slower and stronger |
 | `--mode auto\|image\|text` | `auto` | Board renderer: `auto` probes kitty/sixel/iTerm2 and falls back to the text grid; `image` errors if unsupported; `text` forces the dot grid |
-| `--min-loss P` | `5` | Only show moves that lost at least P winrate points |
+| `--min-loss P` | `5` | Only show moves that lost at least P winrate points (finite, ≥ 0) |
 | `--all` | off | Show every move in the table |
-| `--komi K` | from SGF (`7.5` fallback) | Override komi |
+| `--komi K` | from SGF (`7.5` fallback) | Override komi (negative values allowed) |
 | `--no-engine` | off | Parse the SGF only, skip the engine |
 | `--strict` | off | Treat any SGF warning as an error |
 | `--game N` | `1` | Pick the N-th game when the file is an SGF collection |

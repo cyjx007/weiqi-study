@@ -278,9 +278,35 @@ fn score_phrase(
     }
 }
 
-pub fn build(english: bool, game: &Game, evals: &[TurnEval], threshold: f32) -> Review {
+/// 把整盘分析结果转成复盘。
+///
+/// 前置条件由函数自己检查：`evals` 必须恰好覆盖 `turn 0..=moves.len()` 且顺序一致。
+/// 不满足时返回带诊断信息的错误，而不是索引越界 panic。
+pub fn build(
+    english: bool,
+    game: &Game,
+    evals: &[TurnEval],
+    threshold: f32,
+) -> Result<Review, String> {
     let size = game.size();
     let n = game.moves().len();
+    let expected = n + 1;
+    if evals.len() != expected {
+        return Err(format!(
+            "全盘复盘需要 {expected} 个局面结果（turn 0..={n}），实际收到 {}",
+            evals.len()
+        ));
+    }
+    if let Some((i, ev)) = evals
+        .iter()
+        .enumerate()
+        .find(|(i, ev)| ev.turn as usize != *i)
+    {
+        return Err(format!(
+            "复盘结果顺序不符：第 {i} 个结果的 turn 是 {}，应为 {i}",
+            ev.turn
+        ));
+    }
     let mut deltas = Vec::with_capacity(n);
 
     for i in 1..=n {
@@ -522,7 +548,7 @@ pub fn build(english: bool, game: &Game, evals: &[TurnEval], threshold: f32) -> 
         details.push(s);
     }
 
-    Review {
+    Ok(Review {
         english,
         size,
         header,
@@ -531,7 +557,7 @@ pub fn build(english: bool, game: &Game, evals: &[TurnEval], threshold: f32) -> 
         blunders,
         summary,
         details,
-    }
+    })
 }
 
 impl Review {
@@ -965,11 +991,50 @@ mod tests {
             fake_eval(1, Color::White, 0.40),
             fake_eval(2, Color::Black, 0.40),
         ];
-        let r = build(false, &game, &evals, 5.0);
+        let r = build(false, &game, &evals, 5.0).unwrap();
         // 黑方胜率 60% -> 40%，亏 20 个点
         assert!((r.deltas[0].loss - 20.0).abs() < 0.01);
         // 白方视角：60% -> 60%，没亏没赚
         assert!(r.deltas[1].loss.abs() < 0.01);
+    }
+
+    #[test]
+    fn build_rejects_incomplete_or_misordered_eval_lists() {
+        let mut game = Game::new(9, 7.5);
+        game.play(Move::Play(Point::new(2, 2))).unwrap(); // B
+        game.play(Move::Play(Point::new(6, 6))).unwrap(); // W
+                                                          // 2 手需要 turn 0..=2 共 3 个结果
+        let short = vec![
+            fake_eval(0, Color::Black, 0.5),
+            fake_eval(1, Color::White, 0.5),
+        ];
+        let err = build(false, &game, &short, 5.0).unwrap_err();
+        assert!(err.contains("3 个"), "{err}");
+        assert!(err.contains("实际收到 2"), "{err}");
+
+        let long = vec![
+            fake_eval(0, Color::Black, 0.5),
+            fake_eval(1, Color::White, 0.5),
+            fake_eval(2, Color::Black, 0.5),
+            fake_eval(3, Color::White, 0.5),
+        ];
+        let err = build(false, &game, &long, 5.0).unwrap_err();
+        assert!(err.contains("实际收到 4"), "{err}");
+
+        // 数量对但顺序错：不能让索引错位算出错误的点评
+        let swapped = vec![
+            fake_eval(1, Color::Black, 0.5),
+            fake_eval(0, Color::White, 0.5),
+            fake_eval(2, Color::Black, 0.5),
+        ];
+        let err = build(false, &game, &swapped, 5.0).unwrap_err();
+        assert!(err.contains("顺序"), "{err}");
+        assert!(err.contains("第 0 个"), "{err}");
+
+        // 空棋谱 + 一个结果仍然合法
+        let empty = Game::new(9, 7.5);
+        let r = build(false, &empty, &[fake_eval(0, Color::Black, 0.5)], 5.0).unwrap();
+        assert_eq!(r.deltas.len(), 0);
     }
 
     #[test]
@@ -980,7 +1045,7 @@ mod tests {
             fake_eval(0, Color::Black, 0.5),
             fake_eval(1, Color::White, 0.5),
         ];
-        let r = build(false, &game, &evals, 5.0);
+        let r = build(false, &game, &evals, 5.0).unwrap();
         assert_eq!(r.render(5.0, true), r.render(5.0, true));
     }
 }
