@@ -183,7 +183,14 @@ impl App {
     }
 
     fn rebuild(&mut self) -> Result<(), String> {
-        let mut game = Game::with_setup_and_rule(self.size, self.komi, self.setup.clone(), self.ko);
+        // 先手是棋谱事实（SGF 首手颜色 / PL），不能用 with_setup_and_rule 重新猜
+        let mut game = Game::with_setup_rule_first(
+            self.size,
+            self.komi,
+            self.setup.clone(),
+            self.ko,
+            self.first,
+        );
         for (i, mv) in self.moves[..self.pos].iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -221,7 +228,13 @@ impl App {
 
     /// 整盘快照（复盘用）。
     pub fn full_game(&self) -> Result<Game, String> {
-        let mut game = Game::with_setup_and_rule(self.size, self.komi, self.setup.clone(), self.ko);
+        let mut game = Game::with_setup_rule_first(
+            self.size,
+            self.komi,
+            self.setup.clone(),
+            self.ko,
+            self.first,
+        );
         for (i, mv) in self.moves.iter().enumerate() {
             game.play(*mv)
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
@@ -1100,6 +1113,55 @@ mod tests {
         // AW 摆白子、黑先：cc 必须落成黑子，gg 必须落成白子
         let sg = sgf::parse("(;SZ[9]AW[dd];B[cc];W[gg])").unwrap();
         let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        let board = &app.game().position().board;
+        assert_eq!(board.at(Point::new(2, 2)), Some(Color::Black), "cc 应是黑");
+        assert_eq!(board.at(Point::new(6, 6)), Some(Color::White), "gg 应是白");
+    }
+
+    #[test]
+    fn white_first_sgf_keeps_colors_through_rebuild_and_full_game() {
+        // 白先、没有摆子：from_sgf 走 rebuild，最容易把先手丢掉
+        let sg = sgf::parse("(;SZ[9]PL[W];W[cc];B[gg])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        assert_eq!(
+            app.game().color_of_move(1),
+            Color::White,
+            "from_sgf 重建后丢了白先"
+        );
+        let board = &app.game().position().board;
+        assert_eq!(board.at(Point::new(2, 2)), Some(Color::White), "cc 应是白");
+        assert_eq!(board.at(Point::new(6, 6)), Some(Color::Black), "gg 应是黑");
+
+        // full_game 是复盘用的整盘快照，也必须保持同一先手
+        let full = app.full_game().unwrap();
+        assert_eq!(full.color_of_move(1), Color::White, "full_game 丢了白先");
+        assert_eq!(
+            full.position().board.at(Point::new(2, 2)),
+            Some(Color::White)
+        );
+        assert_eq!(
+            full.position().board.at(Point::new(6, 6)),
+            Some(Color::Black)
+        );
+
+        // 前后跳转（会再 rebuild 一次）不能改变先手语义
+        let mut app = app;
+        app.goto_start();
+        assert_eq!(app.game().color_of_move(1), Color::White);
+        app.goto_end();
+        assert_eq!(app.game().color_of_move(1), Color::White);
+    }
+
+    #[test]
+    fn explicit_black_first_with_setup_survives_rebuild() {
+        // AB 摆黑子通常意味着让子（白先），但 PL[B] 显式写了黑先就得听文件的
+        let sg = sgf::parse("(;SZ[9]PL[B]AB[dd];B[cc];W[gg])").unwrap();
+        let app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        assert_eq!(
+            app.game().color_of_move(1),
+            Color::Black,
+            "PL[B] 被摆子盖掉"
+        );
         let board = &app.game().position().board;
         assert_eq!(board.at(Point::new(2, 2)), Some(Color::Black), "cc 应是黑");
         assert_eq!(board.at(Point::new(6, 6)), Some(Color::White), "gg 应是白");

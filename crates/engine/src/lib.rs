@@ -728,6 +728,27 @@ done
     }
 
     #[test]
+    fn query_sends_declared_first_player_colors() {
+        // 白先棋谱：历史里第一手必须是 W，不能因为 setup 为空就写成 B
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'["W","'*)
+      id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+      echo "{\"id\":\"$id\",\"turnNumber\":1,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0},\"moveInfos\":[]}" ;;
+    *) echo '{"error":"wrong move colors"}' ;;
+  esac
+done"#,
+        );
+        let mut game =
+            Game::with_setup_rule_first(9, 7.5, Vec::new(), KoRule::default(), Color::White);
+        game.play(Move::Play(Point::new(2, 2))).unwrap();
+        engine.analyze_position(&game).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn katago_rules_follow_ko_rule() {
         assert_eq!(katago_rules(KoRule::Simple), "japanese");
         assert_eq!(katago_rules(KoRule::PositionalSuperko), "chinese");

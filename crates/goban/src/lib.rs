@@ -314,6 +314,8 @@ pub struct Game {
     komi: f32,
     setup: Vec<(Color, Point)>,
     ko: KoRule,
+    /// 开局第一手由谁下。SGF 的 `PL`/首手颜色是文件事实，不能事后靠摆子猜。
+    first: Color,
     positions: Vec<Position>,
     board_hashes: Vec<u64>,
     situational_hashes: Vec<u64>,
@@ -368,6 +370,7 @@ impl Game {
             komi,
             setup,
             ko,
+            first,
             positions: vec![pos],
             board_hashes: vec![board_hash],
             situational_hashes: vec![situational],
@@ -441,22 +444,36 @@ impl Game {
         &self.setup
     }
 
+    /// 开局第一手由谁下（SGF `PL` 或首手颜色）。
+    pub fn first_to_move(&self) -> Color {
+        self.first
+    }
+
     /// 第 `turn` 手（1-based）由谁下。
+    ///
+    /// `turn` 从 1 开始；传 0 属于调用方错误，用 [`Self::checked_color_of_move`] 表达。
     pub fn color_of_move(&self, turn: u16) -> Color {
-        self.to_move_at(turn - 1)
+        self.checked_color_of_move(turn)
+            .expect("color_of_move 的 turn 从 1 开始")
+    }
+
+    /// 第 `turn` 手（1-based）由谁下；`turn == 0` 不是合法手，返回 `None`。
+    pub fn checked_color_of_move(&self, turn: u16) -> Option<Color> {
+        turn.checked_sub(1).map(|t| self.to_move_at(t))
     }
 
     /// 第 `turn` 手开始前轮到谁（0 = 开局）。
+    ///
+    /// 历史范围内的局面直接读 `Position::to_move`（唯一事实来源）；
+    /// 超出历史的回合按奇偶从开局先手推，绝不重新从摆子猜测。
     pub fn to_move_at(&self, turn: u16) -> Color {
-        let first = if self.setup.is_empty() {
-            Color::Black
-        } else {
-            Color::White
-        };
+        if let Some(pos) = self.positions.get(turn as usize) {
+            return pos.to_move;
+        }
         if turn.is_multiple_of(2) {
-            first
+            self.first
         } else {
-            first.opposite()
+            self.first.opposite()
         }
     }
 
@@ -692,6 +709,59 @@ mod tests {
             Color::White,
         );
         assert_eq!(g.position().to_move, Color::White);
+    }
+
+    #[test]
+    fn explicit_first_player_drives_to_move_at() {
+        // PL[W] 且没有摆子：整盘棋都必须认白先，不能因为 setup 为空就退回黑先
+        let g = Game::with_setup_rule_first(9, 7.5, Vec::new(), KoRule::default(), Color::White);
+        assert_eq!(g.position().to_move, Color::White);
+        assert_eq!(g.to_move_at(0), Color::White);
+        assert_eq!(g.color_of_move(1), Color::White);
+        assert_eq!(g.to_move_at(1), Color::Black);
+        assert_eq!(g.color_of_move(2), Color::Black);
+
+        // PL[W] + AW 摆白子：也不能翻成黑先
+        let g = Game::with_setup_rule_first(
+            9,
+            7.5,
+            vec![(Color::White, p(2, 2))],
+            KoRule::default(),
+            Color::White,
+        );
+        assert_eq!(g.color_of_move(1), Color::White);
+
+        // PL[B] + AB 摆黑子：让子惯例是白先，但显式 PL 优先
+        let g = Game::with_setup_rule_first(
+            9,
+            7.5,
+            vec![(Color::Black, p(2, 2))],
+            KoRule::default(),
+            Color::Black,
+        );
+        assert_eq!(g.color_of_move(1), Color::Black);
+    }
+
+    #[test]
+    fn to_move_at_matches_recorded_positions() {
+        let mut g =
+            Game::with_setup_rule_first(9, 7.5, Vec::new(), KoRule::default(), Color::White);
+        for _ in 0..5 {
+            g.play(Move::Pass).unwrap();
+        }
+        for turn in 0..=5u16 {
+            assert_eq!(
+                g.to_move_at(turn),
+                g.position_at(turn).unwrap().to_move,
+                "turn {turn} 与历史记录不一致"
+            );
+            if turn > 0 {
+                assert_eq!(
+                    g.color_of_move(turn),
+                    g.position_at(turn - 1).unwrap().to_move
+                );
+            }
+        }
     }
 
     #[test]
