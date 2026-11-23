@@ -239,6 +239,9 @@ pub struct EngineConfig {
   过期结果**不写缓存、不改状态、不复位 busy**。
 - `evals` 以“手数”为键；改走分支时以**分支起点**为界清理，之后的旧分析全部作废。
 - `failed_pos` 记录分析失败的位置，避免对同一局面无限重试；改走分支会清空。
+- 人机执子（`App.human`）可换边：递增 generation、清 `failed_pos` 与 `last_comment`，
+  但**保留 `evals`**（分析是黑方视角，与“谁是 AI”无关）。`ai_enabled` 时 AI 走另一方；
+  `Controller` 换边后会 `pump()`，人执白时空盘第一手由 AI 立即接手。开新局保持当前选边。
 - 打开棋谱（`open_sgf_file`）= 纯研究模式：`vs_ai` 和 `ai_enabled` 都关掉，
   `human_enabled`（拟人偏好）保留，等用户主动重新打开 AI 开关；只清 `vs_ai` 不够，
   `next_action` 看的是 `ai_enabled`。

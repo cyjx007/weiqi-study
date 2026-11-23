@@ -109,7 +109,8 @@ TUI keys:
 | --- | --- |
 | `hjkl` / arrows | move the cursor |
 | `Enter` | play at the cursor |
-| `t` | start a human-vs-engine game (you are Black) |
+| `t` | start a human-vs-engine game (keeps your side) |
+| `s` | swap sides (you play Black / White) |
 | `v` | toggle automatic engine replies |
 | `u` | undo one move |
 | `n` / `p` | next / previous move |
@@ -249,6 +250,10 @@ runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with
   default to `MAX_LEN=19`: 20×20 and larger need a custom build compiled with larger-board
   support, and the official networks were not trained on those sizes. If the engine rejects the
   size, its message is shown as-is with that hint in the status line.
+- You choose the side you play (Black or White). The choice is kept when you start a new game,
+  and switching sides during a human-vs-engine game makes the engine take its move immediately
+  (switching to White on an empty board means the engine opens). The GUI exposes the same choice
+  as the "You play" row in AI settings.
 - Opening a game from the library puts the board into study mode: AI auto-replies are switched
   off (`ai_enabled=false`) so the game is not re-analysed under you; the human-model preference
   is kept for the next game you start.
