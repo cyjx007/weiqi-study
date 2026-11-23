@@ -203,7 +203,35 @@ impl GameStore {
             len: text.len() as u64,
             hash: fnv1a(text.as_bytes()),
         };
-        fs::rename(&tmp, path).map_err(|e| {
+
+        // 测试注入：模拟“指纹检查通过之后、发布之前”外部程序创建了同名文件
+        #[cfg(test)]
+        {
+            if INJECT_TARGET_CREATE.with(|f| f.replace(false)) {
+                if let Err(e) = fs::write(path, b";external writer\n") {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("测试注入创建目标失败：{e}"));
+                }
+            }
+        }
+
+        let publish = match opts.expected {
+            // 更新：普通 rename。advisory 锁挡不住外部编辑器，比较指纹与 rename 之间
+            // 仍有窗口；这是已知边界（DESIGN「存档 → 边界」），不宣称绝对 CAS。
+            Some(_) => fs::rename(&tmp, path),
+            // 新建：绝不允许覆盖。锁只约束本项目进程，外部程序可能刚好在指纹检查后
+            // 创建同名文件，所以发布必须用 no-replace rename。
+            None => match rename_noreplace(&tmp, path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    // 目标被外部创建：保留对方内容，我们的内容另存冲突副本
+                    let alt = self.create_conflict_copy(&tmp, path)?;
+                    return Ok(SaveOutcome::Conflict(alt));
+                }
+                Err(e) => Err(e),
+            },
+        };
+        publish.map_err(|e| {
             let _ = fs::remove_file(&tmp);
             format!("保存 {} 失败：{e}", path.display())
         })?;
@@ -588,25 +616,33 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
         ) -> c_int;
     }
 
-    let from = CString::new(from.as_os_str().as_bytes())
+    let from_c = CString::new(from.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "路径含 NUL"))?;
-    let to = CString::new(to.as_os_str().as_bytes())
+    let to_c = CString::new(to.as_os_str().as_bytes())
         .map_err(|_| std::io::Error::new(ErrorKind::InvalidInput, "路径含 NUL"))?;
     // SAFETY: 两个 CString 在调用期间有效，指针可空检查由 CString 保证
     let rc = unsafe {
         renameat2(
             AT_FDCWD,
-            from.as_ptr(),
+            from_c.as_ptr(),
             AT_FDCWD,
-            to.as_ptr(),
+            to_c.as_ptr(),
             RENAME_NOREPLACE,
         )
     };
     if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
+        return Ok(());
     }
+    let err = std::io::Error::last_os_error();
+    // 个别 FUSE / 网络文件系统不认 renameat2 的 flags（EINVAL / ENOSYS / EOPNOTSUPP）：
+    // 退回 hard_link，目标已存在同样报 AlreadyExists，语义仍是“绝不覆盖”，
+    // 只是从“单步原子”退化为“先出现目标、再删临时文件”。
+    if matches!(err.kind(), ErrorKind::Unsupported | ErrorKind::InvalidInput) {
+        fs::hard_link(from, to)?;
+        fs::remove_file(from)?;
+        return Ok(());
+    }
+    Err(err)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -620,6 +656,8 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 thread_local! {
     static FORCE_SYNC_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 在「指纹检查通过、发布改名之前」模拟外部程序创建同名目标。
+    static INJECT_TARGET_CREATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// 同步目录项。成功返回 Ok；平台明确不支持时也返回 Ok（保证较弱，见 DESIGN）。
@@ -770,6 +808,36 @@ mod tests {
         assert!(tmp_files(store.dir()).is_empty(), "临时文件要清理干净");
 
         let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn first_save_never_overwrites_a_target_created_after_the_check() {
+        let store = temp_store();
+        let path = store.dir().join("race.sgf");
+        let moves = vec![Move::Play(Point::new(2, 2))];
+
+        // 模拟：锁内确认目标不存在之后，外部编辑器/脚本抢先创建了同名文件。
+        // 普通 rename 会把它覆盖；no-replace 发布必须改成冲突副本。
+        INJECT_TARGET_CREATE.with(|f| f.set(true));
+        let out = store.save(&path, 9, 7.5, &[], &moves, opts(None));
+        INJECT_TARGET_CREATE.with(|f| f.set(false));
+        let out = out.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            ";external writer\n",
+            "外部刚创建的内容不能被覆盖"
+        );
+        let SaveOutcome::Conflict(alt) = out else {
+            panic!("目标已存在时应落冲突副本，实际 {out:?}");
+        };
+        assert!(alt.exists());
+        assert_ne!(alt, path);
+        let back = sgf::parse(&fs::read_to_string(&alt).unwrap()).unwrap();
+        assert_eq!(back.moves, moves, "我们写的内容要完整保存在副本里");
+        assert!(tmp_files(store.dir()).is_empty(), "临时文件要清理干净");
+
+        let _ = fs::remove_dir_all(store.dir());
     }
 
     #[test]

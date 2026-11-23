@@ -255,7 +255,11 @@ pub struct EngineConfig {
 
 目录：`$XDG_DATA_HOME/weiqi-study/games`（通常 `~/.local/share/weiqi-study/games`）。
 
-- **原子写**：同目录 `create_new` 唯一临时文件 → 写入 → `fsync` → 关闭 → `rename` → 父目录 `fsync`。
+- **原子写**：同目录 `create_new` 唯一临时文件 → 写入 → `fsync` → 关闭 → 发布 → 父目录 `fsync`。
+  新建（`expected: None`）用 no-replace 发布：Linux `renameat2(RENAME_NOREPLACE)`，
+  文件系统不支持该 flags 时退回 `hard_link + remove`。目标已存在（哪怕是在指纹检查之后
+  才被外部程序创建）一律落冲突副本，绝不覆盖。更新（`expected: Some`）仍是指纹比较后的
+  普通 `rename`，外部编辑器的竞争窗口见下方「边界」。
 - **目录持久性**：`rename` 同步源目录与 `games/`；`trash` 同步源目录、`games/` 和 `.trash/`。
   同步失败会返回错误并说明“内容可能已替换、只是持久性无法确认”；平台明确不支持目录 fsync 时
   按 best-effort 处理（保证较弱，已在错误语义上区分）。
