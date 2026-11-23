@@ -38,6 +38,13 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 fi
 BIN=$(readlink -f "$BIN")
 
+# 信息类参数必须在 GTK 初始化前就能用（不需要 DISPLAY）
+VERSION=$("$BIN" --version 2>/dev/null || true)
+case "$VERSION" in
+    "weiqi-gui "*) ;;
+    *) echo "FAIL: --version 没输出预期内容：$VERSION" >&2; exit 1 ;;
+esac
+
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/weiqi-gui-smoke.XXXXXX")
 APP_PID=""
 XVFB_PID=""

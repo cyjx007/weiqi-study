@@ -78,7 +78,11 @@ weiqi-tui
 
 # native GTK4 window (also available from the desktop menu)
 weiqi-gui
+weiqi-gui --version            # all three binaries can self-report their version
 ```
+
+`weiqi-gui` takes no game path: it opens the most recent game in the store (or an empty board).
+`-h/--help` and `-V/--version` are handled before GTK starts, so they work without a display.
 
 The GUI uses the mouse: click an intersection to play, hover to preview. Buttons mirror the TUI
 keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved game, and the
