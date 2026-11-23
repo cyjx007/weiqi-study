@@ -6,6 +6,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use std::collections::{HashMap, HashSet};
+
 use goban::{Color, Game, Move, Point, RuleSet};
 use serde_json::{json, Value};
 
@@ -428,11 +430,14 @@ impl AnalysisSession {
         let moves_json = history_json(game);
         let setup_json = setup_json(game);
 
-        let mut expected_ids = std::collections::HashSet::new();
+        // 每个请求 ID 对应它负责的 turn 集合：响应必须同时匹配 (id, turn)，
+        // 不能只看 id 在集合里、turn 在全局范围里就算过（review v6 4.1）。
+        let mut expected: HashMap<String, HashSet<u16>> = HashMap::new();
         for (n, chunk) in turns.chunks(cfg.chunk.max(1)).enumerate() {
-            expected_ids.insert(format!("q{base}-{n}"));
+            let id = format!("q{base}-{n}");
+            expected.insert(id.clone(), chunk.iter().copied().collect());
             let mut query = json!({
-                "id": format!("q{base}-{n}"),
+                "id": id,
                 "initialStones": setup_json,
                 "moves": moves_json,
                 "rules": game.rules().katago_name(),
@@ -456,11 +461,22 @@ impl AnalysisSession {
             .flush()
             .map_err(|e| format!("刷新 query 失败: {e}"))?;
 
+        // 调用方重复传同一个 turn 时，只分析一次，否则 total 会虚高
+        let mut uniq_turns: Vec<u16> = Vec::with_capacity(turns.len());
+        for &t in turns {
+            if !uniq_turns.contains(&t) {
+                uniq_turns.push(t);
+            }
+        }
+        let turns: &[u16] = &uniq_turns;
+
         let total = turns.len();
-        let expected_turns: std::collections::HashSet<u16> = turns.iter().copied().collect();
-        let mut seen: std::collections::HashSet<u16> = std::collections::HashSet::new();
+        let mut received: HashMap<String, HashSet<u16>> = HashMap::new();
+        for id in expected.keys() {
+            received.insert(id.clone(), HashSet::new());
+        }
         let mut evals: Vec<TurnEval> = Vec::with_capacity(total);
-        while seen.len() < total {
+        while evals.len() < total {
             let line = match self.rx.recv_timeout(std::time::Duration::from_secs(90)) {
                 Ok(line) => line,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -482,22 +498,29 @@ impl AnalysisSession {
                 .get("id")
                 .and_then(|x| x.as_str())
                 .ok_or_else(|| format!("响应缺少 id: {line}"))?;
-            if !expected_ids.contains(id) {
-                return Err(format!("响应 id 不属于本次请求: {id}"));
-            }
+            let Some(allowed) = expected.get(id) else {
+                return Err(format!(
+                    "响应 id 不属于本次请求: {id}（请求 {base}，共 {} 批）",
+                    expected.len()
+                ));
+            };
             let turn = value
                 .get("turnNumber")
                 .and_then(|x| x.as_u64())
                 .ok_or_else(|| format!("响应缺少 turnNumber: {line}"))?
                 as u16;
-            if !expected_turns.contains(&turn) {
-                return Err(format!("响应 turnNumber 越界: {turn}"));
+            if !allowed.contains(&turn) {
+                return Err(format!(
+                    "响应 turnNumber 越界: id={id} turn={turn}（该批次负责 {} 个 turn）",
+                    allowed.len()
+                ));
             }
-            if !seen.insert(turn) {
-                return Err(format!("响应 turnNumber 重复: {turn}"));
+            let got = received.get_mut(id).expect("id 已在 expected 里登记");
+            if !got.insert(turn) {
+                return Err(format!("响应 turnNumber 重复: id={id} turn={turn}"));
             }
             evals.push(eval_from_json(&value, game, turn)?);
-            progress(seen.len(), total);
+            progress(evals.len(), total);
         }
         evals.sort_by_key(|e| e.turn);
         Ok(evals)
@@ -723,6 +746,46 @@ done
     }
 
     #[test]
+    fn turn_from_another_chunk_is_rejected() {
+        // chunk=1：请求 q-0 只负责 turn 0，q-1 负责 turn 1。
+        // 即使 id 合法、turn 也在全局范围内，只要不属于这个 id 就必须报错。
+        let (engine, dir) = fake_engine_chunk(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":1,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+done
+"#,
+            1,
+        );
+        let err = engine
+            .analyze_turns(&Game::new(9, 7.5), &[0, 1], |_, _| {})
+            .unwrap_err();
+        assert!(err.contains("越界"), "{err}");
+        assert!(err.contains("id=q"), "错误里要带请求 id：{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn duplicate_turn_within_a_request_is_rejected() {
+        // 两批合成一个请求里的重复响应：第一次接受，第二次必须报重复
+        let (engine, dir) = fake_engine(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+  echo "{\"id\":\"$id\",\"turnNumber\":0,\"rootInfo\":{\"winrate\":0.5,\"scoreLead\":0.0}}"
+done
+"#,
+        );
+        let err = engine
+            .analyze_turns(&Game::new(9, 7.5), &[0, 1], |_, _| {})
+            .unwrap_err();
+        assert!(err.contains("重复"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn missing_root_info_is_an_error() {
         let (engine, dir) = fake_engine(
             r#"#!/bin/sh
@@ -793,6 +856,10 @@ done"#,
 
     /// 假 KataGo：不依赖 GPU/模型，验证协议解析与错误路径。
     fn fake_engine(script: &str) -> (Engine, std::path::PathBuf) {
+        fake_engine_chunk(script, 30)
+    }
+
+    fn fake_engine_chunk(script: &str, chunk: usize) -> (Engine, std::path::PathBuf) {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
@@ -828,7 +895,7 @@ done"#,
             config,
             human_model: None,
             visits: 10,
-            chunk: 30,
+            chunk,
         });
         (engine, dir)
     }
