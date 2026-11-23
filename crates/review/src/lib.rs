@@ -713,21 +713,42 @@ pub fn quick_comment(
                     }
                 }
             };
+            // 推荐手相对“实战这一手”的改善量；同样是当前行棋方视角。
+            // 不能用 -loss（那是实战手相对上一手的下跌），否则会显示“比实战高 -10 点”。
+            let improvement = best_wr - wr_after;
             let mut line = if english {
-                format!(
-                    "Better: {} ({}, {:.1}%, {:+.1} points better)",
-                    move_text(best.mv, size),
-                    best_zone,
-                    best_wr,
-                    -loss
-                )
-            } else {
+                if improvement >= 0.0 {
+                    format!(
+                        "Better: {} ({}, {:.1}%, {:+.1} points better)",
+                        move_text(best.mv, size),
+                        best_zone,
+                        best_wr,
+                        improvement
+                    )
+                } else {
+                    format!(
+                        "Better: {} ({}, {:.1}%, {:.1} points worse)",
+                        move_text(best.mv, size),
+                        best_zone,
+                        best_wr,
+                        -improvement
+                    )
+                }
+            } else if improvement >= 0.0 {
                 format!(
                     "推荐 {}（{}，{:.1}%，比实战高 {:.1} 点）",
                     move_text(best.mv, size),
                     best_zone,
                     best_wr,
-                    -loss
+                    improvement
+                )
+            } else {
+                format!(
+                    "推荐 {}（{}，{:.1}%，比实战低 {:.1} 点）",
+                    move_text(best.mv, size),
+                    best_zone,
+                    best_wr,
+                    -improvement
                 )
             };
             if !best.pv.is_empty() {
@@ -825,6 +846,69 @@ mod tests {
         assert!(text.contains("局面："));
         assert!(text.contains("特点："));
         assert!(text.contains("推荐") || text.contains("一致"));
+    }
+
+    #[test]
+    fn recommendation_improvement_uses_the_same_view_and_units() {
+        let mut pos = Position::new(9);
+        pos.to_move = Color::Black;
+        // 实战从 55% 掉到 45%，推荐手 56% → 比实战高 11 点
+        let mut best = fake_eval(0, Color::Black, 0.56);
+        best.candidates[0].winrate_black = 0.56;
+        let after = fake_eval(1, Color::White, 0.45);
+
+        let zh = quick_comment(
+            false,
+            &pos,
+            &best,
+            &after,
+            Color::Black,
+            Move::Play(Point::new(2, 2)),
+            None,
+        );
+        assert!(zh.contains("比实战高 11.0 点"), "{zh}");
+
+        let en = quick_comment(
+            true,
+            &pos,
+            &best,
+            &after,
+            Color::Black,
+            Move::Play(Point::new(2, 2)),
+            None,
+        );
+        assert!(en.contains("+11.0 points better"), "{en}");
+
+        // 白方视角：同样的胜率差，符号和数值也要对
+        pos.to_move = Color::White;
+        let mut best_w = fake_eval(0, Color::White, 0.44); // 白 56%
+        best_w.candidates[0].winrate_black = 0.44;
+        let after_w = fake_eval(1, Color::Black, 0.55); // 白 45%
+        let zh_w = quick_comment(
+            false,
+            &pos,
+            &best_w,
+            &after_w,
+            Color::White,
+            Move::Play(Point::new(2, 2)),
+            None,
+        );
+        assert!(zh_w.contains("比实战高 11.0 点"), "{zh_w}");
+
+        // 推荐手反而更差：显示“低 N 点”，不是负的“高”
+        let mut best_bad = fake_eval(0, Color::Black, 0.50);
+        best_bad.candidates[0].winrate_black = 0.50;
+        let after_bad = fake_eval(1, Color::White, 0.60);
+        let zh_bad = quick_comment(
+            false,
+            &pos,
+            &best_bad,
+            &after_bad,
+            Color::Black,
+            Move::Play(Point::new(2, 2)),
+            None,
+        );
+        assert!(zh_bad.contains("比实战低 10.0 点"), "{zh_bad}");
     }
 
     #[test]
