@@ -202,6 +202,7 @@ crates/tui       weiqi-tui binary (ratatui)
 crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
 packaging/       desktop entry for the GUI
 scripts/         gui-smoke.sh: headless GUI smoke test used by CI
+                 tui-smoke.py: pty-driven TUI smoke test used by CI
 nix/package.nix  Nix package building both binaries
 flake.nix        flake outputs: package and dev shell
 samples/         demo SGF used by the TUI fallback
@@ -218,11 +219,14 @@ nix build .#default                 # builds all binaries via Nix
 
 scripts/gui-smoke.sh                # GUI smoke test under Xvfb (needs Xvfb, optional xdotool)
 scripts/gui-smoke.sh --switch       # also try switching games via xdotool
+WEIQI_TUI_BIN=target/release/weiqi-tui \
+  python3 scripts/tui-smoke.py       # TUI: start → games list → analyse (engine unavailable) → help → quit
 ```
 
 CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test --workspace`,
 `cargo build --release --workspace`, then starts the GUI under Xvfb with
-`scripts/gui-smoke.sh --switch` and fails if it crashes, panics, or idles above 80% CPU.
+`scripts/gui-smoke.sh --switch` and fails if it crashes, panics, or idles above 80% CPU; it then
+runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with a missing engine → help → quit).
 
 ## Notes
 

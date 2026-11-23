@@ -197,6 +197,7 @@ crates/tui       weiqi-tui（ratatui）
 crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）
 packaging/       图形界面的桌面入口
 scripts/         gui-smoke.sh：CI 用的无头 GUI 冒烟测试
+                 tui-smoke.py：CI 用的 pty TUI 冒烟测试
 nix/package.nix  构建两个二进制的 Nix 包
 flake.nix        flake 输出：package 与 dev shell
 samples/         TUI 无参数时打开的示例棋谱
@@ -213,10 +214,13 @@ nix build .#default                 # 用 Nix 构建全部二进制
 
 scripts/gui-smoke.sh                # Xvfb 里跑 GUI 冒烟（需要 Xvfb，xdotool 可选）
 scripts/gui-smoke.sh --switch       # 额外用 xdotool 试着切换棋谱
+WEIQI_TUI_BIN=target/release/weiqi-tui \
+  python3 scripts/tui-smoke.py       # TUI：启动 → 棋谱列表 → 分析（引擎不可用）→ 帮助 → 退出
 ```
 
 CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo test --workspace`、
-`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch` 启动 GUI：
+`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch` 启动 GUI；
+接着用 `scripts/tui-smoke.py` 在真实 pty 里跑 TUI（启动 → 棋谱列表 → 分析失败 → 帮助 → 退出）：
 崩溃、panic 或空闲 CPU 超过 80% 都会让 CI 失败。
 
 ## 注意
