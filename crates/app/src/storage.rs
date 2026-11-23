@@ -13,9 +13,9 @@
 //! 删除不真删：移到 `games/.trash/`，文件名带时间戳，可手动找回。
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, TimeZone};
 use goban::{Color, Move, Point, RuleSet};
@@ -36,16 +36,28 @@ pub struct FileStamp {
 }
 
 impl FileStamp {
-    /// 读文件并计算指纹；文件不存在返回 `None`。
-    pub fn of(path: &Path) -> Option<FileStamp> {
-        let meta = fs::metadata(path).ok()?;
-        let mtime = meta.modified().ok()?;
-        let bytes = fs::read(path).ok()?;
-        Some(FileStamp {
+    /// 读文件并计算指纹。
+    ///
+    /// 只有「文件不存在」返回 `Ok(None)`；读失败必须上报 `Err`，
+    /// 绝不能退化成 `None`（那会被 `expected: None` 当成“新文件”从而关掉冲突保护）。
+    pub fn of(path: &Path) -> Result<Option<FileStamp>, String> {
+        let mut file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("打开 {} 失败：{e}", path.display())),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        let mtime = file
+            .metadata()
+            .and_then(|m| m.modified())
+            .map_err(|e| format!("读取 {} 的修改时间失败：{e}", path.display()))?;
+        Ok(Some(FileStamp {
             mtime,
             len: bytes.len() as u64,
             hash: fnv1a(&bytes),
-        })
+        }))
     }
 }
 
@@ -72,8 +84,8 @@ pub struct WriteOptions {
 /// 一次保存的结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveOutcome {
-    /// 正常覆盖目标文件。
-    Written,
+    /// 正常覆盖目标文件，并带回写入后的版本指纹。
+    Written(FileStamp),
     /// 目标被外部改过：没有覆盖，内容写到了这个副本。
     Conflict(PathBuf),
 }
@@ -81,6 +93,8 @@ pub enum SaveOutcome {
 #[derive(Clone, Debug)]
 pub struct GameStore {
     dir: PathBuf,
+    /// 等排它锁的最长时间；超时返回可诊断错误，避免卡死 UI 线程
+    lock_timeout: Duration,
 }
 
 impl Default for GameStore {
@@ -95,8 +109,13 @@ impl GameStore {
     }
 
     pub fn at(dir: PathBuf) -> Self {
+        Self::with_lock_timeout(dir, Duration::from_secs(2))
+    }
+
+    /// 主要给测试用：把等锁时间调短。
+    pub fn with_lock_timeout(dir: PathBuf, lock_timeout: Duration) -> Self {
         let _ = fs::create_dir_all(&dir);
-        GameStore { dir }
+        GameStore { dir, lock_timeout }
     }
 
     pub fn dir(&self) -> &Path {
@@ -125,7 +144,7 @@ impl GameStore {
 
     /// 原子写入：唯一临时文件 + fsync + rename + 目录 fsync。
     ///
-    /// 目标在 `expected_mtime` 之后被别的进程改过时，不覆盖它，
+    /// 目标指纹和 `expected` 不一致（被别的进程改过）时不覆盖它，
     /// 改为写一份 `*.conflict-<纳秒>-<pid>.sgf` 副本并返回 [`SaveOutcome::Conflict`]。
     pub fn save(
         &self,
@@ -155,22 +174,33 @@ impl GameStore {
 
         // 版本校验：磁盘上的文件不是我们上次看到的那个，就另存副本
         if let Some(expected) = opts.expected {
-            if FileStamp::of(path) != Some(expected) {
+            if FileStamp::of(path)? != Some(expected) {
                 let alt = self.create_conflict_copy(&tmp, path)?;
                 return Ok(SaveOutcome::Conflict(alt));
             }
         }
 
+        // 指纹直接用刚写的 text 算，rename 前后内容不变，避免调用方再读一次
+        let stamp = FileStamp {
+            mtime: fs::metadata(&tmp)
+                .and_then(|m| m.modified())
+                .map_err(|e| format!("读取 {} 的修改时间失败：{e}", tmp.display()))?,
+            len: text.len() as u64,
+            hash: fnv1a(text.as_bytes()),
+        };
         fs::rename(&tmp, path).map_err(|e| {
             let _ = fs::remove_file(&tmp);
             format!("保存 {} 失败：{e}", path.display())
         })?;
         sync_dir(&self.dir);
-        Ok(SaveOutcome::Written)
+        Ok(SaveOutcome::Written(stamp))
     }
 
     /// 在 `games/.locks/<文件名>` 上取排它 advisory 锁；返回的 File 关闭即释放。
-    fn acquire_lock(&self, path: &Path) -> Result<fs::File, String> {
+    ///
+    /// - 最多等 `lock_timeout`，超时返回可诊断错误（不把 UI 线程无限期卡住）
+    /// - 文件系统不支持 flock 时降级为“无锁”，仍然保留原子写与指纹校验
+    fn acquire_lock(&self, path: &Path) -> Result<Option<fs::File>, String> {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -184,9 +214,61 @@ impl GameStore {
             .write(true)
             .open(&lock_path)
             .map_err(|e| format!("打开锁文件 {} 失败：{e}", lock_path.display()))?;
-        file.lock()
-            .map_err(|e| format!("锁住 {} 失败：{e}", lock_path.display()))?;
-        Ok(file)
+
+        let deadline = Instant::now() + self.lock_timeout;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Some(file)),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!("另一个程序正在保存 {}，请稍后再试", name));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(std::fs::TryLockError::Error(e)) if e.kind() == ErrorKind::Unsupported => {
+                    // 部分 FUSE/NFS 不支持 flock：不要因此让保存失败
+                    return Ok(None);
+                }
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(format!("锁住 {} 失败：{e}", lock_path.display()));
+                }
+            }
+        }
+    }
+
+    /// 删除某个棋谱对应的锁文件（重命名/删除后调用；失败忽略）。
+    fn drop_lock_file(&self, name: &str) {
+        let _ = fs::remove_file(self.dir.join(".locks").join(name));
+    }
+
+    /// 在排它锁内读取内容与指纹，保证两者来自同一份字节。
+    ///
+    /// 用于打开棋谱：调用方拿到的 `(text, stamp)` 一定是同一时刻的快照，
+    /// 避免“读到旧内容、记下新指纹”从而在下次保存时静默覆盖别人。
+    pub fn read_stamped(&self, path: &Path) -> Result<Option<(String, FileStamp)>, String> {
+        let _lock = self.acquire_lock(path)?;
+        let mut file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("打开 {} 失败：{e}", path.display())),
+        };
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        let mtime = file
+            .metadata()
+            .and_then(|m| m.modified())
+            .map_err(|e| format!("读取 {} 的修改时间失败：{e}", path.display()))?;
+        let text = String::from_utf8(bytes.clone())
+            .map_err(|e| format!("{} 不是 UTF-8：{e}", path.display()))?;
+        Ok(Some((
+            text,
+            FileStamp {
+                mtime,
+                len: bytes.len() as u64,
+                hash: fnv1a(&bytes),
+            },
+        )))
     }
 
     /// 在目标目录里 `create_new` 一个唯一临时文件；只清理自己建的那个。
@@ -225,6 +307,19 @@ impl GameStore {
                 format!("{stamp}-{pid}-{i}")
             };
             let alt = self.dir.join(format!("{stem}.conflict-{suffix}.sgf"));
+            // 优先 hard_link：目标要么不存在、要么已带着完整内容出现，
+            // 不会出现“0 字节 .sgf”被 list() 扫到的中间态。
+            match fs::hard_link(tmp, &alt) {
+                Ok(()) => {
+                    let _ = fs::remove_file(tmp);
+                    sync_dir(&self.dir);
+                    return Ok(alt);
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+                Err(_) => {
+                    // 文件系统不支持硬链接时退回 create_new + 复制
+                }
+            }
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -308,6 +403,9 @@ impl GameStore {
             ));
         }
         fs::rename(path, &target).map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
+        if let Some(old) = path.file_name().and_then(|n| n.to_str()) {
+            self.drop_lock_file(old);
+        }
         Ok(target)
     }
 
@@ -333,6 +431,7 @@ impl GameStore {
         }
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
+        self.drop_lock_file(name);
         Ok(target)
     }
 }
@@ -362,12 +461,6 @@ fn data_home() -> PathBuf {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".local/share")
         })
-}
-
-/// 文件的修改时间；读不到就是 `None`（版本判断请用 [`FileStamp`]）。
-#[allow(dead_code)]
-pub fn mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// rename 之后同步父目录，保证目录项本身也落盘（失败不致命）。
@@ -472,13 +565,13 @@ mod tests {
         let store = temp_store();
         let path = store.dir().join("game-1.sgf");
         let moves = vec![Move::Play(Point::new(2, 2))];
-        assert_eq!(
+        assert!(matches!(
             store.save(&path, 9, 7.5, &[], &moves, opts(None)).unwrap(),
-            SaveOutcome::Written
-        );
+            SaveOutcome::Written(_)
+        ));
         let original = std::fs::read_to_string(&path).unwrap();
 
-        // 别的进程改过文件 → 我们的 expected_mtime 已经过期
+        // 别的进程改过文件 → 我们的指纹已经过期
         std::fs::write(&path, "(;SZ[9]KM[0.5];B[dd])").unwrap();
         let external = std::fs::read_to_string(&path).unwrap();
 
@@ -521,7 +614,7 @@ mod tests {
             }));
         }
         for h in handles {
-            assert_eq!(h.join().unwrap(), SaveOutcome::Written);
+            assert!(matches!(h.join().unwrap(), SaveOutcome::Written(_)));
         }
         // 最终文件必须是完整 SGF，不能是两次写入拼出来的半截
         let text = std::fs::read_to_string(&path).unwrap();
@@ -556,6 +649,95 @@ mod tests {
     }
 
     #[test]
+    fn lock_timeout_is_reported_instead_of_hanging() {
+        use std::time::Duration;
+        let base = temp_store();
+        let store =
+            GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_millis(120));
+        let path = store.dir().join("held.sgf");
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+
+        // 另一个“进程”先占住锁
+        let lock_path = store.dir().join(".locks").join("held.sgf");
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let holder = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock().unwrap();
+
+        let started = std::time::Instant::now();
+        let err = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(1, 1))],
+                opts(None),
+            )
+            .unwrap_err();
+        assert!(err.contains("正在保存"), "{err}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(100),
+            "应当等满超时"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "(;SZ[9])",
+            "持锁期间不能写"
+        );
+
+        holder.unlock().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn save_waits_for_a_short_lock_holder() {
+        use std::time::Duration;
+        let base = temp_store();
+        let store = GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_secs(2));
+        let path = store.dir().join("wait.sgf");
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+        let lock_path = store.dir().join(".locks").join("wait.sgf");
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let holder = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock().unwrap();
+
+        // 200ms 后释放；保存应当等它，而不是直接失败或无视锁
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            holder.unlock().unwrap();
+        });
+        let started = std::time::Instant::now();
+        let out = store
+            .save(
+                &path,
+                9,
+                7.5,
+                &[],
+                &[Move::Play(Point::new(1, 1))],
+                opts(None),
+            )
+            .unwrap();
+        assert!(matches!(out, SaveOutcome::Written(_)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(150),
+            "没有等锁：{:?}",
+            started.elapsed()
+        );
+        release.join().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
     fn concurrent_edits_with_the_same_stamp_never_silently_overwrite() {
         let store = temp_store();
         let path = store.dir().join("shared.sgf");
@@ -569,7 +751,7 @@ mod tests {
                 opts(None),
             )
             .unwrap();
-        let stamp = FileStamp::of(&path).unwrap();
+        let stamp = FileStamp::of(&path).unwrap().unwrap();
 
         // 两个进程都拿着「同一份旧版本」去保存：一个成功，另一个必须拿到副本
         let a = store
@@ -592,7 +774,7 @@ mod tests {
                 opts(Some(stamp)),
             )
             .unwrap();
-        assert_eq!(a, SaveOutcome::Written);
+        assert!(matches!(a, SaveOutcome::Written(_)));
         let SaveOutcome::Conflict(alt) = b else {
             panic!("第二次保存应当另存副本，实际 {b:?}");
         };
@@ -620,7 +802,7 @@ mod tests {
                 opts(None),
             )
             .unwrap();
-        let stamp = FileStamp::of(&path).unwrap();
+        let stamp = FileStamp::of(&path).unwrap().unwrap();
 
         let mut handles = Vec::new();
         for i in 0..4u8 {
@@ -643,7 +825,7 @@ mod tests {
         let mut conflicts = Vec::new();
         for h in handles {
             match h.join().unwrap() {
-                SaveOutcome::Written => written += 1,
+                SaveOutcome::Written(_) => written += 1,
                 SaveOutcome::Conflict(p) => conflicts.push(p),
             }
         }

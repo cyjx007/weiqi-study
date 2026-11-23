@@ -14,6 +14,13 @@ pub struct Controller {
     tx: mpsc::Sender<AppEvent>,
     rx: mpsc::Receiver<AppEvent>,
     dirty: bool,
+    /// 已有一个后台线程（分析或复盘）在跑；同一时间只允许一个
+    working: bool,
+    /// 工作期间局面又变了：等它结束后补一次当前局面的分析
+    pending: bool,
+    /// 测试用：实际 spawn 了几次
+    #[cfg(test)]
+    spawns: usize,
 }
 
 impl Controller {
@@ -25,6 +32,10 @@ impl Controller {
             rx,
             // 第一帧总要画
             dirty: true,
+            working: false,
+            pending: false,
+            #[cfg(test)]
+            spawns: 0,
         }
     }
 
@@ -40,9 +51,18 @@ impl Controller {
 
     /// 收后台结果 + 推进 AI。返回这一帧是否需要重画（并清掉标记）。
     pub fn tick(&mut self) -> bool {
+        let mut finished = false;
         while let Ok(ev) = self.rx.try_recv() {
             self.app.apply(ev);
+            self.working = false;
+            finished = true;
             self.dirty = true;
+        }
+        // 工作期间用户又落了子/换了局面：合并成一次补分析，
+        // 而不是每落一手就新起一个线程排队堵在引擎锁后面。
+        if finished && self.pending {
+            self.pending = false;
+            self.spawn_analysis();
         }
         self.pump();
         std::mem::take(&mut self.dirty)
@@ -66,12 +86,28 @@ impl Controller {
         }
     }
 
-    /// 分析当前局面（后台线程）。
+    /// 分析当前局面（后台线程）。同一时间只保留一个后台任务；
+    /// 期间局面变了就记成 pending，等当前任务结束后合并成一次补分析。
     pub fn analyze(&mut self) {
         self.dirty = true;
+        if self.working {
+            self.pending = true;
+            self.app.busy = true;
+            return;
+        }
         if self.app.busy {
             self.app.status = strings(self.app.lang).busy.to_string();
             return;
+        }
+        self.spawn_analysis();
+    }
+
+    fn spawn_analysis(&mut self) {
+        self.pending = false;
+        self.working = true;
+        #[cfg(test)]
+        {
+            self.spawns += 1;
         }
         let pos = self.app.pos();
         let generation = self.app.generation();
@@ -96,16 +132,18 @@ impl Controller {
     /// 全盘复盘（后台线程）。
     pub fn review(&mut self) {
         self.dirty = true;
-        if self.app.busy {
+        if self.app.busy || self.working {
             self.app.status = strings(self.app.lang).busy.to_string();
             return;
         }
+        self.working = true;
         self.app.busy = true;
         self.app.status = strings(self.app.lang).reviewing.to_string();
         let game = match self.app.full_game() {
             Ok(g) => g,
             Err(e) => {
                 self.app.busy = false;
+                self.working = false;
                 self.app.status = e;
                 return;
             }
@@ -287,6 +325,46 @@ mod tests {
         .unwrap();
         assert!(ctrl.tick(), "收到分析结果后需要重画");
         assert!(ctrl.app.analysis().is_some());
+        assert!(!ctrl.app.busy);
+    }
+
+    #[test]
+    fn rapid_moves_are_coalesced_into_one_pending_analysis() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+
+        // 第一手：真正起一个线程
+        ctrl.analyze();
+        assert_eq!(ctrl.spawns, 1);
+
+        // 线程还没回来时又落了好几手：只记 pending，不再 spawn
+        for p in [
+            Point::new(2, 2),
+            Point::new(4, 4),
+            Point::new(6, 6),
+            Point::new(8, 8),
+        ] {
+            ctrl.app.play_move(Move::Play(p)).unwrap();
+            ctrl.analyze();
+        }
+        assert_eq!(ctrl.spawns, 1, "工作期间不能每手都新起线程");
+        assert!(ctrl.pending);
+
+        // 旧线程结束（离线引擎立刻失败）后，只补一次
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ctrl.spawns < 2 && std::time::Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(ctrl.spawns, 2, "合并后只补一次分析");
+        assert!(!ctrl.pending);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ctrl.app.busy && std::time::Instant::now() < deadline {
+            ctrl.tick();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!ctrl.app.busy);
     }
 

@@ -263,15 +263,22 @@ impl App {
         probe.play(mv).map_err(|e| format!("{e}"))?;
 
         let base = self.pos;
-        // 改走 = 新分支 = 新棋局版本：旧分支的在途分析和结果一律作废
-        self.next_generation();
+        // 只有「从中间另一手改走」才是换线；在末尾续下时历史前缀没变，
+        // 已发出的上一手分析回来仍然有效（否则最近一手的点评会凭空消失）。
+        let branching = base < self.moves.len();
+        if branching {
+            // 换线 = 新棋局版本：旧分支的在途分析和结果一律作废
+            self.next_generation();
+        }
         self.moves.truncate(base);
         self.moves.push(mv);
         self.pos = base + 1;
         self.game = probe;
         // 只保留分支点及之前的分析；更深位置属于旧分支
         self.evals.retain(|&k, _| k <= base);
-        self.failed_pos = None;
+        if branching {
+            self.failed_pos = None;
+        }
         self.review = None;
         self.autosave();
         Ok(())
@@ -298,11 +305,15 @@ impl App {
             },
         );
         match result {
-            Ok(storage::SaveOutcome::Written) => {
-                self.file_stamp = storage::FileStamp::of(&path);
+            Ok(storage::SaveOutcome::Written(stamp)) => {
+                self.file_stamp = Some(stamp);
             }
             Ok(storage::SaveOutcome::Conflict(alt)) => {
-                self.file_stamp = storage::FileStamp::of(&alt);
+                match storage::FileStamp::of(&alt) {
+                    Ok(st) => self.file_stamp = st,
+                    // 读到一半失败就保留旧指纹：下次保存会变成冲突副本，而不是无条件覆盖
+                    Err(e) => self.status = e,
+                }
                 self.current_file = Some(alt.clone());
                 self.status = i18n::fill(
                     strings(self.lang).conflict_saved,
@@ -378,12 +389,29 @@ impl App {
         }
 
         let inside_store = path.starts_with(self.store.dir());
+        let mut stamp: Option<storage::FileStamp> = None;
         let new_file = if inside_store {
+            // 在锁内读一次：确认磁盘上仍是调用方解析过的那份，
+            // 并且拿到与这些字节对应的指纹（否则会“读旧内容、记新指纹”从而静默覆盖别人）
+            let (text, st) = self
+                .store
+                .read_stamped(&path)?
+                .ok_or_else(|| format!("棋谱不存在：{}", path.display()))?;
+            let current =
+                sgf::parse(&text).map_err(|e| format!("重新读取 {} 失败：{e}", path.display()))?;
+            if current.moves != moves
+                || current.setup != setup
+                || current.first != sg.first
+                || current.rules != sg.rules
+            {
+                return Err("棋谱在打开期间被其他程序修改，请重新打开".to_string());
+            }
+            stamp = Some(st);
             Some(path)
         } else {
             match self.store.create() {
                 Ok(copy) => {
-                    self.store.save(
+                    match self.store.save(
                         &copy,
                         size,
                         komi,
@@ -394,7 +422,12 @@ impl App {
                             first,
                             expected: None,
                         },
-                    )?;
+                    )? {
+                        storage::SaveOutcome::Written(st) => stamp = Some(st),
+                        storage::SaveOutcome::Conflict(_) => {
+                            return Err("新建棋谱时发生冲突，请重试".to_string())
+                        }
+                    }
                     Some(copy)
                 }
                 Err(_) => None,
@@ -418,7 +451,7 @@ impl App {
         self.cursor = Point::new(size / 2, size / 2);
         self.game = game;
         self.vs_ai = false;
-        self.file_stamp = new_file.as_deref().and_then(storage::FileStamp::of);
+        self.file_stamp = stamp;
         self.current_file = new_file;
         self.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&self.warnings) {
@@ -585,7 +618,10 @@ impl App {
         let new_path = self.store.rename(&entry.path, name)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
             self.current_file = Some(new_path.clone());
-            self.file_stamp = storage::FileStamp::of(&new_path);
+            match storage::FileStamp::of(&new_path) {
+                Ok(st) => self.file_stamp = st,
+                Err(e) => self.status = e,
+            }
         }
         self.refresh_games();
         let label = new_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");

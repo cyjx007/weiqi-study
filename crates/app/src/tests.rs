@@ -203,6 +203,22 @@ fn stale_events_from_the_old_branch_are_ignored() {
 }
 
 #[test]
+fn appending_a_move_keeps_the_previous_analysis() {
+    let mut app = long_game(5);
+    app.evals.insert(5, eval(5, Color::Black, 0.5, Move::Pass));
+    let gen = app.generation();
+
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+
+    assert_eq!(app.generation(), gen, "在末尾续下不是换线");
+    assert!(
+        app.evals.contains_key(&5),
+        "上一手的分析回来仍应有效（最近一手点评要用）"
+    );
+}
+
+#[test]
 fn illegal_move_leaves_everything_untouched() {
     let mut app = long_game(25);
     app.jump_to_turn(20);
@@ -347,7 +363,7 @@ fn autosave_switches_to_a_conflict_copy_when_the_file_changed() {
         "(;SZ[9]KM[0.5];B[dd])"
     );
     // 下一次保存走新副本，不再反复产生冲突
-    app.file_stamp = super::storage::FileStamp::of(&current);
+    app.file_stamp = super::storage::FileStamp::of(&current).unwrap();
     app.play_move(Move::Play(Point::new(4, 4))).unwrap();
     assert_eq!(app.current_file, Some(current));
 }
@@ -358,13 +374,19 @@ fn new_game_does_not_inherit_a_stale_mtime() {
     app.store = test_store();
     app.start_play();
     let first = app.current_file.clone().unwrap();
-    assert_eq!(app.file_stamp, super::storage::FileStamp::of(&first));
+    assert_eq!(
+        app.file_stamp,
+        super::storage::FileStamp::of(&first).unwrap()
+    );
 
     app.start_play();
     let second = app.current_file.clone().unwrap();
     assert_ne!(first, second);
-    assert_eq!(app.file_stamp, super::storage::FileStamp::of(&second));
-    assert!(super::storage::FileStamp::of(&second).is_some());
+    assert_eq!(
+        app.file_stamp,
+        super::storage::FileStamp::of(&second).unwrap()
+    );
+    assert!(super::storage::FileStamp::of(&second).unwrap().is_some());
 }
 
 #[test]
@@ -827,7 +849,9 @@ fn opening_a_game_resets_busy_for_the_new_analysis() {
     app.store = test_store();
     app.busy = true;
     let path = app.store.create().unwrap();
-    let sg = sgf::parse("(;SZ[9];B[aa])").unwrap();
+    let src = "(;SZ[9];B[aa])";
+    std::fs::write(&path, src).unwrap();
+    let sg = sgf::parse(src).unwrap();
     app.open_sgf_file(path, &sg).unwrap();
     assert!(!app.busy);
     assert_eq!(app.total_moves(), 1);

@@ -228,6 +228,8 @@ pub struct EngineConfig {
 ## 七、分析任务生命周期（重要）
 
 - `App.generation` 是棋局版本：开新局、打开棋谱、**改走分支**、采用变化、切换拟人/规则时递增。
+  在末尾续下一手**不**算换线（历史前缀没变），因此不递增，上一手迟到的分析仍然有效——
+  最近一手的即时点评依赖它。
 - 每批分析请求带 `generation` 和 `pos`；`App::apply` 只接受 `generation` 相同的 event，
   过期结果**不写缓存、不改状态、不复位 busy**。
 - `evals` 以“手数”为键；改走分支时以**分支起点**为界清理，之后的旧分析全部作废。
@@ -235,6 +237,8 @@ pub struct EngineConfig {
 - 引擎失败后 `busy` 复位、状态栏显示原因，用户可以再次发起分析（有回归测试）。
 - 单纯 `prev/next/jump_to_turn()` 只是浏览旧棋谱，不递增 generation，前缀缓存继续可用。
 - 分析取消：没有独立的取消 API；用 generation 丢弃结果，线程自然结束。
+- 并发上限：`Controller` 同一时间只允许一个后台任务（分析或复盘）。任务运行期间局面又变了，
+  只记 `pending`，等当前任务结束后**合并成一次**补分析，不会每落一手就新起线程排队。
 
 ## 八、存档
 
@@ -243,8 +247,14 @@ pub struct EngineConfig {
 - **原子写**：同目录 `create_new` 唯一临时文件 → 写入 → `fsync` → 关闭 → `rename` → 父目录 `fsync`。
 - **跨进程锁**：保存全程持有 `games/.locks/<文件名>` 上的排它 advisory 锁
   （`std::fs::File::lock`），覆盖“写临时文件 → 比较版本 → rename”，关闭句柄/进程退出即释放。
+  等锁有上限（默认 2s，`GameStore::with_lock_timeout` 可调），超时返回可诊断错误而不是卡住 UI；
+  文件系统不支持 flock 时降级为无锁（仍保留原子写与指纹校验）。
 - **版本指纹**：`FileStamp { mtime, len, FNV-1a(bytes) }`。目标文件和“上次看到的不一样”
-  就另存 `*.conflict-<纳秒>-<pid>.sgf`，不覆盖别人的内容；副本用 `create_new` 创建。
+  就另存 `*.conflict-<纳秒>-<pid>.sgf`，不覆盖别人的内容。副本优先 `hard_link`（内容与文件名
+  同时原子出现），不支持硬链接时退回 `create_new` + 复制。
+- 打开棋谱走 `GameStore::read_stamped()`：在锁内一次读出 `(内容, 指纹)`，并在提交前重新解析
+  核对，避免“读到旧内容、记下新指纹”后在下次保存时静默覆盖。
+- `SaveOutcome::Written` 会带回写入后的指纹，调用方不再重读磁盘。
 - **删除**：移到 `games/.trash/`，文件名带时间戳；不真删。
 - **重命名**：只允许改 `games/` 内的文件名，不允许换目录；同名拒绝。
 - **边界**：advisory 锁只约束同样遵守它的 `weiqi-study` 进程，挡不住任意外部编辑器；

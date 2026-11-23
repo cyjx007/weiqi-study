@@ -426,6 +426,8 @@ fn parse_node(chars: &[char], i: &mut usize) -> Result<Props, String> {
             *i += 1;
         }
         let ident: String = chars[start..*i].iter().collect();
+        // 属性名和 `[` 之间允许空白（手写棋谱常见 `B [cc]`）
+        skip_ws(chars, i);
         let mut values: Vec<String> = Vec::new();
         while *i < chars.len() && chars[*i] == '[' {
             let open = *i;
@@ -726,6 +728,16 @@ mod tests {
         let src = "(;SZ[9];B[];W[ee])";
         let g = parse(src).unwrap();
         assert_eq!(g.moves[0], Move::Pass);
+    }
+
+    #[test]
+    fn property_name_and_value_may_be_separated_by_whitespace() {
+        let g = parse("(;SZ[9];B [cc];W\n[gg])").unwrap();
+        assert_eq!(
+            g.moves,
+            vec![Move::Play(Point::new(2, 2)), Move::Play(Point::new(6, 6))]
+        );
+        assert!(g.warnings.is_empty(), "{:?}", g.warnings);
     }
 
     #[test]
