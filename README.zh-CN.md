@@ -222,6 +222,7 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 ## 注意
 
 - SGF 只跟主线，文件里的变化树不读；`V` 预览的是引擎 PV，不是 SGF 分支。根节点的 `PL`（指定下一手方）会生效；让子棋默认白先
+- 因此工具存进 `games/` 的副本只保留主线，**原来的变化分支会丢**；原始文件不会被改（copy-on-open），需要分支就留好原文件。`go-review` 同样只分析主线
 - 一个文件里有多盘棋（SGF collection）会完整解析：TUI/GUI 打开第一盘并显示 warning，`go-review --game N` 可选其它盘；文件前后的多余内容会带字符位置报错，不再静默忽略
 - SGF/GTP 非法坐标会显式报错，不会再静默当成 Pass；连续两次 Pass 合法
 - 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
