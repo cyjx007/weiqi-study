@@ -310,6 +310,31 @@ pub fn build(
             ev.turn
         ));
     }
+    if !threshold.is_finite() {
+        return Err(format!("复盘阈值必须是有限数值：{threshold}"));
+    }
+    for (i, ev) in evals.iter().enumerate() {
+        if !ev.winrate_black.is_finite() {
+            return Err(format!(
+                "第 {i} 个局面的胜率不是有限数值：{}",
+                ev.winrate_black
+            ));
+        }
+        if !ev.score_black.is_finite() {
+            return Err(format!(
+                "第 {i} 个局面的目差不是有限数值：{}",
+                ev.score_black
+            ));
+        }
+        for (j, c) in ev.candidates.iter().enumerate() {
+            if !c.winrate_black.is_finite() || !c.score_black.is_finite() {
+                return Err(format!(
+                    "第 {i} 个局面的第 {j} 个候选含非有限数值：winrate={} score={}",
+                    c.winrate_black, c.score_black
+                ));
+            }
+        }
+    }
     let mut deltas = Vec::with_capacity(n);
 
     for i in 1..=n {
@@ -344,7 +369,7 @@ pub fn build(
     let mut blunders: Vec<usize> = (0..deltas.len())
         .filter(|&i| deltas[i].loss >= threshold)
         .collect();
-    blunders.sort_by(|&a, &b| deltas[b].loss.partial_cmp(&deltas[a].loss).unwrap());
+    blunders.sort_by(|&a, &b| deltas[b].loss.total_cmp(&deltas[a].loss));
 
     // 阶段划分：按盘面大小缩放（19 路：布局 1–50、中盘 51–150、官子 151+）
     let scale = (size as f32 / 19.0).powi(2);
@@ -367,7 +392,7 @@ pub fn build(
         let avg = slice.iter().map(|d| d.loss).sum::<f32>() / slice.len() as f32;
         let worst = slice
             .iter()
-            .max_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap())
+            .max_by(|a, b| a.loss.total_cmp(&b.loss))
             .unwrap();
         phases.push(PhaseStat {
             label,
@@ -435,10 +460,7 @@ pub fn build(
                 )
             });
         }
-        if let Some(best) = deltas
-            .iter()
-            .min_by(|a, b| a.loss.partial_cmp(&b.loss).unwrap())
-        {
+        if let Some(best) = deltas.iter().min_by(|a, b| a.loss.total_cmp(&b.loss)) {
             if best.loss < -2.0 && n >= 10 {
                 let col = if english {
                     if best.color == Color::Black {
@@ -1038,6 +1060,37 @@ mod tests {
         let empty = Game::new(9, 7.5);
         let r = build(false, &empty, &[fake_eval(0, Color::Black, 0.5)], 5.0).unwrap();
         assert_eq!(r.deltas.len(), 0);
+    }
+
+    #[test]
+    fn build_rejects_non_finite_values() {
+        let mut game = Game::new(9, 7.5);
+        game.play(Move::Play(Point::new(2, 2))).unwrap();
+
+        let mut evals = vec![
+            fake_eval(0, Color::Black, 0.5),
+            fake_eval(1, Color::White, 0.5),
+        ];
+        evals[1].winrate_black = f32::NAN;
+        let err = build(false, &game, &evals, 5.0).unwrap_err();
+        assert!(err.contains("第 1"), "{err}");
+        assert!(err.contains("有限"), "{err}");
+
+        let evals = vec![
+            fake_eval(0, Color::Black, 0.5),
+            fake_eval(1, Color::White, 0.5),
+        ];
+        let err = build(false, &game, &evals, f32::NAN).unwrap_err();
+        assert!(err.contains("阈值"), "{err}");
+
+        let mut evals = vec![
+            fake_eval(0, Color::Black, 0.5),
+            fake_eval(1, Color::White, 0.5),
+        ];
+        evals[0].candidates[0].score_black = f32::INFINITY;
+        let err = build(false, &game, &evals, 5.0).unwrap_err();
+        assert!(err.contains("候选"), "{err}");
+        assert!(err.contains("非有限"), "{err}");
     }
 
     #[test]
