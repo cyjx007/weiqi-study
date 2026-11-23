@@ -259,13 +259,19 @@ impl App {
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
         self.preview = None;
         let mut probe = self.snapshot();
+        // 先验合法性：失败时不能动 generation / 主线 / 缓存 / busy
         probe.play(mv).map_err(|e| format!("{e}"))?;
-        self.moves.truncate(self.pos);
+
+        let base = self.pos;
+        // 改走 = 新分支 = 新棋局版本：旧分支的在途分析和结果一律作废
+        self.next_generation();
+        self.moves.truncate(base);
         self.moves.push(mv);
-        self.pos += 1;
+        self.pos = base + 1;
         self.game = probe;
-        // 新分支之后的评估全部作废
-        self.evals.retain(|&k, _| k <= self.pos);
+        // 只保留分支点及之前的分析；更深位置属于旧分支
+        self.evals.retain(|&k, _| k <= base);
+        self.failed_pos = None;
         self.review = None;
         self.autosave();
         Ok(())

@@ -125,15 +125,18 @@ impl App {
             return;
         }
         let step = p.step;
+        let base = p.base;
         self.next_generation();
-        self.moves.truncate(p.base);
+        self.moves.truncate(base);
         self.moves.extend(p.pv.iter().take(step).copied());
         self.pos = self.moves.len();
         if let Err(e) = self.rebuild() {
             self.status = e;
             return;
         }
-        self.evals.retain(|&k, _| k <= self.pos);
+        // 采用变化也换分支：base 之后属于旧变化，全部作废
+        self.evals.retain(|&k, _| k <= base);
+        self.failed_pos = None;
         self.review = None;
         self.autosave();
         self.status = i18n::fill(strings(self.lang).variation_commit, step);

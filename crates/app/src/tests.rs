@@ -124,6 +124,145 @@ fn setup_game_replays_with_declared_colors() {
     assert_eq!(board.at(Point::new(6, 6)), Some(Color::White), "gg 应是白");
 }
 
+/// 生成 n 手的合法棋谱（19 路，从左上角开始铺，不会互相提子）。
+fn long_game(n: usize) -> App {
+    let letters = b"abcdefghijklmnopqrs";
+    let mut src = String::from("(;SZ[19]KM[7.5]");
+    for i in 0..n {
+        let color = if i.is_multiple_of(2) { 'B' } else { 'W' };
+        let x = (i % 19) as usize;
+        let y = (i / 19) as usize;
+        src.push_str(&format!(
+            ";{color}[{}{}]",
+            letters[x] as char, letters[y] as char
+        ));
+    }
+    src.push(')');
+    let sg = sgf::parse(&src).unwrap();
+    App::from_sgf(&sg, AppConfig::default()).unwrap()
+}
+
+#[test]
+fn branching_from_an_old_position_drops_later_evals() {
+    let mut app = long_game(25);
+    for k in 20..=22 {
+        app.evals.insert(k, eval(k, Color::Black, 0.5, Move::Pass));
+    }
+    let gen = app.generation();
+
+    app.jump_to_turn(20);
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+
+    assert_ne!(app.generation(), gen, "改走分支必须算新版本");
+    assert!(app.evals.contains_key(&20), "分支点的分析仍然有效");
+    assert!(
+        !app.evals.contains_key(&21) && !app.evals.contains_key(&22),
+        "旧分支后续的分析必须清掉：{:?}",
+        app.evals.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn branching_clears_the_old_failed_pos() {
+    let mut app = long_game(25);
+    app.jump_to_turn(20);
+    app.failed_pos = Some(21);
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+    assert_eq!(
+        app.last_failed_pos(),
+        None,
+        "旧分支的失败标记不能挡住新局面"
+    );
+}
+
+#[test]
+fn stale_events_from_the_old_branch_are_ignored() {
+    let mut app = long_game(25);
+    let old_gen = app.generation();
+    app.jump_to_turn(20);
+    app.cursor = Point::new(10, 5);
+    app.play_at_cursor().unwrap();
+
+    // 模拟“新分析正在跑”
+    app.busy = true;
+    app.apply(AppEvent::Analysis {
+        generation: old_gen,
+        pos: 21,
+        result: Ok(eval(21, Color::Black, 0.9, Move::Pass)),
+    });
+    app.apply(AppEvent::Review {
+        generation: old_gen,
+        result: Err("旧分支的复盘".to_string()),
+    });
+
+    assert!(app.analysis().is_none(), "旧分支的结果不能写进缓存");
+    assert!(app.busy, "旧结果不能复位新任务的 busy");
+    assert!(app.review.is_none());
+}
+
+#[test]
+fn illegal_move_leaves_everything_untouched() {
+    let mut app = long_game(25);
+    app.jump_to_turn(20);
+    app.evals
+        .insert(20, eval(20, Color::Black, 0.5, Move::Pass));
+    app.failed_pos = Some(20);
+    let before = (
+        app.generation(),
+        app.pos(),
+        app.total_moves(),
+        app.evals.len(),
+        app.last_failed_pos(),
+        app.busy,
+    );
+
+    // 第 20 手之前 (0,0) 上已经有子
+    app.cursor = Point::new(0, 0);
+    assert!(app.play_at_cursor().is_err());
+
+    assert_eq!(
+        (
+            app.generation(),
+            app.pos(),
+            app.total_moves(),
+            app.evals.len(),
+            app.last_failed_pos(),
+            app.busy,
+        ),
+        before
+    );
+}
+
+#[test]
+fn committing_a_preview_drops_evals_after_its_base() {
+    let mut app = long_game(10);
+    for k in 4..=7 {
+        app.evals.insert(k, eval(k, Color::White, 0.5, Move::Pass));
+    }
+    // 让 start_preview 有候选 PV 可走
+    app.evals.insert(
+        4,
+        eval(4, Color::White, 0.5, Move::Play(Point::new(10, 10))),
+    );
+    let gen = app.generation();
+
+    app.jump_to_turn(4);
+    app.start_preview();
+    app.preview_next();
+    app.commit_preview();
+
+    assert_ne!(app.generation(), gen, "采用变化也算新版本");
+    assert!(app.evals.contains_key(&4), "base 位置的分析仍然有效");
+    assert!(
+        !app.evals.contains_key(&5) && !app.evals.contains_key(&7),
+        "base 之后的分析必须清掉：{:?}",
+        app.evals.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(app.last_failed_pos(), None);
+}
+
 #[test]
 fn white_first_sgf_keeps_colors_through_rebuild_and_full_game() {
     // 白先、没有摆子：from_sgf 走 rebuild，最容易把先手丢掉

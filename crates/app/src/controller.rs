@@ -291,6 +291,35 @@ mod tests {
     }
 
     #[test]
+    fn late_old_branch_result_does_not_reset_the_new_analysis() {
+        let mut ctrl = Controller::new(offline_app());
+        ctrl.app.start_play();
+        ctrl.app.busy = false;
+        for p in [Point::new(2, 2), Point::new(4, 4), Point::new(6, 6)] {
+            ctrl.app.play_move(Move::Play(p)).unwrap();
+        }
+
+        let old_gen = ctrl.app.generation();
+        ctrl.app.jump_to_turn(2);
+        ctrl.app.play_move(Move::Play(Point::new(8, 8))).unwrap();
+        assert_ne!(ctrl.app.generation(), old_gen);
+
+        // 新分支的分析正在跑，此时旧分支的结果才回来
+        ctrl.app.busy = true;
+        let tx = ctrl.sender();
+        tx.send(AppEvent::Analysis {
+            generation: old_gen,
+            pos: 3,
+            result: Ok(eval(3, Color::Black, 0.9, Move::Pass)),
+        })
+        .unwrap();
+        ctrl.tick();
+
+        assert!(ctrl.app.busy, "旧分支的结果不能复位新任务的 busy");
+        assert!(ctrl.app.analysis().is_none(), "旧分支结果不能写进缓存");
+    }
+
+    #[test]
     fn engine_failure_resets_busy_and_allows_another_analysis() {
         use std::time::{Duration, Instant};
 
