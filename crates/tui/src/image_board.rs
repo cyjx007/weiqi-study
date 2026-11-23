@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use app::App;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
-use goban::Move;
+use goban::{Move, Point};
 use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::layout::Rect;
 use ratatui::Frame;
@@ -214,6 +214,19 @@ fn fingerprint(app: &App) -> u64 {
     app.size.hash(&mut h);
     app.cursor.x.hash(&mut h);
     app.cursor.y.hash(&mut h);
+    // 盘面本身必须进 key：两盘同尺寸、同手数、最后一手同坐标时，
+    // display_pos + last_move 区分不了（研究模式没有 analysis/prediction），
+    // 会继续显示上一盘的棋子。
+    let position = app.display_game().position();
+    for y in 0..app.size {
+        for x in 0..app.size {
+            position
+                .board
+                .at(Point::new(x, y))
+                .map(|c| c.sgf_char())
+                .hash(&mut h);
+        }
+    }
     match app.display_game().position().last_move {
         Some(Move::Play(p)) => {
             1u8.hash(&mut h);
@@ -506,6 +519,15 @@ mod tests {
         assert_eq!(Mode::parse("image").unwrap(), Mode::Image);
         assert_eq!(Mode::parse("text").unwrap(), Mode::Text);
         assert!(Mode::parse("svg").is_err());
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_boards_with_the_same_move_count_and_last_move() {
+        // 同尺寸、同手数、最后一手都是 cc，但中间的黑子位置不同。
+        // 旧 key 只看 display_pos + last_move，会返回同一个指纹而显示旧盘面。
+        let a = demo(9, ";B[gg];W[ee];B[cc]");
+        let b = demo(9, ";B[dd];W[ee];B[cc]");
+        assert_ne!(fingerprint(&a), fingerprint(&b));
     }
 
     #[test]
