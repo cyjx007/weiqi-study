@@ -56,6 +56,7 @@ pub fn build_ui(application: &adw::Application) {
     let commit_btn = panels.commit_btn.clone();
     let visits = panels.visits.clone();
     let human_switch = panels.human_switch.clone();
+    let side_combo = panels.side.clone();
     let rank = panels.rank.clone();
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -181,6 +182,7 @@ pub fn build_ui(application: &adw::Application) {
                 gdk::Key::g => ui.ctrl.app.goto_start(),
                 gdk::Key::G => ui.ctrl.app.goto_end(),
                 gdk::Key::t => ui.ctrl.start_play(),
+                gdk::Key::s => ui.ctrl.swap_sides(),
                 gdk::Key::v => ui.ctrl.toggle_ai(),
                 gdk::Key::a => ui.ctrl.analyze(),
                 gdk::Key::A => ui.ctrl.review(),
@@ -483,6 +485,46 @@ pub fn build_ui(application: &adw::Application) {
                 ui.ctrl.set_visits(value);
                 refresh(&mut ui);
             }
+        });
+    }
+    {
+        let ui = ui.clone();
+        side_combo.connect_selected_notify(move |dropdown| {
+            let idx = {
+                let Ok(ui) = ui.try_borrow() else {
+                    return;
+                };
+                if ui.panels.is_updating_controls() {
+                    return;
+                }
+                let idx = dropdown.selected() as usize;
+                let current = if ui.ctrl.app.human == goban::Color::White {
+                    1
+                } else {
+                    0
+                };
+                if idx == current {
+                    return;
+                }
+                idx
+            };
+            let ui = ui.clone();
+            // GTK 正在关 popover，不能同步改局面/起分析
+            glib::idle_add_local_once(move || {
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                if ui.panels.is_updating_controls() {
+                    return;
+                }
+                let color = if idx == 0 {
+                    goban::Color::Black
+                } else {
+                    goban::Color::White
+                };
+                ui.ctrl.set_human_color(color);
+                refresh(&mut ui);
+            });
         });
     }
     {

@@ -29,7 +29,10 @@ pub struct Panels {
     pub visits: gtk::SpinButton,
     pub presets: Vec<gtk::ToggleButton>,
     pub human_switch: adw::SwitchRow,
+    pub side: adw::ComboRow,
     pub rank: adw::ComboRow,
+    side_model: gtk::StringList,
+    side_zh: std::cell::Cell<Option<bool>>,
     rank_model: gtk::StringList,
     rank_zh: std::cell::Cell<Option<bool>>,
     strength_label: gtk::Label,
@@ -148,6 +151,10 @@ impl Panels {
         rank.set_model(Some(&rank_model));
         rank.set_sensitive(false);
 
+        let side_model = gtk::StringList::new(&[]);
+        let side_row = adw::ComboRow::new();
+        side_row.set_model(Some(&side_model));
+
         // AdwSwitchRow / AdwComboRow 必须由 ListBox 类容器承载
         let ai_list = gtk::ListBox::new();
         ai_list.set_selection_mode(gtk::SelectionMode::None);
@@ -157,6 +164,7 @@ impl Panels {
         ai_row.add_row(&presets_row);
         ai_row.add_row(&visits);
         ai_row.add_row(&visits_hint);
+        ai_row.add_row(&side_row);
         ai_row.add_row(&human_switch);
         ai_row.add_row(&rank);
         ai_list.append(&ai_row);
@@ -256,7 +264,10 @@ impl Panels {
             visits,
             presets,
             human_switch,
+            side: side_row,
             rank,
+            side_model,
+            side_zh: std::cell::Cell::new(None),
             rank_model,
             rank_zh: std::cell::Cell::new(None),
             variation_btn,
@@ -357,6 +368,26 @@ impl Panels {
         }
         let has_human = app.human_model_available();
         self.human_switch.set_sensitive(has_human);
+
+        self.side.set_title(s.side_title);
+        self.side.set_subtitle(s.side_hint);
+        if self.side_zh.get() != Some(app.lang.is_zh()) {
+            let labels = [
+                color_name(goban::Color::Black, app.lang),
+                color_name(goban::Color::White, app.lang),
+            ];
+            self.side_model
+                .splice(0, self.side_model.n_items(), &labels);
+            self.side_zh.set(Some(app.lang.is_zh()));
+        }
+        let want_side = if app.human == goban::Color::Black {
+            0
+        } else {
+            1
+        };
+        if self.side.selected() != want_side {
+            self.side.set_selected(want_side);
+        }
         // 禁用状态的控件不显示 tooltip，缺模型时直接把说明写进副标题
         self.human_switch.set_subtitle(if has_human {
             s.human_hint

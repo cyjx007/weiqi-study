@@ -179,14 +179,14 @@ cpu_percent() {
 if [ -n "$WID" ]; then
     xdotool windowactivate "$WID" 2>/dev/null \
         || xdotool windowfocus "$WID" 2>/dev/null || true
-    # 键盘导航：下一步/上一步/开局/终局/退出预览
+    # 键盘导航：下一步/上一步/开局/终局/换边（两次回原边）/退出预览
     KEY_FAIL=0
-    for k in n n p g G Escape; do
+    for k in n n p g G s s Escape; do
         xdotool key --window "$WID" "$k" >/dev/null 2>&1 || KEY_FAIL=$((KEY_FAIL + 1))
         sleep 0.2
     done
-    if [ "$KEY_FAIL" -eq 6 ]; then
-        fail "6 次按键注入全部失败（xdotool 发不到窗口）"
+    if [ "$KEY_FAIL" -eq 8 ]; then
+        fail "8 次按键注入全部失败（xdotool 发不到窗口）"
     fi
     alive "$APP_PID" || fail "键盘导航后进程退出"
 

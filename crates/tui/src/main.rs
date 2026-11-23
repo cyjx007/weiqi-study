@@ -49,7 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                      用法: weiqi-tui [game.sgf] [--visits N] [--mode auto|image|text]\n\
                      --mode  棋盘渲染：auto 探测 kitty/sixel/iTerm2（失败回退文本）,\n\
                               image 强制图片（不支持则报错）, text 强制文本点阵\n\
-                     t 人机对局 / play the engine, Enter 落子, L 棋谱 / games, ? 帮助 / help\n\
+                     t 人机对局 / play the engine, s 换边 / swap sides, Enter 落子, L 棋谱 / games, ? 帮助 / help\n\
                      不给棋谱时：有 samples/demo.sgf 就打开它，否则空盘。",
                     env!("CARGO_PKG_VERSION")
                 );
@@ -215,6 +215,7 @@ fn event_loop(
                                 let _ = ctrl.play_at_cursor();
                             }
                             KeyCode::Char('t') => ctrl.start_play(),
+                            KeyCode::Char('s') => ctrl.swap_sides(),
                             KeyCode::Char('v') => ctrl.toggle_ai(),
                             KeyCode::Char('V') => ctrl.start_preview(),
                             KeyCode::Char('u') => {
