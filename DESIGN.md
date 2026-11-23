@@ -73,10 +73,11 @@ weiqi-study/
 │  ├─ tui/   [bin weiqi-tui]   # ratatui 前端（文本 / 图片棋盘）
 │  └─ gui/   [bin weiqi-gui]   # gtk4 + libadwaita 前端
 ├─ crates/app/tests/           # 端到端 fixtures（SGF → App → Goban → 写回 → 再读）
+├─ docs/TODO.md                # 暂缓项与已知缺口
 └─ scripts/                    # gui-smoke.sh / tui-smoke.py（CI 用）
 ```
 
-`app/src/lib.rs` 目前约 1100 行；测试在 `app/src/tests.rs`、变化预览在 `preview.rs`。
+`app/src/lib.rs` 目前约 1130 行；测试在 `app/src/tests.rs`、变化预览在 `preview.rs`。
 `sgf/src/lib.rs` 的业务代码和测试已经拆开（`sgf/src/tests.rs`），两边都低于 1500 行。
 
 ### crate 边界（越界就是 bug）
@@ -305,8 +306,8 @@ pub struct EngineConfig {
 | `review` | 快照/语义断言：固定 `TurnEval` → 断言文本（语言显式固定）；`build()` 校验 `evals` 精确覆盖 turn `0..=n`，返回 `Result` 而不是索引 panic |
 | `app` | 单测：导航、分支换线、缓存失效、存储冲突、预览、拟人策略 |
 | 端到端 | `crates/app/tests/e2e_fixtures.rs` + 7 份 fixtures：PL[W]、HA+AB、Pass、变化、collection、未知 RU、AGA |
-| GUI | `scripts/gui-smoke.sh`：Xvfb 启动、按键、切换棋谱、CPU 上限 |
-| TUI | `scripts/tui-smoke.py`：真实 pty 120×40，启动→列表→分析失败→帮助→退出 |
+| GUI | `scripts/gui-smoke.sh`：Xvfb 启动、按键、切换棋谱、文件对话框导入并校验落盘、CPU 上限 |
+| TUI | `scripts/tui-smoke.py`：真实 pty 120×40，启动→列表→分析失败→帮助→导入→9×9 落子；`tui-image-smoke.py`：强制 kitty/sixel，检查图形转义 |
 | CI | fmt / clippy -D warnings / test / build / GUI smoke / TUI smoke / `msrv (1.92)`（`cargo check --workspace --all-targets`） |
 
 ## 十、打包

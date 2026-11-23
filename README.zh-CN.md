@@ -153,17 +153,17 @@ TUI 按键：
 
 命令行参数（以 `--help` 为准）：
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--visits N` | `120` | 每个局面推演次数，10–5000，越大越准越慢 |
-| `--mode auto\|image\|text` | `auto` | 棋盘渲染：`auto` 探测 kitty/sixel/iTerm2 失败回退文本；`image` 不支持则报错；`text` 强制点阵 |
-| `--min-loss P` | `5` | 只显示亏损 ≥ P 个胜率点的手（必须有限且非负） |
-| `--all` | 关 | 表格里显示每一手 |
-| `--komi K` | 取自 SGF（缺省 `7.5`） | 覆盖贴目（可为负） |
-| `--no-engine` | 关 | 只解析 SGF，不调引擎 |
-| `--strict` | 关 | 棋谱有任何 warning 就报错 |
-| `--game N` | `1` | 文件是多盘 SGF collection 时选第 N 盘 |
-| `-V`, `--version` | — | 显示版本（升级后确认装的是新版） |
+| 参数 | 默认值 | 适用于 | 说明 |
+| --- | --- | --- | --- |
+| `--visits N` | `120` | 两者 | 每个局面推演次数，10–5000，越大越准越慢 |
+| `--mode auto\|image\|text` | `auto` | `weiqi-tui` | 棋盘渲染：`auto` 探测 kitty/sixel/iTerm2 失败回退文本；`image` 不支持则报错；`text` 强制点阵 |
+| `--min-loss P` | `5` | `go-review` | 只显示亏损 ≥ P 个胜率点的手（必须有限且非负） |
+| `--all` | 关 | `go-review` | 表格里显示每一手 |
+| `--komi K` | 取自 SGF（缺省 `7.5`） | `go-review` | 覆盖贴目（可为负） |
+| `--no-engine` | 关 | `go-review` | 只解析 SGF，不调引擎 |
+| `--strict` | 关 | `go-review` | 棋谱有任何 warning 就报错 |
+| `--game N` | `1` | `go-review` | 文件是多盘 SGF collection 时选第 N 盘 |
+| `-V`, `--version` | — | 两者 | 显示版本（升级后确认装的是新版） |
 
 自动探测会找 `PATH` 里的 `katago`，以及 Steam 棋类合集自带的网络；找不到就显式设置上面
 两个变量。
@@ -206,8 +206,10 @@ crates/cli       go-review
 crates/tui       weiqi-tui（ratatui）
 crates/gui       weiqi-gui（GTK4 + libadwaita，Cairo 棋盘）
 packaging/       图形界面的桌面入口
+docs/            TODO.md：暂缓项与已知缺口
 scripts/         gui-smoke.sh：CI 用的无头 GUI 冒烟测试
                  tui-smoke.py：CI 用的 pty TUI 冒烟测试
+                 tui-image-smoke.py：kitty/sixel 编码冒烟（不验证像素）
 nix/package.nix  构建三个二进制的 Nix 包
 flake.nix        flake 输出：package 与 dev shell
 samples/         TUI 无参数时在内存里打开的示例棋谱（不会复制进库）
@@ -225,16 +227,19 @@ nix build .#default                 # 用 Nix 构建全部二进制
 scripts/gui-smoke.sh                # Xvfb 里跑 GUI 冒烟（需要 Xvfb，xdotool 可选）
 scripts/gui-smoke.sh --switch --import  # 额外切换棋谱 + 通过文件对话框导入一盘 SGF
 WEIQI_TUI_BIN=target/release/weiqi-tui \
-  python3 scripts/tui-image-smoke.py # 图片编码：伪终端里强制 kitty/sixel，检查图形转义
-scripts/gui-smoke.sh --switch       # 额外用 xdotool 试着切换棋谱
+  python3 scripts/tui-smoke.py       # TUI：启动 → 列表 → 分析（无引擎）→ 帮助 → 导入 → 9×9 新局
 WEIQI_TUI_BIN=target/release/weiqi-tui \
-  python3 scripts/tui-smoke.py       # TUI：启动 → 棋谱列表 → 分析（引擎不可用）→ 帮助 → 退出
+  python3 scripts/tui-image-smoke.py # 图片编码：伪终端里强制 kitty/sixel，检查图形转义
 ```
 
 CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo test --workspace`、
-`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch` 启动 GUI；
-接着用 `scripts/tui-smoke.py` 在真实 pty 里跑 TUI（启动 → 棋谱列表 → 分析失败 → 帮助 → 退出）：
-崩溃、panic 或空闲 CPU 超过 80% 都会让 CI 失败。
+`cargo build --release --workspace`，然后在 Xvfb 里用 `scripts/gui-smoke.sh --switch --import`
+启动 GUI（含文件对话框导入并校验落盘）；接着在真实 pty 里跑 `scripts/tui-smoke.py`
+（启动 → 列表 → 分析失败 → 帮助 → 导入 → 9×9 新局）和 `scripts/tui-image-smoke.py`
+（kitty/sixel 编码）；另有 `msrv (1.92)` job 跑 `cargo check --workspace --all-targets`。
+崩溃、panic、空闲 CPU 超过 80% 或导入没落盘都会让 CI 失败。
+
+暂缓项与已知缺口见 [docs/TODO.md](docs/TODO.md)。
 
 ### 真实终端图片人工检查
 

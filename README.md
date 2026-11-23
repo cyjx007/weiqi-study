@@ -154,17 +154,17 @@ Environment variables:
 
 Command-line flags (`--help` is authoritative):
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--visits N` | `120` | Visits per position, 10–5000: more is slower and stronger |
-| `--mode auto\|image\|text` | `auto` | Board renderer: `auto` probes kitty/sixel/iTerm2 and falls back to the text grid; `image` errors if unsupported; `text` forces the dot grid |
-| `--min-loss P` | `5` | Only show moves that lost at least P winrate points (finite, ≥ 0) |
-| `--all` | off | Show every move in the table |
-| `--komi K` | from SGF (`7.5` fallback) | Override komi (negative values allowed) |
-| `--no-engine` | off | Parse the SGF only, skip the engine |
-| `--strict` | off | Treat any SGF warning as an error |
-| `--game N` | `1` | Pick the N-th game when the file is an SGF collection |
-| `-V`, `--version` | — | Print the version (useful after `nix profile upgrade`) |
+| Flag | Default | Applies to | Meaning |
+| --- | --- | --- | --- |
+| `--visits N` | `120` | both | Visits per position, 10–5000: more is slower and stronger |
+| `--mode auto\|image\|text` | `auto` | `weiqi-tui` | Board renderer: `auto` probes kitty/sixel/iTerm2 and falls back to the text grid; `image` errors if unsupported; `text` forces the dot grid |
+| `--min-loss P` | `5` | `go-review` | Only show moves that lost at least P winrate points (finite, ≥ 0) |
+| `--all` | off | `go-review` | Show every move in the table |
+| `--komi K` | from SGF (`7.5` fallback) | `go-review` | Override komi (negative values allowed) |
+| `--no-engine` | off | `go-review` | Parse the SGF only, skip the engine |
+| `--strict` | off | `go-review` | Treat any SGF warning as an error |
+| `--game N` | `1` | `go-review` | Pick the N-th game when the file is an SGF collection |
+| `-V`, `--version` | — | both | Print the version (useful after `nix profile upgrade`) |
 
 Auto-detection looks for `katago` on `PATH` and for a network shipped with a Steam
 board-game collection; set the variables explicitly if either is missing.
@@ -211,8 +211,10 @@ crates/cli       go-review binary
 crates/tui       weiqi-tui binary (ratatui)
 crates/gui       weiqi-gui binary (GTK4 + libadwaita, Cairo board)
 packaging/       desktop entry for the GUI
+docs/            TODO.md: deferred work and known gaps
 scripts/         gui-smoke.sh: headless GUI smoke test used by CI
                  tui-smoke.py: pty-driven TUI smoke test used by CI
+                 tui-image-smoke.py: kitty/sixel encoder smoke (no visual check)
 nix/package.nix  Nix package building all three binaries
 flake.nix        flake outputs: package and dev shell
 samples/         demo SGF opened in memory by the TUI fallback (never copied into the library)
@@ -240,7 +242,10 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
 `scripts/gui-smoke.sh --switch --import` and fails if it crashes, panics, idles above 80% CPU, or the
 file-dialog import does not land in the library; it then runs `scripts/tui-smoke.py` in a real pty
 (start → games list → analyse with a missing engine → help → import → 9×9 game) and
-`scripts/tui-image-smoke.py` (kitty/sixel encoders, not a visual test).
+`scripts/tui-image-smoke.py` (kitty/sixel encoders, not a visual test). A separate `msrv (1.92)`
+job runs `cargo check --workspace --all-targets` on the declared minimum toolchain.
+
+Deferred work and known gaps are tracked in [docs/TODO.md](docs/TODO.md).
 
 ### Real-terminal image check (manual)
 
