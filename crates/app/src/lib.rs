@@ -81,6 +81,8 @@ pub struct App {
     pub engine: Arc<engine::Engine>,
     pub store: GameStore,
     pub current_file: Option<PathBuf>,
+    /// 上次读/写 `current_file` 时看到的修改时间，用于并发冲突检测
+    pub file_mtime: Option<SystemTime>,
     pub games: Vec<GameEntry>,
     pub show_games: bool,
     pub show_info: bool,
@@ -148,6 +150,7 @@ impl App {
             lang: Lang::from_env(),
             store: GameStore::open(),
             current_file: None,
+            file_mtime: None,
             games: Vec::new(),
             show_games: false,
             show_info: false,
@@ -274,12 +277,14 @@ impl App {
     }
 
     /// 把当前局面写回它对应的文件（如果有）。
+    ///
+    /// 文件被别的进程改过时不会覆盖它，而是另存冲突副本并切换过去。
     fn autosave(&mut self) {
         let Some(path) = self.current_file.clone() else {
             return;
         };
         let setup = self.setup.clone();
-        if let Err(e) = self.store.save(
+        let result = self.store.save(
             &path,
             self.size,
             self.komi,
@@ -288,9 +293,22 @@ impl App {
             storage::WriteOptions {
                 rules: self.rules,
                 first: self.first,
+                expected_mtime: self.file_mtime,
             },
-        ) {
-            self.status = e;
+        );
+        match result {
+            Ok(storage::SaveOutcome::Written) => {
+                self.file_mtime = storage::mtime(&path);
+            }
+            Ok(storage::SaveOutcome::Conflict(alt)) => {
+                self.file_mtime = storage::mtime(&alt);
+                self.current_file = Some(alt.clone());
+                self.status = i18n::fill(
+                    strings(self.lang).conflict_saved,
+                    alt.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                );
+            }
+            Err(e) => self.status = e,
         }
     }
 
@@ -326,6 +344,8 @@ impl App {
         match self.store.create() {
             Ok(path) => {
                 self.current_file = Some(path.clone());
+                // 新文件还没有“上次看到的时间”，否则会误判成冲突
+                self.file_mtime = None;
                 self.autosave();
                 self.status = i18n::fill(
                     strings(self.lang).new_game,
@@ -368,7 +388,11 @@ impl App {
                         komi,
                         &setup,
                         &moves,
-                        storage::WriteOptions { rules, first },
+                        storage::WriteOptions {
+                            rules,
+                            first,
+                            expected_mtime: None,
+                        },
                     )?;
                     Some(copy)
                 }
@@ -393,6 +417,7 @@ impl App {
         self.cursor = Point::new(size / 2, size / 2);
         self.game = game;
         self.vs_ai = false;
+        self.file_mtime = new_file.as_deref().and_then(storage::mtime);
         self.current_file = new_file;
         self.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&self.warnings) {
@@ -559,6 +584,7 @@ impl App {
         let new_path = self.store.rename(&entry.path, name)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
             self.current_file = Some(new_path.clone());
+            self.file_mtime = storage::mtime(&new_path);
         }
         self.refresh_games();
         let label = new_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -574,6 +600,7 @@ impl App {
         let trashed = self.store.trash(&entry.path)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
             self.current_file = None;
+            self.file_mtime = None;
         }
         self.refresh_games();
         self.game_cursor = self.game_cursor.min(self.games.len().saturating_sub(1));
@@ -1201,6 +1228,57 @@ mod tests {
         let board = &app.game().position().board;
         assert_eq!(board.at(Point::new(2, 2)), Some(Color::Black), "cc 应是黑");
         assert_eq!(board.at(Point::new(6, 6)), Some(Color::White), "gg 应是白");
+    }
+
+    #[test]
+    fn autosave_switches_to_a_conflict_copy_when_the_file_changed() {
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+        app.start_play();
+        let file = app.current_file.clone().expect("新局应有文件");
+        assert!(app.file_mtime.is_some(), "开局保存后要记住 mtime");
+
+        // 另一个进程改了这个文件；我们手上的 mtime 已经过期
+        std::fs::write(&file, "(;SZ[9]KM[0.5];B[dd])").unwrap();
+        app.file_mtime = Some(std::time::UNIX_EPOCH);
+
+        app.play_move(Move::Play(Point::new(3, 3))).unwrap();
+
+        let current = app.current_file.clone().unwrap();
+        assert_ne!(current, file, "不能覆盖外部修改过的文件");
+        assert!(
+            current
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains("conflict")),
+            "{}",
+            current.display()
+        );
+        assert!(app.status.contains("conflict"), "{}", app.status);
+        // 外部内容原样保留
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "(;SZ[9]KM[0.5];B[dd])"
+        );
+        // 下一次保存走新副本，不再反复产生冲突
+        app.file_mtime = super::storage::mtime(&current);
+        app.play_move(Move::Play(Point::new(4, 4))).unwrap();
+        assert_eq!(app.current_file, Some(current));
+    }
+
+    #[test]
+    fn new_game_does_not_inherit_a_stale_mtime() {
+        let mut app = App::new(9, 7.5, AppConfig::default());
+        app.store = test_store();
+        app.start_play();
+        let first = app.current_file.clone().unwrap();
+        assert_eq!(app.file_mtime, super::storage::mtime(&first));
+
+        app.start_play();
+        let second = app.current_file.clone().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(app.file_mtime, super::storage::mtime(&second));
+        assert!(super::storage::mtime(&second).is_some());
     }
 
     #[test]

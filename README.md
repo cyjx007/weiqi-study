@@ -240,6 +240,9 @@ CI installs GTK4 and libadwaita, runs `cargo fmt`, `cargo clippy`, `cargo test -
   skip the model load. Closing the TUI or the GUI ends the engine process.
 - The interface and the written commentary are English or Chinese (`WEIQI_LANG`, default from `LANG`); `go-review` follows the same setting.
 - Games are saved automatically after every move; nothing is deleted by the tool.
+- Saves are atomic: a uniquely named temp file (`create_new`), `fsync`, rename, then a directory
+  `fsync`. If the file changed on disk since it was opened (another process edited it), the tool
+  does not overwrite it — it writes a `*.conflict-<nanos>-<pid>.sgf` copy and switches to it.
 
 ## License
 

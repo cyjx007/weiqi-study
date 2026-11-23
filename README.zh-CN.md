@@ -233,6 +233,8 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
   关掉 TUI 或窗口时引擎随之退出
 - 界面和讲评都支持中/英（`WEIQI_LANG`，默认跟随 `LANG`）；`go-review` 同样跟随
 - 每落一子自动保存棋谱，工具本身不删除任何棋谱
+- 保存是原子的：同目录唯一临时文件（`create_new`）+ `fsync` + rename + 目录 `fsync`；
+  如果文件在打开后被别的进程改过，不会覆盖它，而是另存 `*.conflict-<纳秒>-<pid>.sgf` 并切过去
 
 ## 许可
 
