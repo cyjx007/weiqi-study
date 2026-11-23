@@ -262,7 +262,10 @@ runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests
   skip the model load. Closing the TUI or the GUI ends the engine process.
 - The interface and the written commentary are English or Chinese (`WEIQI_LANG`, default from `LANG`); `go-review` follows the same setting.
-- Games are saved automatically after every move; nothing is deleted by the tool.
+- Games are saved automatically after every move; nothing is deleted by the tool. An untouched new
+  game is not written at all, so quitting right after `t` does not leave an unreadable file.
+- On startup the GUI opens the most recent **parseable** game in the library, skipping corrupted
+  entries (the reason is shown in the status line if none can be opened).
 - Saves are atomic: a uniquely named temp file (`create_new`), `fsync`, rename, then a directory
   `fsync`. If the file changed on disk since it was opened (another process edited it), the tool
   does not overwrite it — it writes a `*.conflict-<nanos>-<pid>.sgf` copy and switches to it.

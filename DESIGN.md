@@ -270,6 +270,10 @@ pub struct EngineConfig {
 - **版本指纹**：`FileStamp { mtime, len, FNV-1a(bytes) }`。目标文件和“上次看到的不一样”
   就另存 `*.conflict-<纳秒>-<pid>.sgf`，不覆盖别人的内容。副本优先 `hard_link`（内容与文件名
   同时原子出现），不支持硬链接时退回 `create_new` + 复制。
+- **空局不落盘**：`start_play()` 只预留文件名，第一手落子时才 `autosave`。SGF 解析要求至少
+  一手或摆子，提前写文件会在库里留下打不开的空棋谱。
+- **新局参数**：`start_play()` 把规则、先手、komi 都重置为默认（`DEFAULT_KOMI`），不继承
+  上一盘 SGF 的 KM；`write_game` 用 f32 最短表示写 KM，避免 `{:.1}` 把 6.25 舍成 6.2。
 - 打开棋谱走 `GameStore::read_stamped()`：在锁内一次读出 `(内容, 指纹)`，并在提交前重新解析
   核对，避免“读到旧内容、记下新指纹”后在下次保存时静默覆盖。
 - `SaveOutcome::Written` 会带回写入后的指纹，调用方不再重读磁盘。
