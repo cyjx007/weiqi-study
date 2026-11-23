@@ -568,20 +568,75 @@ pub fn katago_rules(rule: RuleSet) -> &'static str {
     rule.katago_name()
 }
 
+/// 取一个必填的有限浮点字段；缺失、类型错误、NaN/Infinity 都算坏数据。
+fn finite_f64(v: &Value, key: &str) -> Result<f64, String> {
+    let x = v
+        .get(key)
+        .and_then(|x| x.as_f64())
+        .ok_or_else(|| format!("缺少 {key}"))?;
+    if !x.is_finite() {
+        return Err(format!("{key} 不是有限数值: {x}"));
+    }
+    Ok(x)
+}
+
+/// 解析一条候选。协议必需字段（move/winrate/scoreLead/visits）缺任何一个都返回 Err，
+/// 由调用方跳过该候选；只有 `pv` 是可选字段（缺省为空）。
+fn candidate_from_json(m: &Value, game: &Game, to_move: Color) -> Result<Candidate, String> {
+    let raw = m
+        .get("move")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| "候选缺少 move".to_string())?;
+    let mv = parse_gtp_move(raw, game.size()).map_err(|e| format!("move={raw}: {e}"))?;
+
+    let cwr = finite_f64(m, "winrate")?;
+    if !(0.0..=1.0).contains(&cwr) {
+        return Err(format!("winrate 越界: {cwr}"));
+    }
+    let csc = finite_f64(m, "scoreLead")?;
+
+    let raw_visits = finite_f64(m, "visits")?;
+    if raw_visits < 0.0 {
+        return Err(format!("visits 为负: {raw_visits}"));
+    }
+    if raw_visits > u32::MAX as f64 {
+        return Err(format!("visits 溢出 u32: {raw_visits}"));
+    }
+    let visits = raw_visits as u32;
+
+    let (cwr_b, csc_b) = if to_move == Color::Black {
+        (cwr as f32, csc as f32)
+    } else {
+        (1.0 - cwr as f32, -(csc as f32))
+    };
+    let pv = m
+        .get("pv")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .filter_map(|s| parse_gtp_move(s, game.size()).ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(Candidate {
+        mv,
+        winrate_black: cwr_b,
+        score_black: csc_b,
+        pv,
+        visits,
+    })
+}
+
 fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String> {
     let to_move = game.to_move_at(turn);
     let root = v.get("rootInfo").ok_or("结果缺少 rootInfo")?;
-    let wr = root
-        .get("winrate")
-        .and_then(|x| x.as_f64())
-        .ok_or("rootInfo 缺少 winrate")? as f32;
+    let wr = finite_f64(root, "winrate").map_err(|e| format!("rootInfo {e}"))? as f32;
     if !(0.0..=1.0).contains(&wr) {
         return Err(format!("rootInfo.winrate 越界: {wr}"));
     }
-    let score = root
-        .get("scoreLead")
-        .and_then(|x| x.as_f64())
-        .ok_or("rootInfo 缺少 scoreLead")? as f32;
+    let score = finite_f64(root, "scoreLead").map_err(|e| format!("rootInfo {e}"))? as f32;
     let (winrate_black, score_black) = if to_move == Color::Black {
         (wr, score)
     } else {
@@ -591,41 +646,24 @@ fn eval_from_json(v: &Value, game: &Game, turn: u16) -> Result<TurnEval, String>
     let mut candidates = Vec::new();
     if let Some(arr) = v.get("moveInfos").and_then(|x| x.as_array()) {
         // 先过滤再截断：否则前 8 条全坏时，第 9 条好棋会被误判成"全部无法解析"
+        let mut first_err: Option<String> = None;
         for m in arr.iter() {
             // 候选级容错：引擎可能给出 resign / unknown / 越界坐标，
             // 跳过这一个候选即可，不要因为一个坏值丢掉整轮分析。
-            let Some(raw) = m.get("move").and_then(|x| x.as_str()) else {
-                continue;
-            };
-            let Ok(mv) = parse_gtp_move(raw, game.size()) else {
-                continue;
-            };
-            let cwr = m.get("winrate").and_then(|x| x.as_f64()).unwrap_or(0.5) as f32;
-            let csc = m.get("scoreLead").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
-            let (cwr_b, csc_b) = if to_move == Color::Black {
-                (cwr, csc)
-            } else {
-                (1.0 - cwr, -csc)
-            };
-            let pv = match m.get("pv").and_then(|x| x.as_array()) {
-                Some(a) => a
-                    .iter()
-                    .filter_map(|s| s.as_str())
-                    .filter_map(|s| parse_gtp_move(s, game.size()).ok())
-                    .collect::<Vec<_>>(),
-                None => Vec::new(),
-            };
-            let visits = m.get("visits").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-            candidates.push(Candidate {
-                mv,
-                winrate_black: cwr_b,
-                score_black: csc_b,
-                pv,
-                visits,
-            });
+            match candidate_from_json(m, game, to_move) {
+                Ok(c) => candidates.push(c),
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
         }
         if candidates.is_empty() && !arr.is_empty() {
-            return Err("moveInfos 里的候选全部无法解析".to_string());
+            return Err(format!(
+                "moveInfos 里的候选全部无法解析：{}",
+                first_err.unwrap_or_default()
+            ));
         }
         candidates.truncate(8);
     }
@@ -697,6 +735,39 @@ mod tests {
         });
         let err = eval_from_json(&v, &game, 0).unwrap_err();
         assert!(err.contains("全部无法解析"), "{err}");
+    }
+
+    #[test]
+    fn incomplete_candidate_fields_are_rejected_not_defaulted() {
+        let game = Game::new(9, 7.5);
+        let base = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+        for bad in [
+            json!({"move": "D4", "scoreLead": 0.0, "visits": 1}), // 缺 winrate
+            json!({"move": "D4", "winrate": 1.2, "scoreLead": 0.0, "visits": 1}), // 越界
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0}), // 缺 visits
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": -1}), // 负数
+            json!({"move": "D4", "winrate": 0.5, "scoreLead": 0.0, "visits": 5e9}), // 溢出 u32
+        ] {
+            let mut v = base.clone();
+            v["moveInfos"] = json!([bad]);
+            let err = eval_from_json(&v, &game, 0).unwrap_err();
+            assert!(err.contains("全部无法解析"), "{err}");
+        }
+
+        // rootInfo 的必需字段同样不能缺
+        let v = json!({"rootInfo": {"winrate": 0.5}, "moveInfos": []});
+        assert!(eval_from_json(&v, &game, 0).is_err());
+        let v = json!({"rootInfo": {"winrate": 0.5, "scoreLead": 0.0}});
+        assert!(eval_from_json(&v, &game, 0).is_ok());
+
+        // 字段齐全的候选照常通过
+        let mut v = base;
+        v["moveInfos"] = json!([
+            {"move": "D4", "winrate": 0.5, "scoreLead": 1.0, "visits": 42}
+        ]);
+        let ev = eval_from_json(&v, &game, 0).unwrap();
+        assert_eq!(ev.candidates.len(), 1);
+        assert_eq!(ev.candidates[0].visits, 42);
     }
 
     #[test]
