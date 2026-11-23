@@ -52,6 +52,9 @@ pub enum AppEvent {
     },
 }
 
+/// SGF 没有声明贴目时的默认值（CLI/TUI/GUI 共用这一处，避免各自硬编码）。
+pub const DEFAULT_KOMI: f32 = 7.5;
+
 /// 拟人网可选段位（KataGo humanv0 的 profile 名）。
 /// 每步思考量的四个快捷档位（visits）。
 pub const VISIT_PRESETS: [u32; 4] = [60, 120, 300, 600];
@@ -167,7 +170,7 @@ impl App {
     }
 
     pub fn from_sgf(sg: &SgfGame, config: AppConfig) -> Result<Self, String> {
-        let mut app = Self::new(sg.size, sg.komi.unwrap_or(7.5), config);
+        let mut app = Self::new(sg.size, sg.komi.unwrap_or(DEFAULT_KOMI), config);
         app.setup = sg.setup.clone();
         app.rules = sgf::rule_set_from_rules(sg.rules.as_deref());
         app.first = sg.first_to_move();
@@ -377,7 +380,7 @@ impl App {
         // 事务性：先在局部把棋局重放成功、把副本写好，再一次性提交。
         // 任何一步失败都保持当前会话原样，避免"旧棋盘 + 新元数据"或覆盖旧文件。
         let size = sg.size;
-        let komi = sg.komi.unwrap_or(7.5);
+        let komi = sg.komi.unwrap_or(DEFAULT_KOMI);
         let rules = sgf::rule_set_from_rules(sg.rules.as_deref());
         let first = sg.first_to_move();
         let setup = sg.setup.clone();
@@ -400,10 +403,13 @@ impl App {
                 .ok_or_else(|| format!("棋谱不存在：{}", path.display()))?;
             let current =
                 sgf::parse(&text).map_err(|e| format!("重新读取 {} 失败：{e}", path.display()))?;
+            // 比较“解析后的语义”，而不只是原始字段：只改 SZ/KM/RU 也要能发现
             if current.moves != moves
                 || current.setup != setup
-                || current.first != sg.first
-                || current.rules != sg.rules
+                || current.size != size
+                || current.komi.unwrap_or(DEFAULT_KOMI) != komi
+                || current.first_to_move() != first
+                || sgf::rule_set_from_rules(current.rules.as_deref()) != rules
             {
                 return Err("棋谱在打开期间被其他程序修改，请重新打开".to_string());
             }

@@ -407,6 +407,30 @@ fn new_game_does_not_inherit_a_stale_mtime() {
 }
 
 #[test]
+fn open_detects_size_komi_or_rule_changes_between_reads() {
+    let mut app = App::new(9, super::DEFAULT_KOMI, AppConfig::default());
+    app.store = test_store();
+    let path = app.store.dir().join("semantics.sgf");
+    let original = "(;SZ[9]KM[7.5];B[cc];W[gg])";
+    let sg = sgf::parse(original).unwrap();
+
+    for changed in [
+        "(;SZ[13]KM[7.5];B[cc];W[gg])",            // 只改棋盘大小
+        "(;SZ[9]KM[0.5];B[cc];W[gg])",             // 只改贴目
+        "(;SZ[9]KM[7.5]RU[Japanese];B[cc];W[gg])", // 只改规则
+    ] {
+        std::fs::write(&path, original).unwrap();
+        app.open_sgf_file(path.clone(), &sg).unwrap();
+        std::fs::write(&path, changed).unwrap();
+        let err = app.open_sgf_file(path.clone(), &sg).unwrap_err();
+        assert!(
+            err.contains("修改"),
+            "{changed} 的语义变化必须被发现：{err}"
+        );
+    }
+}
+
+#[test]
 fn failed_open_keeps_current_state() {
     let mut app = demo();
     let before_moves = app.total_moves();
