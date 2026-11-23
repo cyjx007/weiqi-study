@@ -6,12 +6,14 @@
 #   WEIQI_GUI_BIN=target/release/weiqi-gui scripts/gui-smoke.sh
 #   scripts/gui-smoke.sh --seconds 10         # 启动后多等一会
 #   scripts/gui-smoke.sh --switch             # 额外尝试切换棋谱（需要 xdotool，尽力而为）
+#   scripts/gui-smoke.sh --import             # 按 o 走文件对话框导入一个 SGF 并校验落盘
 #
 # 依赖：没有 DISPLAY 时需要 Xvfb；按键和 CPU 检查需要 xdotool（缺了就跳过）。
 set -euo pipefail
 
 SECONDS_UP=6
 WANT_SWITCH=0
+WANT_IMPORT=0
 BIN="${WEIQI_GUI_BIN:-}"
 
 while [ $# -gt 0 ]; do
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
         --seconds) SECONDS_UP="$2"; shift 2 ;;
         --binary) BIN="$2"; shift 2 ;;
         --switch) WANT_SWITCH=1; shift ;;
+        --import) WANT_IMPORT=1; shift ;;
         -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
@@ -126,6 +129,11 @@ if [ -z "${DISPLAY:-}" ]; then
 fi
 
 export GDK_BACKEND=x11
+# 无头环境禁用输入法，避免 fcitx 抢走 xdotool 的按键
+export GTK_IM_MODULE=gtk-im-context-simple
+export XMODIFIERS=@im=none
+# 强制用进程内 GtkFileChooserDialog，避免依赖 xdg-desktop-portal（CI 没有）
+export GTK_USE_PORTAL=0
 export XDG_DATA_HOME="$TMP/data"
 export WEIQI_LANG=zh
 
@@ -181,14 +189,68 @@ if [ -n "$WID" ]; then
         || xdotool windowfocus "$WID" 2>/dev/null || true
     # 键盘导航：下一步/上一步/开局/终局/换边（两次回原边）/退出预览
     KEY_FAIL=0
-    for k in n n p g G s s question Escape; do
+    for k in n n p g G s s Escape; do
         xdotool key --window "$WID" "$k" >/dev/null 2>&1 || KEY_FAIL=$((KEY_FAIL + 1))
         sleep 0.2
     done
-    if [ "$KEY_FAIL" -eq 9 ]; then
-        fail "9 次按键注入全部失败（xdotool 发不到窗口）"
+    if [ "$KEY_FAIL" -eq 8 ]; then
+        fail "8 次按键注入全部失败（xdotool 发不到窗口）"
     fi
     alive "$APP_PID" || fail "键盘导航后进程退出"
+
+    if [ "$WANT_IMPORT" = 1 ]; then
+        if [ "$HAVE_XDOTOOL" != 1 ]; then
+            if [ "${WEIQI_SMOKE_REQUIRE:-0}" = 1 ]; then
+                fail "CI 要求 --import，但没有 xdotool"
+            fi
+            echo "未安装 xdotool，--import 跳过" >&2
+        else
+            EXTERNAL="$TMP/import-me.sgf"
+            printf '(;GM[1]FF[4]SZ[9]KM[7.5];B[cc];W[gg])\n' > "$EXTERNAL"
+            xdotool windowfocus "$WID" >/dev/null 2>&1 || true
+            sleep 0.5
+            # 用 XTEST（不带 --window），和无头 WM 的焦点模型更兼容
+            xdotool key o >/dev/null 2>&1 || true
+            DID=""
+            for _ in $(seq 50); do
+                DID=$(xdotool search --name '导入' 2>/dev/null | head -1 || true)
+                [ -z "$DID" ] && DID=$(xdotool search --name 'Import' 2>/dev/null | head -1 || true)
+                [ -n "$DID" ] && break
+                sleep 0.1
+            done
+            if [ -z "$DID" ]; then
+                echo "--- windows after o ---" >&2
+                for w in $(xdotool search --name . 2>/dev/null || true); do
+                    n=$(xdotool getwindowname "$w" 2>/dev/null || true)
+                    c=$(xdotool getwindowclassname "$w" 2>/dev/null || true)
+                    [ -n "$n" ] && echo "  $w: '$n' class=$c" >&2
+                done
+                echo "focus: $(xdotool getwindowfocus 2>/dev/null || echo none) (main=$WID)" >&2
+                fail "按 o 后没有出现文件对话框"
+            fi
+            xdotool windowfocus "$DID" >/dev/null 2>&1 || true
+            xdotool key ctrl+l >/dev/null 2>&1 || true
+            sleep 0.4
+            # 先导航到临时目录（GtkFileChooserDialog 对 Ctrl+L 输入完整文件路径
+            # 不会直接选中文件），再点第二行 import-me.sgf、点“确定”。
+            xdotool type "$TMP/" >/dev/null 2>&1 || true
+            sleep 0.4
+            xdotool key Return >/dev/null 2>&1 || true
+            sleep 0.8
+            eval "$(xdotool getwindowgeometry --shell "$DID")"
+            xdotool mousemove --window "$DID" 200 130 click 1 >/dev/null 2>&1 || true
+            sleep 0.3
+            xdotool mousemove --window "$DID" $((WIDTH - 40)) $((HEIGHT - 18)) click 1 \
+                >/dev/null 2>&1 || true
+            sleep 1
+            COUNT=$(ls "$XDG_DATA_HOME/weiqi-study/games"/*.sgf 2>/dev/null | wc -l)
+            [ "$COUNT" -ge 3 ] || fail "导入后棋谱库只有 $COUNT 盘（期望 >=3）"
+            NEWEST=$(ls -t "$XDG_DATA_HOME/weiqi-study/games"/*.sgf | head -1)
+            grep -q 'B\[cc\]' "$NEWEST" || fail "导入后的棋谱内容不对：$NEWEST"
+            grep -q 'W\[gg\]' "$NEWEST" || fail "导入后的棋谱内容不对：$NEWEST"
+            alive "$APP_PID" || fail "导入后进程退出"
+        fi
+    fi
 
     if [ "$WANT_SWITCH" = 1 ]; then
         if [ "$HAVE_XDOTOOL" != 1 ]; then
@@ -203,6 +265,27 @@ if [ -n "$WID" ]; then
             sleep 1
             alive "$APP_PID" || fail "切换棋谱后进程退出"
         fi
+    fi
+
+    # 帮助浮层放最后：它会抢走焦点，关掉后再做其它操作不可靠
+    if [ "$HAVE_XDOTOOL" = 1 ]; then
+        xdotool windowfocus "$WID" >/dev/null 2>&1 || true
+        xdotool key question >/dev/null 2>&1 || true
+        HID=""
+        for _ in $(seq 50); do
+            HID=$(xdotool search --name '帮助' 2>/dev/null | head -1 || true)
+            [ -z "$HID" ] && HID=$(xdotool search --name 'Help' 2>/dev/null | head -1 || true)
+            [ -n "$HID" ] && break
+            sleep 0.1
+        done
+        if [ -n "$HID" ]; then
+            xdotool windowfocus "$HID" >/dev/null 2>&1 || true
+            xdotool key Escape >/dev/null 2>&1 || true
+            sleep 0.5
+        else
+            echo "WARN: 按 ? 没有找到帮助窗口" >&2
+        fi
+        alive "$APP_PID" || fail "帮助浮层后进程退出"
     fi
 
     # 按键可能触发后台线程 panic，检查要放在操作之后

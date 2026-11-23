@@ -9,7 +9,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use app::i18n::{strings, Lang};
 use app::{App, AppConfig, Controller, VISIT_PRESETS};
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 
 use crate::board::{draw_board, point_at};
 use crate::panels::{install_css, Panels};
@@ -635,46 +635,56 @@ fn show_help_dialog(window: &adw::ApplicationWindow, lang: Lang) {
         .body(body)
         .build();
     dialog.add_response("close", s.ok);
+    dialog.set_close_response("close");
     dialog.set_transient_for(Some(window));
     dialog.present();
 }
 
 /// 打开“导入 SGF”文件对话框；按钮和 `o` 键共用。
 ///
-/// 对话框回调里才借用 `Ui`，避免在 GTK 关 popover/对话框时重入。
+/// 用进程内的 `FileChooserDialog`，不走 xdg-desktop-portal：
+/// - 无头测试（Xvfb + xdotool）能稳定找到并驱动它；
+/// - 不依赖桌面环境的 portal 配置。
 fn open_import_dialog(ui: Rc<RefCell<Ui>>, window: adw::ApplicationWindow) {
-    let title = {
+    let (title, cancel_label, ok_label) = {
         let Ok(ui) = ui.try_borrow() else {
             return;
         };
-        strings(ui.ctrl.app.lang).import_title.to_string()
+        let s = strings(ui.ctrl.app.lang);
+        (
+            s.import_title.to_string(),
+            s.cancel.to_string(),
+            s.ok.to_string(),
+        )
     };
+    let dialog = gtk::FileChooserDialog::builder()
+        .title(title)
+        .modal(true)
+        .transient_for(&window)
+        .action(gtk::FileChooserAction::Open)
+        .build();
+    dialog.add_button(&cancel_label, gtk::ResponseType::Cancel);
+    dialog.add_button(&ok_label, gtk::ResponseType::Accept);
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("SGF"));
     filter.add_pattern("*.sgf");
-    let filters = gio::ListStore::new::<gtk::FileFilter>();
-    filters.append(&filter);
-    let dialog = gtk::FileDialog::builder()
-        .title(title)
-        .modal(true)
-        .filters(&filters)
-        .build();
-    dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
-        let Ok(file) = result else {
-            return;
-        };
-        let Some(path) = file.path() else {
-            return;
-        };
-        let Ok(mut ui) = ui.try_borrow_mut() else {
-            return;
-        };
-        if let Err(e) = ui.ctrl.open_path(path) {
-            ui.ctrl.app.status = e;
+    dialog.set_filter(&filter);
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            if let Some(path) = dialog.file().and_then(|f| f.path()) {
+                let Ok(mut ui) = ui.try_borrow_mut() else {
+                    return;
+                };
+                if let Err(e) = ui.ctrl.open_path(path) {
+                    ui.ctrl.app.status = e;
+                }
+                reload_games(&mut ui);
+                refresh(&mut ui);
+            }
         }
-        reload_games(&mut ui);
-        refresh(&mut ui);
+        dialog.close();
     });
+    dialog.present();
 }
 
 fn reload_games(ui: &mut Ui) {
