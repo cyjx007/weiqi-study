@@ -243,7 +243,8 @@ runs `scripts/tui-smoke.py` in a real pty (start → games list → analyse with
 - Engine queries follow the SGF `RU` through an explicit rule set: Chinese, Japanese, Korean,
   AGA and Ing are passed to KataGo verbatim (`chinese` / `japanese` / `korean` / `aga` / `ing`).
   Unknown values, and New Zealand (self-capture is not supported), fall back to Chinese and
-  produce a visible warning — never a silent downgrade.
+  produce a visible warning — never a silent downgrade. Ing is approximated with situational
+  superko; its cycle/special-end rules are not fully implemented.
 - The built-in area scorer does not judge life and death — it is a rough display only; real
   evaluation comes from KataGo's `scoreLead`.
 - The first analysis starts KataGo and keeps it alive for the rest of the session; later requests

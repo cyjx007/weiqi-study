@@ -99,9 +99,9 @@ Nix 包装会安装 `packaging/weiqi-study.desktop`，所以 `weiqi-gui` 会出�
 棋盘保持正方形：格距和行距成对缩放（2×1、4×2、6×3），整体居中；窗口变窄时侧栏自动
 隐藏，按 `i` 可以临时覆盖显示。
 
-`--mode auto`（默认）会询问终端是否支持 kitty / sixel / iTerm2 图片协议：支持就画 720×720
-的 RGBA 棋盘（坐标用 `font8x8` 点阵字体），否则用原来的文本点阵；`--mode image` 强制图片、
-不支持时直接报错，`--mode text` 强制文本。
+`--mode auto`（默认）会询问终端是否支持 kitty / sixel / iTerm2 图片协议：支持就按棋盘区域的
+实际像素生成 RGBA 图（坐标用 `font8x8` 点阵字体，不再固定 720 后再缩放），否则用文本点阵；
+`--mode image` 强制图片、不支持时直接报错，`--mode text` 强制文本。
 
 TUI 按键：
 
@@ -237,7 +237,8 @@ CI 会先装 GTK4 和 libadwaita，跑 `cargo fmt`、`cargo clippy`、`cargo tes
 - 非法 `KM`、乱序手、无法识别的 `PL` 会记成 warning（状态栏 / stderr 显示）；`go-review --strict` 会把 warning 当错误
 - 提交给引擎的规则走一个显式规则集：中国 / 日本 / 韩国 / AGA / Ing 原样传给 KataGo
   （`chinese` / `japanese` / `korean` / `aga` / `ing`）。未知值以及 New Zealand（本工具不支持自杀）
-  会回退到中国规则并给出可见 warning，不会静默降级
+  会回退到中国规则并给出可见 warning，不会静默降级。Ing 只是按通用情境超级劫近似，
+  其循环/特殊终局规则没有完整实现
 - 自带的面积数子不判死活，只做粗略显示；真正的形势判断用引擎的 `scoreLead`
 - 第一次分析时启动 KataGo，之后整个会话复用同一个进程（不再重复加载模型）；
   关掉 TUI 或窗口时引擎随之退出
