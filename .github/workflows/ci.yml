@@ -38,3 +38,18 @@ jobs:
         run: |
           WEIQI_TUI_BIN=target/release/weiqi-tui \
             timeout 60 python3 scripts/tui-smoke.py
+
+  # 最低支持版本必须和 Cargo.toml 的 rust-version、README 一致。
+  # 依赖声明的 MSRV 里最高的是 gtk4/glib 0.22 一代（1.92）。
+  msrv:
+    name: msrv (1.92)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - name: System deps (GTK4 / libadwaita)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+      - name: Check on the declared MSRV
+        run: cargo check --workspace --all-targets

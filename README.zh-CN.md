@@ -20,7 +20,7 @@ weiqi-study 是一套本地围棋学习工具。它驱动本机的 KataGo，把�
 ## 依赖
 
 - Linux（在 NixOS 上开发；任何有 Rust 工具链的发行版都能编）
-- Rust 1.85+（或用 Nix，工具链由它提供）
+- Rust 1.92+（或用 Nix，工具链由它提供）
 - KataGo 1.15+，任一后端（OpenCL / CUDA / Eigen），以及一个 `*.bin.gz` 网络
 - 能显示 256 色的终端（TUI 用）
 - GTK4 + libadwaita（原生窗口用；Nix 包会带上）

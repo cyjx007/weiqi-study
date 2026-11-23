@@ -22,7 +22,7 @@ a `*.bin.gz` network; nothing is downloaded, uploaded, or sent to a server.
 ## Requirements
 
 - Linux (developed on NixOS; any distribution with a Rust toolchain works)
-- Rust 1.85+ (or Nix, which brings its own toolchain)
+- Rust 1.92+ (or Nix, which brings its own toolchain)
 - KataGo 1.15+ with any backend (OpenCL, CUDA, or Eigen) and one `*.bin.gz` network
 - A terminal with 256-color support for the TUI
 - GTK4 and libadwaita for the native window (the Nix package provides them)
