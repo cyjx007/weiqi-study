@@ -3,3 +3,4 @@
 /katago
 *.sgf.out
 /result
+/analysis.cfg
