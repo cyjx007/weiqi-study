@@ -616,13 +616,11 @@ impl App {
         let Some(entry) = self.selected_game().cloned() else {
             return Err(strings(self.lang).no_games.to_string());
         };
-        let new_path = self.store.rename(&entry.path, name)?;
+        let (new_path, stamp) = self.store.rename(&entry.path, name)?;
         if self.current_file.as_deref() == Some(entry.path.as_path()) {
+            // rename 在锁内算好了指纹，直接用，避免锁外重读时被别人抢先
             self.current_file = Some(new_path.clone());
-            match storage::FileStamp::of(&new_path) {
-                Ok(st) => self.file_stamp = st,
-                Err(e) => self.status = e,
-            }
+            self.file_stamp = stamp;
         }
         self.refresh_games();
         let label = new_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");

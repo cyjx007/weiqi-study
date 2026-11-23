@@ -77,16 +77,19 @@ pub struct WriteOptions {
     /// 完整规则集：写回 SGF 时用它的规范名（`RU[...]`）
     pub rules: RuleSet,
     pub first: Color,
-    /// 上次读/写这个文件时看到的指纹；`None` = 新文件，不做冲突检查。
+    /// 上次读/写这个文件时看到的指纹。
+    ///
+    /// `Some(stamp)`：只有磁盘仍是这份指纹时才覆盖，否则写冲突副本。
+    /// `None`：只允许**新建**；目标已存在时同样写冲突副本，不覆盖。
     pub expected: Option<FileStamp>,
 }
 
 /// 一次保存的结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveOutcome {
-    /// 正常覆盖目标文件，并带回写入后的版本指纹。
+    /// 正常写入目标文件（`expected` 为 None 时表示新建成功），带回写入后的指纹。
     Written(FileStamp),
-    /// 目标被外部改过：没有覆盖，内容写到了这个副本。
+    /// 目标被外部改过，或 `expected=None` 但目标已存在：没有覆盖，内容写到了这个副本。
     Conflict(PathBuf),
 }
 
@@ -173,21 +176,23 @@ impl GameStore {
         drop(file); // 先关掉，rename 才能跨平台可靠
 
         // 版本校验：磁盘上的文件不是我们上次看到的那个，就另存副本
-        match opts.expected {
-            Some(expected) => {
-                if FileStamp::of(path)? != Some(expected) {
-                    let alt = self.create_conflict_copy(&tmp, path)?;
-                    return Ok(SaveOutcome::Conflict(alt));
-                }
+        let disk = match FileStamp::of(path) {
+            Ok(s) => s,
+            Err(e) => {
+                // 不能留下半截临时文件；原文件保持不动
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
             }
-            // expected=None 的语义是“新建”：目标已经存在说明名字被占用，
+        };
+        let conflict = match opts.expected {
+            Some(expected) => disk != Some(expected),
+            // expected=None 的语义是“新建”：目标已存在说明名字被占用，
             // 也不覆盖，另存副本（宁可多一个文件，也不丢别人的内容）
-            None => {
-                if FileStamp::of(path)?.is_some() {
-                    let alt = self.create_conflict_copy(&tmp, path)?;
-                    return Ok(SaveOutcome::Conflict(alt));
-                }
-            }
+            None => disk.is_some(),
+        };
+        if conflict {
+            let alt = self.create_conflict_copy(&tmp, path)?;
+            return Ok(SaveOutcome::Conflict(alt));
         }
 
         // 指纹直接用刚写的 text 算，rename 前后内容不变，避免调用方再读一次
@@ -248,11 +253,6 @@ impl GameStore {
                 }
             }
         }
-    }
-
-    /// 删除某个棋谱对应的锁文件（重命名/删除后调用；失败忽略）。
-    fn drop_lock_file(&self, name: &str) {
-        let _ = fs::remove_file(self.dir.join(".locks").join(name));
     }
 
     /// 在排它锁内读取内容与指纹，保证两者来自同一份字节。
@@ -397,7 +397,7 @@ impl GameStore {
     }
 
     /// 重命名一盘棋；只允许改 `games/` 里的文件名，不允许换目录。
-    pub fn rename(&self, path: &Path, name: &str) -> Result<PathBuf, String> {
+    pub fn rename(&self, path: &Path, name: &str) -> Result<(PathBuf, Option<FileStamp>), String> {
         if !path.starts_with(&self.dir) {
             return Err("只能重命名本工具保存的棋谱".to_string());
         }
@@ -408,7 +408,7 @@ impl GameStore {
             format!("{stem}.sgf")
         });
         if target == path {
-            return Ok(target);
+            return Ok((target.clone(), None));
         }
         let old_name = path
             .file_name()
@@ -440,11 +440,13 @@ impl GameStore {
             ));
         }
         fs::rename(path, &target).map_err(|e| format!("重命名 {} 失败：{e}", path.display()))?;
+        // 注意：锁文件**永远不删**。unlink 会让另一个已经 open 了旧 inode、
+        // 正在等锁的进程拿到一把“已脱链”的锁，两个进程就会各锁一个 inode。
+        // 每个锁文件只有几十字节，留在 .locks/ 里复用即可。
+        let stamp = FileStamp::of(&target)?;
         drop(lock2);
         drop(lock1);
-        // 旧名字以后不会再被保存，锁文件可以清掉（失败忽略）
-        self.drop_lock_file(&old_name);
-        Ok(target)
+        Ok((target, stamp))
     }
 
     /// 把棋谱移到 `games/.trash/`（带时间戳），不直接删除。
@@ -472,7 +474,6 @@ impl GameStore {
         fs::rename(path, &target)
             .map_err(|e| format!("移入回收站 {} 失败：{e}", path.display()))?;
         drop(lock);
-        self.drop_lock_file(name);
         Ok(target)
     }
 }
@@ -983,12 +984,13 @@ mod tests {
         let path = store.create().unwrap();
         std::fs::write(&path, "(;SZ[9])").unwrap();
 
-        let renamed = store.rename(&path, "opening study").unwrap();
+        let (renamed, stamp) = store.rename(&path, "opening study").unwrap();
         assert_eq!(
             renamed.file_name().and_then(|n| n.to_str()),
             Some("opening study.sgf")
         );
         assert!(renamed.exists());
+        assert!(stamp.is_some(), "重命名要在锁内带回指纹");
         assert!(!path.exists());
         assert_eq!(store.list().len(), 1);
 
@@ -999,6 +1001,108 @@ mod tests {
         std::fs::write(&other, "x").unwrap();
         assert!(store.rename(&other, "opening study").is_err(), "同名应拒绝");
 
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    /// 手工占住某个名字的锁（模拟另一个进程正在操作这盘棋）。
+    fn hold_lock(store: &GameStore, name: &str) -> std::fs::File {
+        let p = store.dir().join(".locks").join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&p)
+            .unwrap();
+        f.lock().unwrap();
+        f
+    }
+
+    #[test]
+    fn rename_waits_for_the_name_lock() {
+        use std::time::{Duration, Instant};
+        let base = temp_store();
+        let store = GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_secs(2));
+        let path = store.dir().join("old.sgf");
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+
+        let holder = hold_lock(&store, "old.sgf");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            holder.unlock().unwrap();
+        });
+        let started = Instant::now();
+        let (target, stamp) = store.rename(&path, "new").unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(150), "没有等锁");
+        assert!(target.exists());
+        assert!(stamp.is_some());
+        assert!(!path.exists());
+        release.join().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn rename_timeout_leaves_the_file_in_place() {
+        use std::time::Duration;
+        let base = temp_store();
+        let store =
+            GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_millis(120));
+        let path = store.dir().join("old.sgf");
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+        let holder = hold_lock(&store, "old.sgf");
+
+        let err = store.rename(&path, "new").unwrap_err();
+        assert!(err.contains("正在保存"), "{err}");
+        assert!(path.exists(), "失败时原文件必须原位");
+        assert!(!store.dir().join("new.sgf").exists());
+        drop(holder);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn trash_waits_for_the_name_lock() {
+        use std::time::{Duration, Instant};
+        let base = temp_store();
+        let store = GameStore::with_lock_timeout(base.dir().to_path_buf(), Duration::from_secs(2));
+        let path = store.dir().join("t.sgf");
+        std::fs::write(&path, "(;SZ[9])").unwrap();
+
+        let holder = hold_lock(&store, "t.sgf");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            holder.unlock().unwrap();
+        });
+        let started = Instant::now();
+        let trashed = store.trash(&path).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(150), "没有等锁");
+        assert!(trashed.exists());
+        assert!(!path.exists());
+        release.join().unwrap();
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn swapping_renames_do_not_deadlock() {
+        use std::time::Duration;
+        let store = temp_store();
+        let a = store.dir().join("a.sgf");
+        let b = store.dir().join("b.sgf");
+        std::fs::write(&a, "(;SZ[9];B[aa])").unwrap();
+        std::fs::write(&b, "(;SZ[9];B[bb])").unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (from, to) in [(a.clone(), "b"), (b.clone(), "a")] {
+            let store = store.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let _ = store.rename(&from, to);
+                let _ = tx.send(());
+            });
+        }
+        for _ in 0..2 {
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("互换重命名死锁了（锁顺序没有固定）");
+        }
         let _ = std::fs::remove_dir_all(store.dir());
     }
 
