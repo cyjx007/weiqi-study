@@ -307,8 +307,41 @@ impl App {
         self.play_move(Move::Pass)
     }
 
+    /// 当前局面是否已经终局（连续两次 Pass）。
+    pub fn game_over(&self) -> bool {
+        self.game.is_finished()
+    }
+
+    /// 终局结果文本：本地数子（不判死活）+ 可选引擎目差。
+    pub fn result_text(&self) -> Option<String> {
+        if !self.game_over() {
+            return None;
+        }
+        let st = strings(self.lang);
+        let area = self.game.area_score();
+        let mut out = format!(
+            "{} · {}：{} {} / {} {} + {:.1}",
+            st.game_over,
+            st.local_score,
+            i18n::color_name(Color::Black, self.lang),
+            area.black,
+            i18n::color_name(Color::White, self.lang),
+            area.white,
+            area.komi
+        );
+        if let Some(a) = self.analysis() {
+            if a.score_black.is_finite() {
+                out.push_str(&format!(" · {} {:+.1}", st.ai_lead, a.score_black));
+            }
+        }
+        Some(out)
+    }
+
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
+        if self.game.is_finished() {
+            return Err(strings(self.lang).game_over.to_string());
+        }
         let mut probe = self.snapshot();
         // 先验合法性：失败时不能动 preview / generation / 主线 / 缓存 / busy
         probe.play(mv).map_err(|e| format!("{e}"))?;
@@ -329,6 +362,11 @@ impl App {
         self.moves.push(mv);
         self.pos = base + 1;
         self.game = probe;
+        if self.game.is_finished() {
+            if let Some(text) = self.result_text() {
+                self.status = text;
+            }
+        }
         // 只保留分支点及之前的分析；更深位置属于旧分支
         self.evals.retain(|&k, _| k <= base);
         if branching {
@@ -549,6 +587,8 @@ impl App {
         self.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&self.warnings) {
             self.status = w;
+        } else if let Some(text) = self.result_text() {
+            self.status = text;
         }
         Ok(())
     }
@@ -873,6 +913,10 @@ impl App {
         if self.preview_active() {
             return Action::None;
         }
+        // 终局后不再自动应手/自动分析；复盘仍可手动按 A
+        if self.game.is_finished() {
+            return Action::None;
+        }
         if self.busy || !self.ai_enabled {
             return Action::None;
         }
@@ -1032,7 +1076,9 @@ impl App {
                     Ok(t) => {
                         self.failed_pos = None;
                         self.evals.insert(pos, t);
-                        self.status = strings(self.lang).analysis_done.to_string();
+                        self.status = self
+                            .result_text()
+                            .unwrap_or_else(|| strings(self.lang).analysis_done.to_string());
                         if pos > 0 && pos <= self.moves.len() {
                             let before = self.evals.get(&(pos - 1)).cloned();
                             let after = self.evals.get(&pos).cloned();
@@ -1057,7 +1103,12 @@ impl App {
                     }
                     Err(e) => {
                         self.failed_pos = Some(pos);
-                        self.status = i18n::fill(strings(self.lang).analysis_failed, e);
+                        let failed = i18n::fill(strings(self.lang).analysis_failed, e);
+                        // 终局结果不能被一次分析失败顶掉（本地数子仍然有效）
+                        self.status = match self.result_text() {
+                            Some(result) => format!("{result} · {failed}"),
+                            None => failed,
+                        };
                     }
                 }
             }

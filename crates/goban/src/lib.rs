@@ -544,6 +544,12 @@ impl Game {
         self.positions.get(turn as usize)
     }
 
+    /// 连续两次 Pass 视为终局（按当前棋谱前缀计算）。
+    pub fn is_finished(&self) -> bool {
+        let n = self.moves.len();
+        n >= 2 && self.moves[n - 2] == Move::Pass && self.moves[n - 1] == Move::Pass
+    }
+
     pub fn moves(&self) -> &[Move] {
         &self.moves
     }
@@ -760,12 +766,23 @@ mod tests {
     }
 
     #[test]
-    fn two_passes_are_legal() {
+    fn two_passes_are_legal_and_finish_the_game() {
         let mut g = Game::new(9, 7.5);
+        assert!(!g.is_finished());
         assert!(g.play(Move::Pass).is_ok());
+        assert!(!g.is_finished());
         assert!(g.play(Move::Pass).is_ok());
+        assert!(g.is_finished());
+        // 终局之后引擎/调用方仍可继续追加，但“当前前缀”已经结束
         assert!(g.play(Move::Pass).is_ok());
+        assert!(g.is_finished());
         assert_eq!(g.moves(), &[Move::Pass, Move::Pass, Move::Pass]);
+
+        // 一手 Pass 一手落子不算结束
+        let mut g = Game::new(9, 7.5);
+        g.play(Move::Pass).unwrap();
+        g.play(Move::Play(Point::new(2, 2))).unwrap();
+        assert!(!g.is_finished());
     }
 
     #[test]

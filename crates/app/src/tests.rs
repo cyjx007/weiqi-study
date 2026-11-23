@@ -1037,6 +1037,34 @@ fn human_rank_cycles() {
 }
 
 #[test]
+fn two_passes_finish_the_game_and_block_more_moves() {
+    let mut app = App::new(9, 7.5, AppConfig::default());
+    app.lang = Lang::Zh;
+    start(&mut app);
+    app.ai_enabled = false; // 让双方都能 Pass，模拟研究模式
+
+    app.play_pass().unwrap();
+    assert!(!app.game_over(), "一次 Pass 不算终局");
+    app.play_pass().unwrap();
+    assert!(app.game_over(), "连续两次 Pass 应终局");
+
+    let result = app.result_text().expect("终局应有结果文本");
+    assert!(result.contains("对局结束"), "{result}");
+    assert!(result.contains("本地数子"), "{result}");
+    assert_eq!(app.next_action(), Action::None, "终局后不再自动分析/应手");
+
+    let err = app.play_pass().unwrap_err();
+    assert!(err.contains("对局结束"), "{err}");
+    assert_eq!(app.total_moves(), 2, "被拒绝的落子不能改主线");
+
+    // 回到终局前可以改走，等于从历史分支继续
+    app.prev_move();
+    assert!(!app.game_over());
+    app.play_move(Move::Play(Point::new(2, 2))).unwrap();
+    assert_eq!(app.total_moves(), 2, "从分支点落子会截断终局的 Pass");
+}
+
+#[test]
 fn human_can_pass_but_not_on_the_ai_turn() {
     let mut app = App::new(9, 7.5, AppConfig::default());
     app.lang = Lang::Zh; // CI/doCheck 是 C/en，断言语义必须固定语言
