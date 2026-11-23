@@ -615,7 +615,8 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::remove_file(from)
 }
 
-/// 测试注入：让目录同步返回失败（线程本地，不干扰并行测试）。
+// 测试注入：让目录同步返回失败（线程本地，不干扰并行测试）。
+// 注意：macro 前的 `///` 在 Rust 1.100 的 clippy 下会报 unused_doc_comments。
 #[cfg(test)]
 thread_local! {
     static FORCE_SYNC_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
