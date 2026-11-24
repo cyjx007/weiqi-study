@@ -149,6 +149,9 @@ pub fn build_ui(application: &adw::Application) {
                         let _ = ui.ctrl.play_pass();
                     }
                 }
+                gdk::Key::R => {
+                    let _ = ui.ctrl.resume_study();
+                }
                 gdk::Key::u => {
                     if ui.ctrl.app.preview_active() {
                         ui.ctrl.preview_prev();
