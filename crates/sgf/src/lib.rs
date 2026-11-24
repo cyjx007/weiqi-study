@@ -682,6 +682,21 @@ pub fn write_game(
     rule: RuleSet,
     first: Color,
 ) -> String {
+    write_game_with_result(size, komi, setup, moves, rule, first, None)
+}
+
+/// 写 SGF，可带上已确认的 `RE`。
+///
+/// `result` 只应在用户确认终局后传入；没有确认就不写 `RE`，避免伪造胜负。
+pub fn write_game_with_result(
+    size: u8,
+    komi: f32,
+    setup: &[(Color, Point)],
+    moves: &[Move],
+    rule: RuleSet,
+    first: Color,
+    result: Option<&str>,
+) -> String {
     fn coord(p: Point) -> String {
         let mut s = String::new();
         s.push((b'a' + p.x) as char);
@@ -692,6 +707,11 @@ pub fn write_game(
     // 用最短往返表示（f32 Display），不要 `{:.1}`：6.25/5.75 会被静默舍成 6.2/5.8，
     // 反复保存会让贴目持续漂移。调用方负责保证 komi 有限。
     out.push_str(&format!("SZ[{size}]KM[{komi}]RU[{}]", rule.name));
+    if let Some(result) = result.filter(|r| !r.is_empty()) {
+        // SGF 属性值里的 `]` 和 `\` 必须转义，否则整份棋谱解析失败
+        let escaped = result.replace('\\', "\\\\").replace(']', "\\]");
+        out.push_str(&format!("RE[{escaped}]"));
+    }
     let blacks: Vec<String> = setup
         .iter()
         .filter(|(c, _)| *c == Color::Black)

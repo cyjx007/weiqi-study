@@ -500,6 +500,7 @@ impl App {
                 rules: self.rules,
                 first: self.first,
                 expected: self.file_stamp,
+                result: self.confirmed.clone(),
             },
         );
         let saved = result.is_ok();
@@ -655,6 +656,7 @@ impl App {
                             rules,
                             first,
                             expected: None,
+                            result: sg.result.clone(),
                         },
                     )? {
                         storage::SaveOutcome::Written(st) => stamp = Some(st),

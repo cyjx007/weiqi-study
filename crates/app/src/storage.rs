@@ -72,7 +72,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// 写 SGF 需要的规则参数（打包传，避免 save 参数过多）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WriteOptions {
     /// 完整规则集：写回 SGF 时用它的规范名（`RU[...]`）
     pub rules: RuleSet,
@@ -82,6 +82,8 @@ pub struct WriteOptions {
     /// `Some(stamp)`：只有磁盘仍是这份指纹时才覆盖，否则写冲突副本。
     /// `None`：只允许**新建**；目标已存在时同样写冲突副本，不覆盖。
     pub expected: Option<FileStamp>,
+    /// 已确认的终局结果（SGF `RE`）。没确认就是 `None`，绝不编造胜负。
+    pub result: Option<String>,
 }
 
 /// 一次保存的结果。
@@ -158,7 +160,15 @@ impl GameStore {
         moves: &[Move],
         opts: WriteOptions,
     ) -> Result<SaveOutcome, String> {
-        let text = sgf::write_game(size, komi, setup, moves, opts.rules, opts.first);
+        let text = sgf::write_game_with_result(
+            size,
+            komi,
+            setup,
+            moves,
+            opts.rules,
+            opts.first,
+            opts.result.as_deref(),
+        );
 
         // 锁覆盖「写临时文件 → 比较版本 → rename」：另一个 weiqi-study 进程
         // 同时保存同一文件时，会在这里排队，而不是两边都看到旧指纹。
@@ -731,6 +741,7 @@ mod tests {
                     rules: RuleSet::default(),
                     first: Color::Black,
                     expected: None,
+                    result: None,
                 },
             )
             .unwrap();
@@ -749,6 +760,7 @@ mod tests {
             rules: RuleSet::default(),
             first: Color::Black,
             expected,
+            result: None,
         }
     }
 

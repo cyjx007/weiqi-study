@@ -38,6 +38,43 @@ fn writes_and_reparses() {
 }
 
 #[test]
+fn writes_a_confirmed_result_and_reads_it_back() {
+    let moves = vec![Move::Play(Point::new(2, 2)), Move::Pass, Move::Pass];
+    let text = write_game_with_result(
+        9,
+        7.5,
+        &[],
+        &moves,
+        RuleSet::default(),
+        Color::Black,
+        Some("B+3.5"),
+    );
+    assert!(text.contains("RE[B+3.5]"), "{text}");
+    let back = parse(&text).unwrap();
+    assert_eq!(back.result.as_deref(), Some("B+3.5"));
+
+    // 没确认就不写 RE，避免伪造胜负
+    let text = write_game(9, 7.5, &[], &moves, RuleSet::default(), Color::Black);
+    assert!(!text.contains("RE["), "{text}");
+    assert_eq!(parse(&text).unwrap().result, None);
+}
+
+#[test]
+fn result_values_are_escaped() {
+    let text = write_game_with_result(
+        9,
+        7.5,
+        &[],
+        &[Move::Pass, Move::Pass],
+        RuleSet::default(),
+        Color::Black,
+        Some(r"B+1]x\y"),
+    );
+    let back = parse(&text).unwrap();
+    assert_eq!(back.result.as_deref(), Some(r"B+1]x\y"));
+}
+
+#[test]
 fn write_game_keeps_komi_precision() {
     // `{:.1}` 会把 6.25/5.75/0.25 静默舍入；SGF 允许任意有限数值
     let moves = vec![Move::Play(Point::new(2, 2))];
