@@ -2,6 +2,7 @@
 //!
 //! 本 crate 不做 IO，也不认识 SGF / GTP 字符串——坐标转换只在 `sgf` / `engine` 里。
 
+use std::collections::HashSet;
 use std::fmt;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -613,60 +614,133 @@ impl Game {
     /// 面积计子（中国 / AGA / Ing 规则），不做死活判定：把盘上所有子都当活棋。
     ///
     /// 只适用于 `Scoring::Area`；数目规则（日本 / 韩国）需要先标死子再算提子，
-    /// 本函数不适用。界面上的目差来自引擎 `scoreLead`，不依赖这个函数。
+    /// 用 [`Self::score_territory`]。界面上的目差来自引擎 `scoreLead`，不依赖这个函数。
     pub fn area_score(&self) -> AreaScore {
-        let board = &self.position().board;
-        let mut black = 0u16;
-        let mut white = 0u16;
-        let mut visited_empty = vec![false; board.cells.len()];
-        for (_, c) in board.stones() {
-            match c {
-                Color::Black => black += 1,
-                Color::White => white += 1,
-            }
-        }
-        for y in 0..board.size() {
-            for x in 0..board.size() {
-                let p = Point::new(x, y);
-                let i = board.idx(p);
-                if board.at(p).is_some() || visited_empty[i] {
-                    continue;
-                }
-                // 只遍历空点；边界棋子只用来判断归属
-                let mut region = 0u16;
-                let mut touches_black = false;
-                let mut touches_white = false;
-                let mut stack = vec![p];
-                visited_empty[i] = true;
-                while let Some(q) = stack.pop() {
-                    region += 1;
-                    for n in board.neighbors(q) {
-                        let ni = board.idx(n);
-                        match board.cells[ni] {
-                            None => {
-                                if !visited_empty[ni] {
-                                    visited_empty[ni] = true;
-                                    stack.push(n);
-                                }
-                            }
-                            Some(Color::Black) => touches_black = true,
-                            Some(Color::White) => touches_white = true,
-                        }
-                    }
-                }
-                match (touches_black, touches_white) {
-                    (true, false) => black += region,
-                    (false, true) => white += region,
-                    _ => {}
-                }
-            }
-        }
+        let t = self.tally(&HashSet::new());
         AreaScore {
-            black,
-            white,
+            black: t.live_black + t.terr_black,
+            white: t.live_white + t.terr_white,
             komi: self.komi,
         }
     }
+
+    /// 面积计分（中国 / AGA / Ing），`dead` 里的棋子按死子移除。
+    ///
+    /// 死子的点变成空点，按包围它的颜色计地；双方都碰到的空区（dame / 中立点）
+    /// 两边都不算。贴目只加给白方。
+    pub fn score_area(&self, dead: &HashSet<Point>) -> Score {
+        let t = self.tally(dead);
+        let captures = self.position().captures;
+        Score {
+            black: f32::from(t.live_black + t.terr_black),
+            white: f32::from(t.live_white + t.terr_white) + self.komi,
+            komi: self.komi,
+            black_territory: t.terr_black,
+            white_territory: t.terr_white,
+            black_captures: captures[Color::Black.index()],
+            white_captures: captures[Color::White.index()],
+            neutral: t.neutral,
+            dead_black: t.dead_black,
+            dead_white: t.dead_white,
+        }
+    }
+
+    /// 数目计分（日本 / 韩国）：地 + 己方提子（含确认的死子）+ 贴目。
+    ///
+    /// 死子从盘面移除后，其点按包围颜色计地，同时给提走它的一方记 1 目。
+    /// 未标记的棋子默认算活棋——死活由用户确认，规则层不猜。
+    pub fn score_territory(&self, dead: &HashSet<Point>) -> Score {
+        let t = self.tally(dead);
+        let captures = self.position().captures;
+        let black_captures = captures[Color::Black.index()];
+        let white_captures = captures[Color::White.index()];
+        let black = u32::from(t.terr_black) + black_captures + u32::from(t.dead_white);
+        let white = u32::from(t.terr_white) + white_captures + u32::from(t.dead_black);
+        Score {
+            black: black as f32,
+            white: white as f32 + self.komi,
+            komi: self.komi,
+            black_territory: t.terr_black,
+            white_territory: t.terr_white,
+            black_captures,
+            white_captures,
+            neutral: t.neutral,
+            dead_black: t.dead_black,
+            dead_white: t.dead_white,
+        }
+    }
+
+    /// 把盘面按 `dead` 折算成「活子 / 单方围空 / 中立点 / 死子」四类计数。
+    fn tally(&self, dead: &HashSet<Point>) -> Tally {
+        let board = &self.position().board;
+        let total = board.cells.len();
+        let mut live = vec![false; total];
+        let mut t = Tally::default();
+        for (p, c) in board.stones() {
+            if dead.contains(&p) {
+                match c {
+                    Color::Black => t.dead_black += 1,
+                    Color::White => t.dead_white += 1,
+                }
+            } else {
+                live[board.idx(p)] = true;
+                match c {
+                    Color::Black => t.live_black += 1,
+                    Color::White => t.live_white += 1,
+                }
+            }
+        }
+        // 空点和死子点一起做连通区域；只有碰到单一颜色的区域才算地
+        let mut seen = vec![false; total];
+        for i in 0..total {
+            if seen[i] || live[i] {
+                continue;
+            }
+            let start = Point::new(
+                (i % board.size() as usize) as u8,
+                (i / board.size() as usize) as u8,
+            );
+            let mut region = 0u16;
+            let mut touches_black = false;
+            let mut touches_white = false;
+            let mut stack = vec![start];
+            seen[i] = true;
+            while let Some(q) = stack.pop() {
+                region += 1;
+                for n in board.neighbors(q) {
+                    let ni = board.idx(n);
+                    if live[ni] {
+                        match board.cells[ni] {
+                            Some(Color::Black) => touches_black = true,
+                            Some(Color::White) => touches_white = true,
+                            None => {}
+                        }
+                    } else if !seen[ni] {
+                        seen[ni] = true;
+                        stack.push(n);
+                    }
+                }
+            }
+            match (touches_black, touches_white) {
+                (true, false) => t.terr_black += region,
+                (false, true) => t.terr_white += region,
+                _ => t.neutral += region,
+            }
+        }
+        t
+    }
+}
+
+/// [`Game::tally`] 的中间结果：只用来区分棋子 / 地 / 中立点 / 死子。
+#[derive(Default)]
+struct Tally {
+    live_black: u16,
+    live_white: u16,
+    terr_black: u16,
+    terr_white: u16,
+    neutral: u16,
+    dead_black: u16,
+    dead_white: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -683,6 +757,40 @@ impl AreaScore {
 
     pub fn white_total(&self) -> f32 {
         self.white as f32 + self.komi
+    }
+}
+
+/// 终局计分结果（总分已含贴目）。
+///
+/// 面积和数目共用这个结构；`black_territory` / `*_captures` 只用于展示明细。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Score {
+    /// 黑方总分（数目规则含提子与死子）
+    pub black: f32,
+    /// 白方总分（含贴目）
+    pub white: f32,
+    pub komi: f32,
+    pub black_territory: u16,
+    pub white_territory: u16,
+    pub black_captures: u32,
+    pub white_captures: u32,
+    /// 谁都不算的空点（dame / 中立点）
+    pub neutral: u16,
+    pub dead_black: u16,
+    pub dead_white: u16,
+}
+
+impl Score {
+    pub fn diff(&self) -> f32 {
+        self.black - self.white
+    }
+
+    pub fn is_draw(&self) -> bool {
+        self.diff().abs() < 1e-6
+    }
+
+    pub fn dead_total(&self) -> u16 {
+        self.dead_black + self.dead_white
     }
 }
 
@@ -862,6 +970,126 @@ mod tests {
         let s = g.area_score();
         assert_eq!(s.black, 81, "1 子 + 80 空点（没有白棋）");
         assert_eq!(s.white, 0);
+    }
+
+    /// 白子被黑棋围住且紧贴空区：不标死时空区同时接触黑白，只能算中立。
+    fn surrounded_white() -> Game {
+        Game::with_setup(
+            5,
+            0.0,
+            vec![
+                (Color::Black, p(0, 1)),
+                (Color::Black, p(2, 1)),
+                (Color::Black, p(1, 0)),
+                (Color::Black, p(1, 2)),
+                (Color::White, p(1, 1)),
+            ],
+        )
+    }
+
+    #[test]
+    fn dame_between_both_colors_counts_for_neither_side() {
+        // 两个角各归一方，中间空区同时接触黑白
+        let g = Game::with_setup(
+            5,
+            0.0,
+            vec![
+                (Color::Black, p(0, 1)),
+                (Color::Black, p(1, 0)),
+                (Color::White, p(4, 3)),
+                (Color::White, p(3, 4)),
+            ],
+        );
+        let s = g.score_area(&HashSet::new());
+        assert_eq!(s.black, 3.0, "2 子 + 角上 1 点");
+        assert_eq!(s.white, 3.0);
+        assert_eq!(s.black_territory, 1);
+        assert_eq!(s.white_territory, 1);
+        assert_eq!(s.neutral, 19, "中间 19 个空点双方都不算");
+        assert_eq!(s.dead_total(), 0);
+    }
+
+    #[test]
+    fn area_scoring_removes_dead_stones() {
+        let g = surrounded_white();
+        let alive = g.score_area(&HashSet::new());
+        assert_eq!(alive.black, 24.0, "4 子 + 20 个空点");
+        assert_eq!(alive.white, 1.0);
+        assert_eq!(alive.neutral, 0);
+
+        let dead = HashSet::from([p(1, 1)]);
+        let s = g.score_area(&dead);
+        assert_eq!(s.black, 25.0, "死子移除后全盘归黑");
+        assert_eq!(s.white, 0.0);
+        assert_eq!(s.dead_white, 1);
+        assert_eq!(s.dead_black, 0);
+        // 旧的粗略面积数子把白子当活棋，结果必须不同
+        assert_eq!(g.area_score().black, 24);
+    }
+
+    #[test]
+    fn territory_scoring_counts_dead_stones_as_prisoners() {
+        let g = surrounded_white();
+        let alive = g.score_territory(&HashSet::new());
+        assert_eq!(
+            (alive.black, alive.white),
+            (20.0, 0.0),
+            "空区归黑，没有提子"
+        );
+        assert_eq!(alive.neutral, 0);
+
+        let dead = HashSet::from([p(1, 1)]);
+        let s = g.score_territory(&dead);
+        assert_eq!(s.black_territory, 21, "全盘 21 个点归黑");
+        assert_eq!(s.black_captures, 0);
+        assert_eq!(s.dead_white, 1);
+        assert_eq!(s.black, 22.0, "地 21 + 死子 1");
+        assert_eq!(s.white, 0.0);
+    }
+
+    #[test]
+    fn territory_scoring_counts_captures_from_play() {
+        // 黑先：白子 (0,0) 只有两口气，黑依次填掉后提走
+        let mut g = Game::with_setup(5, 0.0, vec![(Color::White, p(0, 0))]);
+        g.play(Move::Play(p(1, 0))).unwrap();
+        g.play(Move::Play(p(4, 4))).unwrap();
+        g.play(Move::Play(p(0, 1))).unwrap();
+        assert_eq!(g.position().captures[Color::Black.index()], 1);
+
+        let s = g.score_territory(&HashSet::new());
+        assert_eq!(s.black_captures, 1);
+        assert_eq!(s.black_territory, 1, "提掉白子的那个点归黑");
+        assert_eq!(s.black, 2.0, "1 目地 + 1 个提子");
+        assert_eq!(s.neutral, 21, "白子与黑子把其余空区夹成中立");
+    }
+
+    #[test]
+    fn territory_scoring_adds_komi_to_white_only() {
+        let g = Game::with_setup(
+            5,
+            6.5,
+            vec![
+                (Color::Black, p(0, 1)),
+                (Color::Black, p(1, 0)),
+                (Color::White, p(4, 3)),
+                (Color::White, p(3, 4)),
+            ],
+        );
+        let s = g.score_territory(&HashSet::new());
+        assert_eq!(s.komi, 6.5);
+        assert_eq!(s.white, 7.5, "白角 1 目 + 贴目 6.5");
+        assert_eq!(s.black, 1.0, "黑角 1 目");
+        assert!((s.diff() + 6.5).abs() < 1e-6);
+        assert!(!s.is_draw());
+    }
+
+    #[test]
+    fn area_score_agrees_with_score_area_without_dead_stones() {
+        let g = surrounded_white();
+        let rough = g.area_score();
+        let s = g.score_area(&HashSet::new());
+        assert_eq!(rough.black as f32, s.black);
+        assert_eq!(rough.white as f32, s.white);
     }
 
     #[test]
