@@ -218,15 +218,20 @@ impl Panels {
         size_popover.set_child(Some(&size_box));
         new_btn.set_popover(Some(&size_popover));
 
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // 两行放：360px 侧栏里 7 个按钮挤一行会溢出
+        let actions = gtk::Box::new(gtk::Orientation::Vertical, 6);
         actions.add_css_class("actions");
-        actions.append(&new_btn);
-        actions.append(&import_btn);
-        actions.append(&analyse_btn);
-        actions.append(&review_btn);
-        actions.append(&undo_btn);
-        actions.append(&pass_btn);
-        actions.append(&resume_btn);
+        let actions_top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        actions_top.append(&new_btn);
+        actions_top.append(&import_btn);
+        actions_top.append(&analyse_btn);
+        actions_top.append(&review_btn);
+        let actions_bottom = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        actions_bottom.append(&undo_btn);
+        actions_bottom.append(&pass_btn);
+        actions_bottom.append(&resume_btn);
+        actions.append(&actions_top);
+        actions.append(&actions_bottom);
         side.append(&actions);
 
         // 棋谱 + 翻手 + 管理
