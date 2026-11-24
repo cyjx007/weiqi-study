@@ -215,8 +215,8 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
                 style = style.add_modifier(Modifier::BOLD);
             }
             if dead {
-                // 死子用删除线 + 暗色标出，颜色仍能区分黑白
-                style = style.add_modifier(Modifier::CROSSED_OUT).fg(C::DarkGray);
+                // 死子加删除线；保留棋子本身的颜色，仍能区分黑白
+                style = style.add_modifier(Modifier::CROSSED_OUT);
             }
             buf.set_string(x, y, cell_text(sym, spacing), style.fg(fg));
 

@@ -236,14 +236,20 @@ if [ -n "$WID" ]; then
             xdotool type "$TMP/" >/dev/null 2>&1 || true
             sleep 0.4
             xdotool key Return >/dev/null 2>&1 || true
-            sleep 0.8
+            # 无头环境里目录列表加载可能比固定 sleep 慢；太早点行会点到还没出现的行
+            sleep 1.5
             eval "$(xdotool getwindowgeometry --shell "$DID")"
             xdotool mousemove --window "$DID" 200 130 click 1 >/dev/null 2>&1 || true
-            sleep 0.3
+            sleep 0.6
             xdotool mousemove --window "$DID" $((WIDTH - 40)) $((HEIGHT - 18)) click 1 \
                 >/dev/null 2>&1 || true
-            sleep 1
+            # 导入是同步文件 IO，但无头环境有时比固定 sleep 慢；轮询到 5s
             COUNT=$(ls "$XDG_DATA_HOME/weiqi-study/games"/*.sgf 2>/dev/null | wc -l)
+            for _ in $(seq 20); do
+                [ "$COUNT" -ge 3 ] && break
+                sleep 0.25
+                COUNT=$(ls "$XDG_DATA_HOME/weiqi-study/games"/*.sgf 2>/dev/null | wc -l)
+            done
             [ "$COUNT" -ge 3 ] || fail "导入后棋谱库只有 $COUNT 盘（期望 >=3）"
             NEWEST=$(ls -t "$XDG_DATA_HOME/weiqi-study/games"/*.sgf | head -1)
             grep -q 'B\[cc\]' "$NEWEST" || fail "导入后的棋谱内容不对：$NEWEST"
