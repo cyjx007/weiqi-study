@@ -12,7 +12,7 @@ pub use controller::Controller;
 
 use preview::Preview;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -140,6 +140,8 @@ pub struct App {
     confirmed: Option<String>,
     /// 用户在终局局面显式选择了「继续研究」
     research: bool,
+    /// 计分时用户确认的死子（整块标记；只在 Scoring 阶段有效）
+    dead: HashSet<Point>,
 }
 
 /// 规则比较键：归一化后的规则集 + 是否属于“无法识别、回退默认”。
@@ -168,8 +170,34 @@ fn warning_text(warnings: &[String]) -> Option<String> {
 fn lead_text(st: &i18n::Strings, diff: f32) -> String {
     if diff.abs() < 1e-6 {
         format!("0 ({})", st.draw)
+    } else if diff > 0.0 {
+        format!("+{}", score_number(diff))
     } else {
-        format!("{diff:+}")
+        score_number(diff)
+    }
+}
+
+/// 计分数字：最多两位小数，去掉无意义的零（`12.0` → `12`，`6.25` → `6.25`）。
+fn score_number(v: f32) -> String {
+    let rounded = (v * 100.0).round() / 100.0;
+    let s = format!("{rounded:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-0" {
+        "0".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// 由计分结果生成 SGF `RE`：`B+3.5` / `W+0.5` / `0`（平局）。
+fn result_string(score: goban::Score) -> String {
+    let diff = score.diff();
+    if diff.abs() < 1e-6 {
+        "0".to_string()
+    } else if diff > 0.0 {
+        format!("B+{}", score_number(diff))
+    } else {
+        format!("W+{}", score_number(-diff))
     }
 }
 
@@ -216,6 +244,7 @@ impl App {
             preview: None,
             confirmed: None,
             research: false,
+            dead: HashSet::new(),
         }
     }
 
@@ -261,8 +290,9 @@ impl App {
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
         }
         self.game = game;
-        // 导航到别的局面就不再是「从终局续下」的研究模式
+        // 导航到别的局面就不再是「从终局续下」的研究模式；死子标记只对原局面有效
         self.research = false;
+        self.dead.clear();
         Ok(())
     }
 
@@ -382,8 +412,74 @@ impl App {
             return Err(strings(self.lang).in_progress.to_string());
         }
         self.research = true;
+        // 续下后旧死子标记和计分结果都不再适用
+        self.dead.clear();
         self.status = strings(self.lang).resumed_study.to_string();
         Ok(())
+    }
+
+    /// 当前已标记的死子（只在 `Scoring` 阶段有意义）。
+    pub fn dead_stones(&self) -> &HashSet<Point> {
+        &self.dead
+    }
+
+    /// 标记 / 取消标记光标处整块棋子为死子。
+    ///
+    /// 只允许整块标记，避免出现“同一连通块一半死一半活”的非法状态。
+    pub fn toggle_dead(&mut self, p: Point) -> Result<(), String> {
+        if self.phase() != GamePhase::Scoring {
+            return Err(strings(self.lang).need_scoring.to_string());
+        }
+        let board = &self.game.position().board;
+        if board.at(p).is_none() {
+            return Err(strings(self.lang).dead_needs_stone.to_string());
+        }
+        let (group, _) = board.group_and_liberties(p);
+        let all_marked = group.iter().all(|q| self.dead.contains(q));
+        if all_marked {
+            for q in &group {
+                self.dead.remove(q);
+            }
+        } else {
+            self.dead.extend(group);
+        }
+        self.status = self.result_text().unwrap_or_default();
+        Ok(())
+    }
+
+    /// 清空所有死子标记。
+    pub fn clear_dead(&mut self) {
+        if self.dead.is_empty() {
+            return;
+        }
+        self.dead.clear();
+        self.status = self.result_text().unwrap_or_default();
+    }
+
+    /// 当前计分预览（`Scoring` 阶段才有；死子按当前标记扣除）。
+    pub fn score_preview(&self) -> Option<goban::Score> {
+        if self.phase() != GamePhase::Scoring {
+            return None;
+        }
+        Some(match self.rules.scoring {
+            Scoring::Area => self.game.score_area(&self.dead),
+            Scoring::Territory => self.game.score_territory(&self.dead),
+        })
+    }
+
+    /// 确认当前计分，生成 `RE` 并进入 `Finished`。
+    ///
+    /// 这是唯一会写正式结果的入口；没有确认之前 `RE` 一直是空的。
+    pub fn confirm_result(&mut self) -> Result<String, String> {
+        let score = self
+            .score_preview()
+            .ok_or_else(|| strings(self.lang).need_scoring.to_string())?;
+        let re = result_string(score);
+        self.confirmed = Some(re.clone());
+        self.research = false;
+        self.status = i18n::fill(strings(self.lang).confirmed_saved, &re);
+        self.autosave();
+        Ok(re)
     }
 
     /// 终局结果文本。
@@ -403,37 +499,43 @@ impl App {
         }
     }
 
-    /// 等待死活确认阶段的文本（不产生任何正式胜负）。
+    /// 等待确认阶段的计分预览（死子按当前标记扣除，不产生正式胜负）。
     fn scoring_text(&self, st: &i18n::Strings) -> String {
-        let mut out = st.scoring_title.to_string();
-        match self.rules.scoring {
-            Scoring::Area => {
-                let area = self.game.area_score();
-                let black = f32::from(area.black);
-                let white = f32::from(area.white) + area.komi;
-                out.push_str(&format!(
-                    " · {}：{} {} / {} {} + {} {} · {} {}",
-                    st.area_rough,
-                    i18n::color_name(Color::Black, self.lang),
-                    area.black,
-                    i18n::color_name(Color::White, self.lang),
-                    area.white,
-                    st.komi,
-                    area.komi,
-                    st.point_diff,
-                    lead_text(st, black - white),
-                ));
-            }
-            Scoring::Territory => {
-                out.push_str(&format!(
-                    " · {}",
-                    i18n::fill(st.territory_pending, self.rules.name)
-                ));
-            }
+        let Some(score) = self.score_preview() else {
+            return st.scoring_title.to_string();
+        };
+        let black = score.black.round() as u32;
+        let white = (score.white - score.komi).round() as u32;
+        let (label, diff_label) = match self.rules.scoring {
+            Scoring::Area => (st.area_scored, st.point_diff),
+            Scoring::Territory => (st.territory_scored, st.score_diff),
+        };
+        let mut out = format!(
+            "{} · {}：{} {} / {} {} + {} {} · {} {}",
+            st.scoring_title,
+            label,
+            i18n::color_name(Color::Black, self.lang),
+            black,
+            i18n::color_name(Color::White, self.lang),
+            white,
+            st.komi,
+            score_number(score.komi),
+            diff_label,
+            lead_text(st, score.diff()),
+        );
+        if score.dead_total() > 0 {
+            out.push_str(&format!(
+                " · {}",
+                i18n::fill(st.dead_marked, score.dead_total())
+            ));
         }
         if let Some(a) = self.analysis() {
             if a.score_black.is_finite() {
-                out.push_str(&format!(" · {} {:+}", st.engine_estimate, a.score_black));
+                out.push_str(&format!(
+                    " · {} {}",
+                    st.engine_estimate,
+                    lead_text(st, a.score_black)
+                ));
             }
         }
         out
@@ -469,6 +571,7 @@ impl App {
         // 新分支产生后，棋谱里原先确认的结果不再适用（保存时也不再写 RE）
         self.research = false;
         self.confirmed = None;
+        self.dead.clear();
         if let Some(text) = self.result_text() {
             self.status = text;
         }
@@ -696,6 +799,7 @@ impl App {
         self.research = false;
         self.file_stamp = stamp;
         self.current_file = new_file;
+        self.dead.clear();
         self.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&self.warnings) {
             self.status = w;

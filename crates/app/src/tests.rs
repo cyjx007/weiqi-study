@@ -1050,7 +1050,7 @@ fn two_passes_finish_the_game_and_block_more_moves() {
 
     let result = app.result_text().expect("终局应有结果文本");
     assert!(result.contains("等待死活确认"), "{result}");
-    assert!(result.contains("粗略面积计数"), "{result}");
+    assert!(result.contains("面积计分"), "{result}");
     assert_eq!(app.next_action(), Action::None, "终局后不再自动分析/应手");
 
     let err = app.play_pass().unwrap_err();
@@ -1079,16 +1079,16 @@ fn scoring_text_depends_on_the_rule_set() {
         let text = app.result_text().expect("两手 Pass 后应有待确认文本");
         assert!(text.contains("等待死活确认"), "{rules}: {text}");
         if area {
-            assert!(text.contains("粗略面积计数"), "{rules}: {text}");
+            assert!(text.contains("面积计分"), "{rules}: {text}");
             assert!(text.contains("点差（黑方视角）"), "{rules}: {text}");
-            assert!(!text.contains("正式目数"), "{rules}: {text}");
+            assert!(!text.contains("数目计分"), "{rules}: {text}");
         } else {
             assert!(
-                !text.contains("粗略面积计数") && !text.contains("点差"),
+                !text.contains("面积计分") && !text.contains("点差"),
                 "数目规则不能显示面积结果：{rules}: {text}"
             );
-            assert!(text.contains(rules), "文案要写清哪套规则：{rules}: {text}");
-            assert!(text.contains("正式目数"), "{rules}: {text}");
+            assert!(text.contains("数目计分"), "{rules}: {text}");
+            assert!(text.contains("目差（黑方视角）"), "{rules}: {text}");
         }
     }
 }
@@ -1212,6 +1212,113 @@ fn scoring_phase_analyses_but_never_autoplays() {
     app.confirmed = Some("W+R".to_string());
     assert_eq!(app.phase(), GamePhase::Finished);
     assert_eq!(app.next_action(), Action::None, "正式结束后不再自动分析");
+}
+
+/// 5×5：白 (1,1) 被四颗黑子围住，两手 Pass 进入待确认阶段。
+fn surrounded_white_app(rules: &str) -> App {
+    let sg = sgf::parse(&format!(
+        "(;SZ[5]KM[0]RU[{rules}]AB[ab][cb][ba][bc]AW[bb];B[];W[])"
+    ))
+    .unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    app
+}
+
+#[test]
+fn marking_dead_stones_updates_the_score_preview() {
+    let mut app = surrounded_white_app("Chinese");
+    let s = app.score_preview().expect("待确认阶段应有预览");
+    assert_eq!((s.black, s.white), (24.0, 1.0));
+
+    app.toggle_dead(Point::new(1, 1)).unwrap();
+    assert_eq!(app.dead_stones().len(), 1);
+    let s = app.score_preview().unwrap();
+    assert_eq!((s.black, s.white), (25.0, 0.0));
+    assert!(app.result_text().unwrap().contains("已标死 1 颗"));
+
+    // 再点一次取消标记
+    app.toggle_dead(Point::new(1, 1)).unwrap();
+    assert!(app.dead_stones().is_empty());
+    assert_eq!(app.score_preview().unwrap().black, 24.0);
+}
+
+#[test]
+fn dead_marking_is_per_connected_chain() {
+    let sg =
+        sgf::parse("(;SZ[5]KM[0]RU[Chinese]AB[ab][db][ba][ca][bc][cc]AW[bb][cb];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    app.toggle_dead(Point::new(1, 1)).unwrap();
+    assert_eq!(app.dead_stones().len(), 2, "整条白棋一起标死");
+    assert!(app.dead_stones().contains(&Point::new(2, 1)));
+    app.toggle_dead(Point::new(2, 1)).unwrap();
+    assert!(app.dead_stones().is_empty(), "点同一块也整块取消");
+}
+
+#[test]
+fn dead_marking_requires_a_stone_and_the_scoring_phase() {
+    let mut app = surrounded_white_app("Chinese");
+    let err = app.toggle_dead(Point::new(4, 4)).unwrap_err();
+    assert!(err.contains("没有棋子"), "{err}");
+
+    let sg = sgf::parse("(;SZ[9];B[cc];W[gg])").unwrap();
+    let mut playing = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    playing.lang = Lang::Zh;
+    let err = playing.toggle_dead(Point::new(2, 2)).unwrap_err();
+    assert!(err.contains("连续 Pass"), "{err}");
+    assert!(playing.score_preview().is_none());
+}
+
+#[test]
+fn confirming_writes_re_and_resuming_removes_it() {
+    let sg = sgf::parse("(;SZ[5]KM[0]RU[Chinese]AB[ab][cb][ba][bc]AW[bb];B[];W[])").unwrap();
+    let mut app = App::new(5, 0.0, AppConfig::default());
+    app.store = test_store();
+    app.lang = Lang::Zh;
+    app.open_sgf_file(std::env::temp_dir().join("weiqi-confirm-cn.sgf"), &sg)
+        .unwrap();
+
+    app.toggle_dead(Point::new(1, 1)).unwrap();
+    let re = app.confirm_result().unwrap();
+    assert_eq!(re, "B+25", "面积：死子移除后全盘归黑");
+    assert_eq!(app.phase(), GamePhase::Finished);
+    assert_eq!(app.confirmed_result(), Some("B+25"));
+
+    let file = app.current_file.clone().unwrap();
+    let text = app.store.read(&file).unwrap();
+    assert!(text.contains("RE[B+25]"), "{text}");
+    assert_eq!(sgf::parse(&text).unwrap().result.as_deref(), Some("B+25"));
+
+    // 继续研究并落子：旧结果作废，文件里的 RE 也要去掉
+    app.resume_study().unwrap();
+    app.play_move(Move::Play(Point::new(4, 4))).unwrap();
+    assert_eq!(app.confirmed_result(), None);
+    let text = app.store.read(&file).unwrap();
+    assert!(!text.contains("RE["), "续下后不能再写旧结果：{text}");
+}
+
+#[test]
+fn territory_confirmation_uses_dead_stones_and_captures() {
+    let mut app = surrounded_white_app("Japanese");
+    let before = app.score_preview().unwrap();
+    assert_eq!((before.black, before.white), (20.0, 0.0));
+
+    app.toggle_dead(Point::new(1, 1)).unwrap();
+    let re = app.confirm_result().unwrap();
+    assert_eq!(re, "B+22", "地 21 + 死子 1");
+    assert_eq!(app.confirmed_result(), Some("B+22"));
+    assert!(app.result_text().unwrap().contains("B+22"));
+}
+
+#[test]
+fn draw_result_is_written_as_zero() {
+    // 空盘 + 0 贴目：黑白都是 0
+    let sg = sgf::parse("(;SZ[9]KM[0]RU[Chinese];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    assert!(app.result_text().unwrap().contains("平局"));
+    assert_eq!(app.confirm_result().unwrap(), "0");
 }
 
 #[test]

@@ -229,6 +229,36 @@ impl Controller {
         }
     }
 
+    /// 标记 / 取消标记光标处整块棋子为死子。
+    pub fn toggle_dead(&mut self) -> Result<(), String> {
+        self.dirty = true;
+        match self.app.toggle_dead(self.app.cursor) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.app.status = e.clone();
+                Err(e)
+            }
+        }
+    }
+
+    /// 清空死子标记。
+    pub fn clear_dead(&mut self) {
+        self.dirty = true;
+        self.app.clear_dead();
+    }
+
+    /// 确认当前计分并写入 RE（成功时进入 Finished）。
+    pub fn confirm_result(&mut self) -> Result<String, String> {
+        self.dirty = true;
+        match self.app.confirm_result() {
+            Ok(re) => Ok(re),
+            Err(e) => {
+                self.app.status = e.clone();
+                Err(e)
+            }
+        }
+    }
+
     /// 开一盘人机对局，并立刻分析空盘。
     pub fn start_play(&mut self) {
         self.dirty = true;
