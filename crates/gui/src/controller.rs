@@ -45,6 +45,7 @@ pub fn build_ui(application: &adw::Application) {
     let review_btn = panels.review_btn.clone();
     let undo_btn = panels.undo_btn.clone();
     let pass_btn = panels.pass_btn.clone();
+    let resume_btn = panels.resume_btn.clone();
     let prev_btn = panels.prev_btn.clone();
     let next_btn = panels.next_btn.clone();
     let rename_btn = panels.rename_btn.clone();
@@ -285,6 +286,16 @@ pub fn build_ui(application: &adw::Application) {
                 return;
             };
             let _ = ui.ctrl.play_pass();
+            refresh(&mut ui);
+        });
+    }
+    {
+        let ui = ui.clone();
+        resume_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            let _ = ui.ctrl.resume_study();
             refresh(&mut ui);
         });
     }

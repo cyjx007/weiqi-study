@@ -3,7 +3,7 @@
 use crate::image_board::ImageBoard;
 
 use app::i18n::{color_name, strings, Strings};
-use app::{move_text, App};
+use app::{move_text, App, GamePhase};
 use goban::{Color, Move, Point};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -281,15 +281,15 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
 
     let score = app.analysis().map(|a| a.score_black).unwrap_or(0.0);
     let who = turn_side_label(app, s);
-    let turn_line = if app.game_over() {
-        Line::from(s.game_over)
-    } else {
-        Line::from(format!(
+    let turn_line = match app.phase() {
+        GamePhase::Scoring => Line::from(s.scoring_title),
+        GamePhase::Finished => Line::from(s.finished_title),
+        GamePhase::Playing => Line::from(format!(
             "{}   {}({})",
             s.turn,
             color_name(app.display_to_move(), app.lang),
             who
-        ))
+        )),
     };
     let info = Paragraph::new(vec![
         Line::from(format!("{}   - {score:+.1}", s.score)),

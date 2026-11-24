@@ -2,7 +2,7 @@
 
 use adw::prelude::*;
 use app::i18n::{color_name, rank_label, strings};
-use app::{move_text, App, HUMAN_RANKS, VISIT_PRESETS};
+use app::{move_text, App, GamePhase, HUMAN_RANKS, VISIT_PRESETS};
 use gtk::gdk;
 
 pub struct Panels {
@@ -25,6 +25,7 @@ pub struct Panels {
     pub review_btn: gtk::Button,
     pub undo_btn: gtk::Button,
     pub pass_btn: gtk::Button,
+    pub resume_btn: gtk::Button,
     pub prev_btn: gtk::Button,
     pub next_btn: gtk::Button,
     pub rename_btn: gtk::Button,
@@ -86,6 +87,7 @@ impl Panels {
         let review_btn = gtk::Button::with_label("");
         let undo_btn = gtk::Button::with_label("");
         let pass_btn = gtk::Button::with_label("");
+        let resume_btn = gtk::Button::with_label("");
         let prev_btn = gtk::Button::with_label("‹");
         let next_btn = gtk::Button::with_label("›");
         let rename_btn = gtk::Button::with_label("");
@@ -224,6 +226,7 @@ impl Panels {
         actions.append(&review_btn);
         actions.append(&undo_btn);
         actions.append(&pass_btn);
+        actions.append(&resume_btn);
         side.append(&actions);
 
         // 棋谱 + 翻手 + 管理
@@ -271,6 +274,7 @@ impl Panels {
             review_btn,
             undo_btn,
             pass_btn,
+            resume_btn,
             prev_btn,
             next_btn,
             rename_btn,
@@ -346,10 +350,12 @@ impl Panels {
         self.undo_btn.set_label(s.undo_btn);
         self.pass_btn.set_label(s.pass_btn);
         self.pass_btn.set_sensitive(
-            !app.game_over()
+            app.can_play()
                 && !app.preview_active()
                 && (!app.ai_enabled || app.to_move() == app.human),
         );
+        self.resume_btn.set_label(s.resume_study);
+        self.resume_btn.set_sensitive(app.game_over());
         self.rename_btn.set_label(s.rename);
         self.delete_btn.set_label(s.delete);
         self.strength_label
@@ -441,7 +447,10 @@ impl Panels {
         self.winrate_text.set_text(&format!("{:.1}%", wr * 100.0));
 
         if app.game_over() {
-            self.turn.set_text(s.game_over);
+            self.turn.set_text(match app.phase() {
+                GamePhase::Scoring => s.scoring_title,
+                _ => s.finished_title,
+            });
         } else {
             let who = if !app.ai_enabled {
                 s.review.to_string()

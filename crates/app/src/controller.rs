@@ -217,6 +217,18 @@ impl Controller {
         }
     }
 
+    /// 从终局局面继续研究（保留两手 Pass）。
+    pub fn resume_study(&mut self) -> Result<(), String> {
+        self.dirty = true;
+        match self.app.resume_study() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.app.status = e.clone();
+                Err(e)
+            }
+        }
+    }
+
     /// 开一盘人机对局，并立刻分析空盘。
     pub fn start_play(&mut self) {
         self.dirty = true;
