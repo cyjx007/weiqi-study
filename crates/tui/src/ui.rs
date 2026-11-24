@@ -366,11 +366,15 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
         .wrap(Wrap { trim: true });
     frame.render_widget(cand, chunks[2]);
 
-    let mut text = String::new();
-    if let Some(c) = &app.last_comment {
-        text.push_str(c);
+    // 终局/等待确认时，讲解区改成显示结果：状态栏只有一行宽，放不下规则分支和估值
+    let result = app.result_text();
+    let mut text = result.clone().unwrap_or_default();
+    if text.is_empty() {
+        if let Some(c) = &app.last_comment {
+            text.push_str(c);
+        }
     }
-    if app.ai_enabled && !app.preview_active() && app.to_move() == app.human {
+    if result.is_none() && app.ai_enabled && !app.preview_active() && app.to_move() == app.human {
         if let Some(a) = app.analysis() {
             if let Some(best) = a.candidates.first() {
                 if !text.is_empty() {
@@ -399,11 +403,14 @@ fn draw_side(frame: &mut Frame, app: &App, area: Rect, board_mode: &str) {
         text.push_str(s.fallback_comment);
     }
     let c = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", s.commentary)),
-        )
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " {} ",
+            if result.is_some() {
+                s.result
+            } else {
+                s.commentary
+            }
+        )))
         .wrap(Wrap { trim: true });
     frame.render_widget(c, chunks[3]);
 
@@ -607,6 +614,20 @@ mod tests {
             "两次 Pass 后应显示确认阶段：{s}"
         );
         assert!(!s.contains("对局已结束"), "{s}");
+        assert!(
+            s.contains("粗略面积计数") && s.contains("点差"),
+            "面积规则的粗略结果要真的显示出来：{s}"
+        );
+    }
+
+    #[test]
+    fn territory_rules_show_no_area_numbers() {
+        let sg = sgf::parse("(;SZ[9]KM[7.5]RU[Japanese];B[cc];W[gg];B[];W[])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.lang = app::i18n::Lang::Zh;
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("正式目数"), "{s}");
+        assert!(!s.contains("粗略面积计数"), "{s}");
     }
 
     #[test]

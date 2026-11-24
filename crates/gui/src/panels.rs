@@ -11,6 +11,7 @@ pub struct Panels {
     pub turn: gtk::Label,
     pub score: gtk::Label,
     pub moves: gtk::Label,
+    result: gtk::Label,
     pub cand: gtk::Label,
     pub comment: gtk::Label,
     pub status: gtk::Label,
@@ -63,6 +64,9 @@ impl Panels {
         let turn = label("");
         let score = label("");
         let moves = label("");
+        let result = label("");
+        result.set_wrap(true);
+        result.set_max_width_chars(30);
         let cand = label("");
         cand.set_wrap(true);
         cand.set_max_width_chars(30);
@@ -128,6 +132,7 @@ impl Panels {
         sep.set_margin_bottom(2);
         head.append(&sep);
         head.append(&stats_row);
+        head.append(&result);
         side.append(&head);
 
         // AI 设置：默认折叠，给预测/讲解留出高度
@@ -265,6 +270,7 @@ impl Panels {
             turn,
             score,
             moves,
+            result,
             cand,
             comment,
             status,
@@ -479,6 +485,13 @@ impl Panels {
             app.display_pos(),
             app.total_moves()
         ));
+        match app.result_text() {
+            Some(text) => {
+                self.result.set_text(&text);
+                self.result.set_visible(true);
+            }
+            None => self.result.set_visible(false),
+        }
 
         let mut cand = String::new();
         if let Some((step, total)) = app.preview_progress() {
