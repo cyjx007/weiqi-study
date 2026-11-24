@@ -38,6 +38,20 @@ pub enum Action {
     AiMove(Move),
 }
 
+/// 对局阶段。
+///
+/// 连续两次 Pass 只结束**正常落子阶段**，死活和地还没确认；正式结果只能来自
+/// 用户确认或棋谱里已有的 `RE`。本地学习工具不做双人协商/裁判流程。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GamePhase {
+    /// 可以正常落子（含「继续研究」续下的局面）。
+    Playing,
+    /// 双方连续 Pass，等待死活确认；不接受普通落子。
+    Scoring,
+    /// 已有确认结果（当前只从 SGF 的 `RE` 读入）。
+    Finished,
+}
+
 #[derive(Debug)]
 pub enum AppEvent {
     Analysis {
@@ -122,6 +136,10 @@ pub struct App {
     review_revision: u64,
     /// 引擎推荐变化的临时预览（不动主线）
     preview: Option<Preview>,
+    /// 棋谱里已有的确认结果（SGF `RE`）；新分支产生后作废
+    confirmed: Option<String>,
+    /// 用户在终局局面显式选择了「继续研究」
+    research: bool,
 }
 
 /// 规则比较键：归一化后的规则集 + 是否属于“无法识别、回退默认”。
@@ -196,6 +214,8 @@ impl App {
             generation: 0,
             review_revision: 0,
             preview: None,
+            confirmed: None,
+            research: false,
         }
     }
 
@@ -216,10 +236,13 @@ impl App {
         app.first = sg.first_to_move();
         app.moves = sg.moves.clone();
         app.pos = sg.moves.len();
+        app.confirmed = sg.result.clone();
         app.rebuild()?;
         app.warnings = sg.warnings.clone();
         if let Some(w) = warning_text(&app.warnings) {
             app.status = w;
+        } else if let Some(text) = app.result_text() {
+            app.status = text;
         }
         Ok(app)
     }
@@ -238,6 +261,8 @@ impl App {
                 .map_err(|e| format!("第 {} 手重放失败：{e}", i + 1))?;
         }
         self.game = game;
+        // 导航到别的局面就不再是「从终局续下」的研究模式
+        self.research = false;
         Ok(())
     }
 
@@ -316,9 +341,49 @@ impl App {
         self.play_move(Move::Pass)
     }
 
-    /// 当前局面是否已经终局（连续两次 Pass）。
+    /// 当前对局阶段。
+    ///
+    /// 真相来源只有三样：主线落子、当前 `pos`、以及「用户是否已选择继续研究」。
+    /// 已确认结果只在棋盘停在主线末尾时才算数。
+    pub fn phase(&self) -> GamePhase {
+        if self.research || self.pos != self.moves.len() {
+            return GamePhase::Playing;
+        }
+        if self.confirmed.is_some() {
+            return GamePhase::Finished;
+        }
+        if self.game.is_two_passes() {
+            GamePhase::Scoring
+        } else {
+            GamePhase::Playing
+        }
+    }
+
+    /// 现在是否接受普通落子。
+    pub fn can_play(&self) -> bool {
+        self.phase() == GamePhase::Playing
+    }
+
+    /// 是否已经不能当普通对局继续落子（等待确认或已结束）。
     pub fn game_over(&self) -> bool {
-        self.game.is_two_passes()
+        !self.can_play()
+    }
+
+    /// 从棋谱读到的确认结果（SGF `RE` 原文）。
+    pub fn confirmed_result(&self) -> Option<&str> {
+        self.confirmed.as_deref()
+    }
+
+    /// 在终局局面显式选择「继续研究」。
+    ///
+    /// 保留最后两手 Pass，从它们之后接着下；第一手新棋落下后旧的确认结果作废。
+    pub fn resume_study(&mut self) -> Result<(), String> {
+        if self.phase() == GamePhase::Playing {
+            return Err(strings(self.lang).in_progress.to_string());
+        }
+        self.research = true;
+        self.status = strings(self.lang).resumed_study.to_string();
+        Ok(())
     }
 
     /// 终局结果文本。
@@ -327,10 +392,19 @@ impl App {
     /// 数目规则的死活还没确认，绝不拿面积算法凑数，只说明“尚无正式分数”。
     /// 引擎目差一律是**黑方视角的估计**，不是 AI 领先多少。
     pub fn result_text(&self) -> Option<String> {
-        if !self.game_over() {
-            return None;
-        }
         let st = strings(self.lang);
+        match self.phase() {
+            GamePhase::Playing => None,
+            GamePhase::Finished => Some(i18n::fill(
+                st.confirmed_result,
+                self.confirmed.as_deref().unwrap_or("?"),
+            )),
+            GamePhase::Scoring => Some(self.scoring_text(st)),
+        }
+    }
+
+    /// 等待死活确认阶段的文本（不产生任何正式胜负）。
+    fn scoring_text(&self, st: &i18n::Strings) -> String {
         let mut out = st.scoring_title.to_string();
         match self.rules.scoring {
             Scoring::Area => {
@@ -362,13 +436,15 @@ impl App {
                 out.push_str(&format!(" · {} {:+}", st.engine_estimate, a.score_black));
             }
         }
-        Some(out)
+        out
     }
 
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
-        if self.game.is_two_passes() {
-            return Err(strings(self.lang).game_over.to_string());
+        match self.phase() {
+            GamePhase::Playing => {}
+            GamePhase::Scoring => return Err(strings(self.lang).need_resume.to_string()),
+            GamePhase::Finished => return Err(strings(self.lang).game_over.to_string()),
         }
         let mut probe = self.snapshot();
         // 先验合法性：失败时不能动 preview / generation / 主线 / 缓存 / busy
@@ -390,10 +466,11 @@ impl App {
         self.moves.push(mv);
         self.pos = base + 1;
         self.game = probe;
-        if self.game.is_two_passes() {
-            if let Some(text) = self.result_text() {
-                self.status = text;
-            }
+        // 新分支产生后，棋谱里原先确认的结果不再适用（保存时也不再写 RE）
+        self.research = false;
+        self.confirmed = None;
+        if let Some(text) = self.result_text() {
+            self.status = text;
         }
         // 只保留分支点及之前的分析；更深位置属于旧分支
         self.evals.retain(|&k, _| k <= base);
@@ -475,6 +552,8 @@ impl App {
         self.review = None;
         self.last_comment = None;
         self.failed_pos = None;
+        self.confirmed = None;
+        self.research = false;
         self.ai_enabled = true;
         self.vs_ai = true;
         self.cursor = Point::new(self.size / 2, self.size / 2);
@@ -610,6 +689,9 @@ impl App {
         // 打开棋谱 = 纯研究模式：不再自动分析/应手。AI 开关是显式偏好，
         // 用户想人机对局时自己重新打开；只关 vs_ai 不足以停掉自动应手（next_action 看 ai_enabled）。
         self.ai_enabled = false;
+        // 棋谱里已有的 RE 是已确认结果；没有就停在“等待确认”，不自己编结果
+        self.confirmed = sg.result.clone();
+        self.research = false;
         self.file_stamp = stamp;
         self.current_file = new_file;
         self.warnings = sg.warnings.clone();
@@ -941,11 +1023,26 @@ impl App {
         if self.preview_active() {
             return Action::None;
         }
-        // 终局后不再自动应手/自动分析；复盘仍可手动按 A
-        if self.game.is_two_passes() {
+        if self.busy {
             return Action::None;
         }
-        if self.busy || !self.ai_enabled {
+        match self.phase() {
+            // 正式结束：不自动分析、不应手；复盘仍可手动按 A
+            GamePhase::Finished => return Action::None,
+            // 等待死活确认：停止自动应手，但让引擎补一次估值（结果文本要用）
+            GamePhase::Scoring => {
+                return if self.ai_enabled
+                    && !self.evals.contains_key(&self.pos)
+                    && self.failed_pos != Some(self.pos)
+                {
+                    Action::Analyze
+                } else {
+                    Action::None
+                };
+            }
+            GamePhase::Playing => {}
+        }
+        if !self.ai_enabled {
             return Action::None;
         }
         // 翻旧棋时不自动应手

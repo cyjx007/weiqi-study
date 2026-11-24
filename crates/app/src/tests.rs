@@ -1054,7 +1054,7 @@ fn two_passes_finish_the_game_and_block_more_moves() {
     assert_eq!(app.next_action(), Action::None, "终局后不再自动分析/应手");
 
     let err = app.play_pass().unwrap_err();
-    assert!(err.contains("对局结束"), "{err}");
+    assert!(err.contains("继续研究"), "{err}");
     assert_eq!(app.total_moves(), 2, "被拒绝的落子不能改主线");
 
     // 回到终局前可以改走，等于从历史分支继续
@@ -1122,6 +1122,96 @@ fn engine_score_is_labelled_as_a_black_side_estimate() {
     assert!(text.contains("-3.5"), "{text}");
     assert!(!text.contains("AI 目差"), "{text}");
     assert!(!text.contains("AI 领先"), "{text}");
+}
+
+#[test]
+fn two_passes_enter_scoring_instead_of_finishing() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    assert_eq!(app.phase(), GamePhase::Scoring);
+    assert!(!app.can_play());
+    assert!(app.game_over());
+    assert_eq!(app.confirmed_result(), None, "没有确认就不是正式结果");
+
+    let err = app.play_move(Move::Play(Point::new(2, 2))).unwrap_err();
+    assert!(err.contains("继续研究"), "{err}");
+    assert_eq!(app.total_moves(), 4, "被拒绝的落子不能改主线");
+}
+
+#[test]
+fn resume_study_keeps_both_passes_and_appends() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+
+    app.resume_study().unwrap();
+    assert_eq!(app.phase(), GamePhase::Playing);
+    assert!(app.resume_study().is_err(), "对局中不需要继续研究");
+
+    app.play_move(Move::Play(Point::new(4, 4))).unwrap();
+    assert_eq!(app.total_moves(), 5);
+    assert_eq!(app.game().moves()[2], Move::Pass);
+    assert_eq!(app.game().moves()[3], Move::Pass, "两手 Pass 必须保留");
+    assert_eq!(app.game().moves()[4], Move::Play(Point::new(4, 4)));
+
+    // 再出现两次 Pass 应重新进入确认阶段，不能因为“研究过”就永久 Playing
+    app.play_move(Move::Pass).unwrap();
+    app.play_move(Move::Pass).unwrap();
+    assert_eq!(app.phase(), GamePhase::Scoring);
+}
+
+#[test]
+fn confirmed_sgf_result_marks_the_game_finished() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5]RE[W+R];B[cc];W[gg])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    assert_eq!(app.phase(), GamePhase::Finished, "认输棋谱也是已结束");
+    assert_eq!(app.confirmed_result(), Some("W+R"));
+    assert!(app.result_text().unwrap().contains("W+R"));
+
+    let err = app.play_move(Move::Play(Point::new(2, 2))).unwrap_err();
+    assert!(err.contains("对局已结束"), "{err}");
+
+    // 继续研究可以续下，但旧结果必须作废
+    app.resume_study().unwrap();
+    assert_eq!(app.phase(), GamePhase::Playing);
+    app.play_move(Move::Play(Point::new(4, 4))).unwrap();
+    assert_eq!(app.confirmed_result(), None);
+    assert!(app.result_text().is_none());
+}
+
+#[test]
+fn navigating_back_leaves_the_scoring_phase() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    app.prev_move();
+    assert_eq!(app.phase(), GamePhase::Playing);
+    app.next_move();
+    assert_eq!(
+        app.phase(),
+        GamePhase::Scoring,
+        "回到末尾应重新进入确认阶段"
+    );
+}
+
+#[test]
+fn scoring_phase_analyses_but_never_autoplays() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.ai_enabled = true;
+    assert_eq!(
+        app.next_action(),
+        Action::Analyze,
+        "等待确认时只分析，不应手"
+    );
+    app.evals.insert(2, eval(2, Color::Black, 0.5, Move::Pass));
+    assert_eq!(app.next_action(), Action::None);
+
+    app.confirmed = Some("W+R".to_string());
+    assert_eq!(app.phase(), GamePhase::Finished);
+    assert_eq!(app.next_action(), Action::None, "正式结束后不再自动分析");
 }
 
 #[test]
