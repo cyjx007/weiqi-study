@@ -544,10 +544,21 @@ impl Game {
         self.positions.get(turn as usize)
     }
 
-    /// 连续两次 Pass 视为终局（按当前棋谱前缀计算）。
-    pub fn is_finished(&self) -> bool {
-        let n = self.moves.len();
-        n >= 2 && self.moves[n - 2] == Move::Pass && self.moves[n - 1] == Move::Pass
+    /// 当前前缀末尾连续 Pass 的数量。
+    ///
+    /// 这是**事实**，不是终局判定：连续两次 Pass 只是正常落子阶段结束，
+    /// 死活确认和正式结果由上层（`app`）决定。
+    pub fn trailing_passes(&self) -> usize {
+        self.moves
+            .iter()
+            .rev()
+            .take_while(|&&mv| mv == Move::Pass)
+            .count()
+    }
+
+    /// 当前前缀是否以连续两次 Pass 结尾。
+    pub fn is_two_passes(&self) -> bool {
+        self.trailing_passes() >= 2
     }
 
     pub fn moves(&self) -> &[Move] {
@@ -766,23 +777,27 @@ mod tests {
     }
 
     #[test]
-    fn two_passes_are_legal_and_finish_the_game() {
+    fn two_passes_end_the_playing_phase() {
         let mut g = Game::new(9, 7.5);
-        assert!(!g.is_finished());
+        assert_eq!(g.trailing_passes(), 0);
         assert!(g.play(Move::Pass).is_ok());
-        assert!(!g.is_finished());
+        assert_eq!(g.trailing_passes(), 1);
+        assert!(!g.is_two_passes());
         assert!(g.play(Move::Pass).is_ok());
-        assert!(g.is_finished());
-        // 终局之后引擎/调用方仍可继续追加，但“当前前缀”已经结束
+        assert_eq!(g.trailing_passes(), 2);
+        assert!(g.is_two_passes());
+        // 引擎/调用方仍可继续追加，但“当前前缀”已经走完落子阶段
         assert!(g.play(Move::Pass).is_ok());
-        assert!(g.is_finished());
+        assert_eq!(g.trailing_passes(), 3);
+        assert!(g.is_two_passes());
         assert_eq!(g.moves(), &[Move::Pass, Move::Pass, Move::Pass]);
 
         // 一手 Pass 一手落子不算结束
         let mut g = Game::new(9, 7.5);
         g.play(Move::Pass).unwrap();
         g.play(Move::Play(Point::new(2, 2))).unwrap();
-        assert!(!g.is_finished());
+        assert_eq!(g.trailing_passes(), 0);
+        assert!(!g.is_two_passes());
     }
 
     #[test]

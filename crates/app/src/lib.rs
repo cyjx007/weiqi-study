@@ -309,7 +309,7 @@ impl App {
 
     /// 当前局面是否已经终局（连续两次 Pass）。
     pub fn game_over(&self) -> bool {
-        self.game.is_finished()
+        self.game.is_two_passes()
     }
 
     /// 终局结果文本：本地数子（不判死活）+ 可选引擎目差。
@@ -339,7 +339,7 @@ impl App {
 
     /// 落任意一手（人或 AI 共用）。
     pub fn play_move(&mut self, mv: Move) -> Result<(), String> {
-        if self.game.is_finished() {
+        if self.game.is_two_passes() {
             return Err(strings(self.lang).game_over.to_string());
         }
         let mut probe = self.snapshot();
@@ -362,7 +362,7 @@ impl App {
         self.moves.push(mv);
         self.pos = base + 1;
         self.game = probe;
-        if self.game.is_finished() {
+        if self.game.is_two_passes() {
             if let Some(text) = self.result_text() {
                 self.status = text;
             }
@@ -914,7 +914,7 @@ impl App {
             return Action::None;
         }
         // 终局后不再自动应手/自动分析；复盘仍可手动按 A
-        if self.game.is_finished() {
+        if self.game.is_two_passes() {
             return Action::None;
         }
         if self.busy || !self.ai_enabled {
