@@ -597,6 +597,29 @@ mod tests {
     }
 
     #[test]
+    fn turn_line_shows_the_scoring_phase() {
+        let sg = sgf::parse("(;SZ[9]KM[7.5];B[cc];W[gg];B[];W[])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.lang = app::i18n::Lang::Zh;
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(
+            s.contains("等待死活确认"),
+            "两次 Pass 后应显示确认阶段：{s}"
+        );
+        assert!(!s.contains("对局已结束"), "{s}");
+    }
+
+    #[test]
+    fn turn_line_shows_a_confirmed_result() {
+        let sg = sgf::parse("(;SZ[9]KM[7.5]RE[W+R];B[cc];W[gg])").unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.lang = app::i18n::Lang::Zh;
+        let s = compact(render_to_string(&app, 110, 40));
+        assert!(s.contains("对局已结束"), "{s}");
+        assert!(!s.contains("等待死活确认"), "{s}");
+    }
+
+    #[test]
     fn new_game_size_overlay_lists_three_sizes() {
         let app = test_app();
         let s = compact(render_overlay_to_string(
