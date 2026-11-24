@@ -1049,8 +1049,8 @@ fn two_passes_finish_the_game_and_block_more_moves() {
     assert!(app.game_over(), "连续两次 Pass 应终局");
 
     let result = app.result_text().expect("终局应有结果文本");
-    assert!(result.contains("对局结束"), "{result}");
-    assert!(result.contains("本地数子"), "{result}");
+    assert!(result.contains("等待死活确认"), "{result}");
+    assert!(result.contains("粗略面积计数"), "{result}");
     assert_eq!(app.next_action(), Action::None, "终局后不再自动分析/应手");
 
     let err = app.play_pass().unwrap_err();
@@ -1062,6 +1062,66 @@ fn two_passes_finish_the_game_and_block_more_moves() {
     assert!(!app.game_over());
     app.play_move(Move::Play(Point::new(2, 2))).unwrap();
     assert_eq!(app.total_moves(), 2, "从分支点落子会截断终局的 Pass");
+}
+
+#[test]
+fn scoring_text_depends_on_the_rule_set() {
+    // 中国 / AGA 是面积；日本 / 韩国是数目，绝不能拿面积数冒充正式分数
+    for (rules, area) in [
+        ("Chinese", true),
+        ("AGA", true),
+        ("Japanese", false),
+        ("Korean", false),
+    ] {
+        let sg = sgf::parse(&format!("(;SZ[9]KM[7.5]RU[{rules}];B[];W[])")).unwrap();
+        let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+        app.lang = Lang::Zh;
+        let text = app.result_text().expect("两手 Pass 后应有待确认文本");
+        assert!(text.contains("等待死活确认"), "{rules}: {text}");
+        if area {
+            assert!(text.contains("粗略面积计数"), "{rules}: {text}");
+            assert!(text.contains("点差（黑方视角）"), "{rules}: {text}");
+            assert!(!text.contains("正式目数"), "{rules}: {text}");
+        } else {
+            assert!(
+                !text.contains("粗略面积计数") && !text.contains("点差"),
+                "数目规则不能显示面积结果：{rules}: {text}"
+            );
+            assert!(text.contains(rules), "文案要写清哪套规则：{rules}: {text}");
+            assert!(text.contains("正式目数"), "{rules}: {text}");
+        }
+    }
+}
+
+#[test]
+fn area_result_adds_komi_to_white_and_marks_a_draw() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5]RU[Chinese];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    let text = app.result_text().unwrap();
+    assert!(text.contains("贴目 7.5"), "{text}");
+    assert!(text.contains("-7.5"), "黑 0 对白 7.5 应是黑方落后：{text}");
+
+    let sg = sgf::parse("(;SZ[9]KM[0]RU[Chinese];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    let text = app.result_text().unwrap();
+    assert!(text.contains("平局"), "空盘 + 0 贴目必须显示平局：{text}");
+}
+
+#[test]
+fn engine_score_is_labelled_as_a_black_side_estimate() {
+    let sg = sgf::parse("(;SZ[9]KM[7.5];B[];W[])").unwrap();
+    let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
+    app.lang = Lang::Zh;
+    let mut ev = eval(2, Color::Black, 0.4, Move::Play(Point::new(2, 2)));
+    ev.score_black = -3.5;
+    app.evals.insert(2, ev);
+    let text = app.result_text().unwrap();
+    assert!(text.contains("引擎估计目差（黑方视角）"), "{text}");
+    assert!(text.contains("-3.5"), "{text}");
+    assert!(!text.contains("AI 目差"), "{text}");
+    assert!(!text.contains("AI 领先"), "{text}");
 }
 
 #[test]

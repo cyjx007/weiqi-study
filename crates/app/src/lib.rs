@@ -21,7 +21,7 @@ use i18n::{strings, Lang};
 use storage::{GameEntry, GameStore};
 
 use engine::{EngineConfig, TurnEval};
-use goban::{Color, Game, Move, Point, RuleSet};
+use goban::{Color, Game, Move, Point, RuleSet, Scoring};
 use review::Review;
 use sgf::SgfGame;
 
@@ -144,6 +144,15 @@ fn warning_text(warnings: &[String]) -> Option<String> {
             format!("⚠ {w}")
         }
     })
+}
+
+/// 目差文本：正数 = 黑方领先；0 明确写平局，不显示 `+0`。
+fn lead_text(st: &i18n::Strings, diff: f32) -> String {
+    if diff.abs() < 1e-6 {
+        format!("0 ({})", st.draw)
+    } else {
+        format!("{diff:+}")
+    }
 }
 
 impl App {
@@ -312,26 +321,45 @@ impl App {
         self.game.is_two_passes()
     }
 
-    /// 终局结果文本：本地数子（不判死活）+ 可选引擎目差。
+    /// 终局结果文本。
+    ///
+    /// 面积规则给粗略面积计数（**未判断死活**，不能当正式分数）；
+    /// 数目规则的死活还没确认，绝不拿面积算法凑数，只说明“尚无正式分数”。
+    /// 引擎目差一律是**黑方视角的估计**，不是 AI 领先多少。
     pub fn result_text(&self) -> Option<String> {
         if !self.game_over() {
             return None;
         }
         let st = strings(self.lang);
-        let area = self.game.area_score();
-        let mut out = format!(
-            "{} · {}：{} {} / {} {} + {:.1}",
-            st.game_over,
-            st.local_score,
-            i18n::color_name(Color::Black, self.lang),
-            area.black,
-            i18n::color_name(Color::White, self.lang),
-            area.white,
-            area.komi
-        );
+        let mut out = st.scoring_title.to_string();
+        match self.rules.scoring {
+            Scoring::Area => {
+                let area = self.game.area_score();
+                let black = f32::from(area.black);
+                let white = f32::from(area.white) + area.komi;
+                out.push_str(&format!(
+                    " · {}：{} {} / {} {} + {} {} · {} {}",
+                    st.area_rough,
+                    i18n::color_name(Color::Black, self.lang),
+                    area.black,
+                    i18n::color_name(Color::White, self.lang),
+                    area.white,
+                    st.komi,
+                    area.komi,
+                    st.point_diff,
+                    lead_text(st, black - white),
+                ));
+            }
+            Scoring::Territory => {
+                out.push_str(&format!(
+                    " · {}",
+                    i18n::fill(st.territory_pending, self.rules.name)
+                ));
+            }
+        }
         if let Some(a) = self.analysis() {
             if a.score_black.is_finite() {
-                out.push_str(&format!(" · {} {:+.1}", st.ai_lead, a.score_black));
+                out.push_str(&format!(" · {} {:+}", st.engine_estimate, a.score_black));
             }
         }
         Some(out)
