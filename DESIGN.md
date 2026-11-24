@@ -129,7 +129,17 @@ impl Game {
     pub fn color_of_move(&self, turn: u16) -> Color;            // 1-based
     pub fn to_move_at(&self, turn: u16) -> Color;               // 历史内读 Position::to_move
     pub fn rules(&self) -> RuleSet;
+    pub fn trailing_passes(&self) -> usize;                     // 末尾连续 Pass 数（事实）
+    pub fn is_two_passes(&self) -> bool;                         // 只表示落子阶段结束
     pub fn area_score(&self) -> AreaScore;                      // 仅 Area，不判死活
+}
+
+// app
+pub enum GamePhase { Playing, Scoring, Finished }               // 阶段由 app 决定
+impl App {
+    pub fn phase(&self) -> GamePhase;
+    pub fn can_play(&self) -> bool;                             // 只有 Playing 接受落子
+    pub fn resume_study(&mut self) -> Result<(), String>;       // 保留 Pass，从终局续下
 }
 ```
 
@@ -184,7 +194,8 @@ pub struct EngineConfig {
 - 写回 SGF 用规则集规范名，`RU[AGA]`/`RU[Ing]` 不会退化成 Korean。
 - 引擎请求直接使用规范名（`chinese`/`japanese`/`korean`/`aga`/`ing`）。
 - `area_score()` 只是数子、把盘上所有子当活棋；**界面上的目差来自引擎 `scoreLead`**，
-  不依赖它。本地数目（先标死活）尚未实现。
+  不依赖它。它只在 `Scoring::Area` 分支里用于“未判死活的粗略计数”，数目规则一律不调用。
+  本地正式计分（标死子 + 数目/面积两套算法）尚未实现，见 `docs/TODO.md`。
 
 ### 先手
 
@@ -273,9 +284,18 @@ pub struct EngineConfig {
 - **版本指纹**：`FileStamp { mtime, len, FNV-1a(bytes) }`。目标文件和“上次看到的不一样”
   就另存 `*.conflict-<纳秒>-<pid>.sgf`，不覆盖别人的内容。副本优先 `hard_link`（内容与文件名
   同时原子出现），不支持硬链接时退回 `create_new` + 复制。
-- **终局**：`Game::is_finished()` = 当前前缀最后两手都是 Pass。`App` 在终局后拒绝新的
-  落子/Pass 和自动应手；结果文本 = 本地数子（不判死活）+ 引擎 `scoreLead`（分析完成时）。
-  想继续研究就从历史局面改走（分支），不会“复活”终局。
+- **对局阶段**：`goban` 只给事实（`trailing_passes()` / `is_two_passes()`），阶段由 `App`
+  决定：`Playing`（可落子）→ 连续两次 Pass → `Scoring`（等待死活确认）→ 确认结果 → `Finished`。
+  `Scoring` 拒绝普通落子、停止自动应手，但仍允许引擎补一次估值；`Finished` 只来自 SGF 的
+  `RE`（本地尚无确认流程，`RE` 只读不写）。
+- **继续研究**：`resume_study()` 保留两手 Pass，从其后续下（`pos == len` 直接追加，不截断）；
+  第一手新棋落下后旧的确认结果作废、保存时不再写 `RE`。导航回历史局面等于回到 `Playing`，
+  回到末尾会重新进入 `Scoring`，不能靠撤回 Pass 冒充“继续”。
+- **结果持久化**：`RE` 目前只读——打开棋谱时读入已确认结果，`0.12` 还没有本地确认流程，
+  所以不会写 `RE`。死活标记属于计分时的会话状态，不序列化（详见 `docs/TODO.md`）。
+- **终局文本**：面积规则显示“粗略面积计数（未判断死活）+ 贴目 + 点差 + 平局”；
+  日本/韩国等数目规则**不调用** `area_score()`，只说明需要先确认死活。引擎 `scoreLead`
+  一律标成“引擎估计目差（黑方视角）”，不写成 AI 领先，也不当正式结果。
 - **空局不落盘**：`start_play()` 只预留文件名，第一手落子时才 `autosave`。SGF 解析要求至少
   一手或摆子，提前写文件会在库里留下打不开的空棋谱。
 - **新局参数**：`start_play()` 把规则、先手、komi 都重置为默认（`DEFAULT_KOMI`），不继承

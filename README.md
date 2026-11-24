@@ -90,8 +90,8 @@ keys (`New`, `Analyse`, `Review`, `Undo`), the game dropdown opens any saved gam
 `Rename` / `Delete` buttons manage the selected file. A strength card sets visits and toggles the
 humanv0 net/rank; `Variation` previews the engine line and `Use` commits it. `EN/中文` switches
 the interface language. Board navigation and the main actions use the same keys as the TUI where available; the GUI
-adds buttons for importing an SGF, passing (`Pass` / `P`), the game list, rename/delete and AI settings, and `?`
-opens a shortcut cheat-sheet.
+adds buttons for importing an SGF, passing (`Pass` / `P`), continuing from a two-pass position
+(`Study on`), the game list, rename/delete and AI settings, and `?` opens a shortcut cheat-sheet.
 
 The Nix package installs `packaging/weiqi-study.desktop`, so `weiqi-gui` appears in the
 application launcher.
@@ -117,6 +117,7 @@ TUI keys:
 | `T` | start a new game and pick 9×9 / 13×13 / 19×19 |
 | `o` | import an SGF by typing a path |
 | `P` | pass (stop for this turn) |
+| `R` | keep studying from a two-pass position (passes are kept) |
 | `v` | toggle automatic engine replies |
 | `u` | undo one move |
 | `n` / `p` | next / previous move |
@@ -279,9 +280,18 @@ non-image terminal (e.g. `xterm`) and confirm it fails with a clear error instea
   default to `MAX_LEN=19`: 20×20 and larger need a custom build compiled with larger-board
   support, and the official networks were not trained on those sizes. If the engine rejects the
   size, its message is shown as-is with that hint in the status line.
-- Two consecutive passes end the game. Further moves/passes are rejected at the end; go back one
-  move and play to branch and continue. The result line shows the local area score (it does not
-  mark dead stones) and, once analysed, the engine's score lead.
+- Two consecutive passes only end the **normal playing phase** and enter *scoring* (awaiting
+  life-and-death confirmation): moves and passes are rejected, automatic replies stop, but the
+  engine may still fill in one estimate. No winner is shown and no `RE` is written until a result
+  is confirmed.
+- **Study on** (TUI `R`, GUI button) keeps both passes and continues after them; the first new
+  move voids any previously confirmed result. Don't simulate this by undoing a pass — that deletes
+  the pass history and creates a different branch.
+- The result line follows the rule set: area rules (Chinese / AGA / Ing) show a rough area count
+  that does not judge life and death, plus komi, the point difference and draws; Japanese / Korean
+  (territory) never call the area algorithm and only say life and death must be confirmed first.
+  The engine's `scoreLead` is always labelled "engine estimate (Black's view)" — not an AI lead,
+  and not an official result.
 - You choose the side you play (Black or White). The choice is kept when you start a new game,
   and switching sides during a human-vs-engine game makes the engine take its move immediately
   (switching to White on an empty board means the engine opens). The GUI exposes the same choice
