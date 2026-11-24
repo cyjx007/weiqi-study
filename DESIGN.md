@@ -131,7 +131,9 @@ impl Game {
     pub fn rules(&self) -> RuleSet;
     pub fn trailing_passes(&self) -> usize;                     // 末尾连续 Pass 数（事实）
     pub fn is_two_passes(&self) -> bool;                         // 只表示落子阶段结束
-    pub fn area_score(&self) -> AreaScore;                      // 仅 Area，不判死活
+    pub fn area_score(&self) -> AreaScore;                      // 粗略面积（不判死活）
+    pub fn score_area(&self, dead: &HashSet<Point>) -> Score;    // 死子按标记移除
+    pub fn score_territory(&self, dead: &HashSet<Point>) -> Score; // 地 + 提子 + 死子
 }
 
 // app
@@ -140,6 +142,9 @@ impl App {
     pub fn phase(&self) -> GamePhase;
     pub fn can_play(&self) -> bool;                             // 只有 Playing 接受落子
     pub fn resume_study(&mut self) -> Result<(), String>;       // 保留 Pass，从终局续下
+    pub fn toggle_dead(&mut self, p: Point) -> Result<(), String>; // 整块标死 / 取消
+    pub fn score_preview(&self) -> Option<Score>;               // Scoring 阶段的实时计分
+    pub fn confirm_result(&mut self) -> Result<String, String>;  // 生成 RE 并 Finished
 }
 ```
 
@@ -286,16 +291,24 @@ pub struct EngineConfig {
   同时原子出现），不支持硬链接时退回 `create_new` + 复制。
 - **对局阶段**：`goban` 只给事实（`trailing_passes()` / `is_two_passes()`），阶段由 `App`
   决定：`Playing`（可落子）→ 连续两次 Pass → `Scoring`（等待死活确认）→ 确认结果 → `Finished`。
-  `Scoring` 拒绝普通落子、停止自动应手，但仍允许引擎补一次估值；`Finished` 只来自 SGF 的
-  `RE`（本地尚无确认流程，`RE` 只读不写）。
+  `Scoring` 拒绝普通落子、停止自动应手，但仍允许引擎补一次估值；`Finished` 来自本地确认或
+  棋谱已有的 `RE`。
+- **死活与计分**：`Scoring` 阶段用户按**整块棋子**标死/取消（不允许只标连通块的一部分），
+  标记只存在会话里、不改主线。面积规则用 `score_area`（活子 + 单方围空 + 贴目），数目规则用
+  `score_territory`（地 + 己方提子 + 确认死子 + 贴目）；双方都碰到的空点（dame）两边都不算。
+  未标记的棋子默认算活棋——规则层不猜死活。
+- **确认结果**：`confirm_result()` 由当前预览生成 `B+3.5` / `W+0.5` / `0`，写入 `RE` 并进入
+  `Finished`。没有确认就不会有 `RE`，也不会显示赢家。
 - **继续研究**：`resume_study()` 保留两手 Pass，从其后续下（`pos == len` 直接追加，不截断）；
-  第一手新棋落下后旧的确认结果作废、保存时不再写 `RE`。导航回历史局面等于回到 `Playing`，
-  回到末尾会重新进入 `Scoring`，不能靠撤回 Pass 冒充“继续”。
-- **结果持久化**：`RE` 目前只读——打开棋谱时读入已确认结果，`0.12` 还没有本地确认流程，
-  所以不会写 `RE`。死活标记属于计分时的会话状态，不序列化（详见 `docs/TODO.md`）。
-- **终局文本**：面积规则显示“粗略面积计数（未判断死活）+ 贴目 + 点差 + 平局”；
-  日本/韩国等数目规则**不调用** `area_score()`，只说明需要先确认死活。引擎 `scoreLead`
-  一律标成“引擎估计目差（黑方视角）”，不写成 AI 领先，也不当正式结果。
+  第一手新棋落下后旧的确认结果与死子标记作废、保存时不再写 `RE`。导航回历史局面等于回到
+  `Playing`，回到末尾会重新进入 `Scoring`，不能靠撤回 Pass 冒充“继续”。
+- **结果持久化**：`RE` 在确认时写回；死活标记是计分时的会话状态，**不序列化**（重新打开只能
+  看到 `RE`，看不到当时的标记）。打开棋谱时读入 `RE` 进入 `Finished`。
+- **终局文本**：`Scoring` 显示双方总分、贴目、目差/点差、平局与已标死数量；面积分支写“面积计分”，
+  数目分支写“数目计分”，两者都不调用对方算法。引擎 `scoreLead` 一律标成
+  “引擎估计目差（黑方视角）”，不写成 AI 领先，也不当正式结果。
+- **已知边界**：日本规则的严格死活（双活 / seki 内的地、争议恢复流程）没有实现；计分信任用户
+  标记。AGA / Ing 仍按面积近似，Ing 的循环规则没有完整实现。
 - **空局不落盘**：`start_play()` 只预留文件名，第一手落子时才 `autosave`。SGF 解析要求至少
   一手或摆子，提前写文件会在库里留下打不开的空棋谱。
 - **新局参数**：`start_play()` 把规则、先手、komi 都重置为默认（`DEFAULT_KOMI`），不继承
@@ -362,7 +375,8 @@ rustPlatform.buildRustPackage + wrapGAppsHook4
 
 | 风险 | 对策 |
 |---|---|
-| 自写数子算错死活 | 复盘只用 KataGo `scoreLead`；`area_score` 仅标注为粗略显示 |
+| 自写数子算错死活 | 结束前必须由用户整块标死；未标记的默认活棋，结果可预览、确认后才写 RE |
+| 死活判定冒充正式裁定 | 只做单用户确认；双活 / 争议恢复不实现，DESIGN 明确写边界 |
 | 引擎卡死拖住 UI | 独立线程 + 通道 + 可配置超时；失败丢会话、下次重建 |
 | 分析结果串盘 | generation + pos 双重校验；改走分支以 base 为界清缓存 |
 | 多进程同时编辑同一棋谱 | 排它锁 + 内容指纹 + 冲突副本；边界写在第八节 |

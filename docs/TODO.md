@@ -3,21 +3,17 @@
 Deferred work and known gaps. None of these block normal 9×9 / 13×13 / 19×19 study or
 human-vs-engine play. There is no timeline; items are ordered by expected value, not promise.
 
-## Official scoring (next up)
+## Scoring follow-ups
 
-Two consecutive passes now enter a **scoring phase** (`GamePhase::Scoring`) that blocks normal
-moves, stops automatic replies and shows no winner. What is still missing is the confirmation
-itself:
+Official scoring is in place: two passes enter a scoring phase, whole chains can be marked dead,
+area and territory scores are computed and a confirmed result writes `RE`. Remaining gaps:
 
-- Mark dead stones per connected chain (click a chain to toggle; a partly marked chain is not
-  allowed) without touching the recorded move history.
-- Area scoring: live stones + single-owned empty points + komi; shared empty points (dame) go to
-  neither side. Territory scoring: territory + own captures (including marked dead stones) + komi.
-- Show both totals, the difference and draws; never declare a winner before confirmation.
-- Only a confirmed result writes `RE`. Decision already taken: **persistence is `RE` only** — dead
-  stone marks are scoring-time state and are not serialized (documented in `DESIGN.md`).
-- Verify against real positions; do not ship an approximation (e.g. using `area_score()` for
-  Japanese/Korean rules) as an official result.
+- Strict Japanese life and death: seki territory, "dead stones inside seki" and dispute
+  resumption are not modelled; scoring trusts the user's marks.
+- Dead-stone marks are session-only by design (documented). If they should survive a reopen,
+  that needs an SGF representation decision (no standard property for dead stones).
+- AGA / Ing use the same area algorithm; Ing's cycle rules are still approximate.
+- No two-player negotiation: this is a single-user confirmation flow for study, not a referee.
 
 ## SGF variation trees
 
@@ -67,5 +63,5 @@ analysis/review caches are keyed by linear move number; L1+ needs a new cache ke
 4. `area_score` does not judge life and death and only applies to area scoring.
 5. Switch the interface language at runtime in the TUI (only `WEIQI_LANG` at startup today).
 6. Add an `i` info overlay to the GUI (the side panel already shows the same information).
-7. ~~Official scoring after game over~~: the phase split is done (see above); the remaining work is
-   dead-stone marking plus the two scoring algorithms.
+7. ~~Official scoring after game over~~: done (phase split, dead marks, area/territory scoring,
+   `RE` on confirmation); see "Scoring follow-ups" for the documented limits.

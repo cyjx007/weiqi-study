@@ -118,6 +118,9 @@ TUI keys:
 | `o` | import an SGF by typing a path |
 | `P` | pass (stop for this turn) |
 | `R` | keep studying from a two-pass position (passes are kept) |
+| `d` / `Enter` | scoring phase: mark / unmark a whole dead chain |
+| `X` | clear all dead marks |
+| `Y` | confirm the score and write `RE` |
 | `v` | toggle automatic engine replies |
 | `u` | undo one move |
 | `n` / `p` | next / previous move |
@@ -284,14 +287,24 @@ non-image terminal (e.g. `xterm`) and confirm it fails with a clear error instea
   life-and-death confirmation): moves and passes are rejected, automatic replies stop, but the
   engine may still fill in one estimate. No winner is shown and no `RE` is written until a result
   is confirmed.
+- In the scoring phase you mark **whole chains** dead or alive (TUI `d` / `Enter`, GUI click on a
+  stone; `X` clears). Marks never modify the move history, and unmarked stones count as alive.
+  Area rules score "live stones + single-owned empty points + komi"; Japanese/Korean score
+  "territory + own captures + confirmed dead stones + komi". Empty points touching both colours
+  (dame) belong to neither side.
+- `Y` / the GUI **Confirm result** button turns the preview into `B+3.5` / `W+0.5` / `0` (draw)
+  and writes it as the game's `RE`. Dead-stone marks themselves are not saved — reopening a game
+  only shows the `RE`.
 - **Study on** (TUI `R`, GUI button) keeps both passes and continues after them; the first new
-  move voids any previously confirmed result. Don't simulate this by undoing a pass — that deletes
-  the pass history and creates a different branch.
-- The result line follows the rule set: area rules (Chinese / AGA / Ing) show a rough area count
-  that does not judge life and death, plus komi, the point difference and draws; Japanese / Korean
-  (territory) never call the area algorithm and only say life and death must be confirmed first.
-  The engine's `scoreLead` is always labelled "engine estimate (Black's view)" — not an AI lead,
-  and not an official result.
+  move voids any confirmed result and the marks. Don't simulate this by undoing a pass — that
+  deletes the pass history and creates a different branch.
+- The result line follows the rule set: area rules (Chinese / AGA / Ing) show area scoring and the
+  point difference; Japanese / Korean show territory scoring and the score difference. Both show
+  totals, komi, draws and the number of marked dead stones. The engine's `scoreLead` is always
+  labelled "engine estimate (Black's view)" — not an AI lead, and not an official result.
+- Known limits: strict Japanese life-and-death (seki territory, dispute resumption) is not
+  implemented and scoring trusts your marks; AGA / Ing remain area approximations, and Ing cycles
+  are not fully handled.
 - You choose the side you play (Black or White). The choice is kept when you start a new game,
   and switching sides during a human-vs-engine game makes the engine take its move immediately
   (switching to White on an empty board means the engine opens). The GUI exposes the same choice
