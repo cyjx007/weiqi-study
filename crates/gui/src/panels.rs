@@ -27,6 +27,8 @@ pub struct Panels {
     pub undo_btn: gtk::Button,
     pub pass_btn: gtk::Button,
     pub resume_btn: gtk::Button,
+    pub confirm_btn: gtk::Button,
+    pub clear_dead_btn: gtk::Button,
     pub prev_btn: gtk::Button,
     pub next_btn: gtk::Button,
     pub rename_btn: gtk::Button,
@@ -92,6 +94,8 @@ impl Panels {
         let undo_btn = gtk::Button::with_label("");
         let pass_btn = gtk::Button::with_label("");
         let resume_btn = gtk::Button::with_label("");
+        let confirm_btn = gtk::Button::with_label("");
+        let clear_dead_btn = gtk::Button::with_label("");
         let prev_btn = gtk::Button::with_label("‹");
         let next_btn = gtk::Button::with_label("›");
         let rename_btn = gtk::Button::with_label("");
@@ -235,6 +239,8 @@ impl Panels {
         actions_bottom.append(&undo_btn);
         actions_bottom.append(&pass_btn);
         actions_bottom.append(&resume_btn);
+        actions_bottom.append(&confirm_btn);
+        actions_bottom.append(&clear_dead_btn);
         actions.append(&actions_top);
         actions.append(&actions_bottom);
         side.append(&actions);
@@ -286,6 +292,8 @@ impl Panels {
             undo_btn,
             pass_btn,
             resume_btn,
+            confirm_btn,
+            clear_dead_btn,
             prev_btn,
             next_btn,
             rename_btn,
@@ -366,7 +374,16 @@ impl Panels {
                 && (!app.ai_enabled || app.to_move() == app.human),
         );
         self.resume_btn.set_label(s.resume_study);
-        self.resume_btn.set_sensitive(app.game_over());
+        self.resume_btn.set_visible(app.game_over());
+        self.confirm_btn.set_label(s.confirm_result);
+        self.clear_dead_btn.set_label(s.clear_dead);
+        let scoring = app.phase() == GamePhase::Scoring;
+        self.confirm_btn.set_visible(scoring);
+        self.confirm_btn.set_sensitive(scoring);
+        self.clear_dead_btn.set_visible(scoring);
+        self.clear_dead_btn
+            .set_sensitive(!app.dead_stones().is_empty());
+        self.pass_btn.set_visible(app.can_play());
         self.rename_btn.set_label(s.rename);
         self.delete_btn.set_label(s.delete);
         self.strength_label

@@ -195,6 +195,7 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
             if is_last {
                 style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
+            let dead = !app.preview_active() && app.dead_stones().contains(&p);
             let (sym, fg, bold) = match stone {
                 Some(Color::Black) => ("●", C::Black, false),
                 Some(Color::White) => ("●", C::White, true),
@@ -212,6 +213,10 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect, image: &mut Option<Image
             };
             if bold {
                 style = style.add_modifier(Modifier::BOLD);
+            }
+            if dead {
+                // 死子用删除线 + 暗色标出，颜色仍能区分黑白
+                style = style.add_modifier(Modifier::CROSSED_OUT).fg(C::DarkGray);
             }
             buf.set_string(x, y, cell_text(sym, spacing), style.fg(fg));
 
@@ -615,8 +620,8 @@ mod tests {
         );
         assert!(!s.contains("对局已结束"), "{s}");
         assert!(
-            s.contains("粗略面积计数") && s.contains("点差"),
-            "面积规则的粗略结果要真的显示出来：{s}"
+            s.contains("面积计分") && s.contains("点差"),
+            "面积计分的预览要真的显示出来：{s}"
         );
     }
 
@@ -626,8 +631,8 @@ mod tests {
         let mut app = App::from_sgf(&sg, AppConfig::default()).unwrap();
         app.lang = app::i18n::Lang::Zh;
         let s = compact(render_to_string(&app, 110, 40));
-        assert!(s.contains("正式目数"), "{s}");
-        assert!(!s.contains("粗略面积计数"), "{s}");
+        assert!(s.contains("数目计分"), "{s}");
+        assert!(!s.contains("面积计分"), "{s}");
     }
 
     #[test]

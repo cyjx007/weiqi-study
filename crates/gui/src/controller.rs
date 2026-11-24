@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use app::i18n::{strings, Lang};
-use app::{App, AppConfig, Controller, VISIT_PRESETS};
+use app::{App, AppConfig, Controller, GamePhase, VISIT_PRESETS};
 use gtk::{gdk, glib};
 
 use crate::board::{draw_board, point_at};
@@ -46,6 +46,8 @@ pub fn build_ui(application: &adw::Application) {
     let undo_btn = panels.undo_btn.clone();
     let pass_btn = panels.pass_btn.clone();
     let resume_btn = panels.resume_btn.clone();
+    let confirm_btn = panels.confirm_btn.clone();
+    let clear_dead_btn = panels.clear_dead_btn.clone();
     let prev_btn = panels.prev_btn.clone();
     let next_btn = panels.next_btn.clone();
     let rename_btn = panels.rename_btn.clone();
@@ -101,7 +103,12 @@ pub fn build_ui(application: &adw::Application) {
             let n = ui.ctrl.app.size as f64;
             if let Some(p) = point_at(x, y, w_of(&ui.area), h_of(&ui.area), n) {
                 ui.ctrl.app.cursor = p;
-                let _ = ui.ctrl.play_at_cursor();
+                if ui.ctrl.app.phase() == GamePhase::Scoring {
+                    // 待确认阶段：点棋子 = 整块标死 / 取消
+                    let _ = ui.ctrl.toggle_dead();
+                } else {
+                    let _ = ui.ctrl.play_at_cursor();
+                }
                 refresh(&mut ui);
             }
         });
@@ -289,6 +296,26 @@ pub fn build_ui(application: &adw::Application) {
                 return;
             };
             let _ = ui.ctrl.play_pass();
+            refresh(&mut ui);
+        });
+    }
+    {
+        let ui = ui.clone();
+        confirm_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            let _ = ui.ctrl.confirm_result();
+            refresh(&mut ui);
+        });
+    }
+    {
+        let ui = ui.clone();
+        clear_dead_btn.connect_clicked(move |_| {
+            let Ok(mut ui) = ui.try_borrow_mut() else {
+                return;
+            };
+            ui.ctrl.clear_dead();
             refresh(&mut ui);
         });
     }

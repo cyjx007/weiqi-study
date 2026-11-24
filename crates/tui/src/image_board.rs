@@ -217,6 +217,9 @@ fn fingerprint(app: &App) -> u64 {
     // 盘面本身必须进 key：两盘同尺寸、同手数、最后一手同坐标时，
     // display_pos + last_move 区分不了（研究模式没有 analysis/prediction），
     // 会继续显示上一盘的棋子。
+    let mut dead: Vec<(u8, u8)> = app.dead_stones().iter().map(|p| (p.x, p.y)).collect();
+    dead.sort_unstable();
+    dead.hash(&mut h);
     let position = app.display_game().position();
     for y in 0..app.size {
         for x in 0..app.size {
@@ -352,6 +355,16 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
         );
     }
 
+    // 死子：红叉覆盖在棋子上
+    if !app.preview_active() {
+        for p in app.dead_stones() {
+            let (x, y) = center(&m, *p);
+            let r = (m.cell * 0.3).round() as i32;
+            canvas.line(x - r, y - r, x + r, y + r, DEAD_MARK, 3);
+            canvas.line(x - r, y + r, x + r, y - r, DEAD_MARK, 3);
+        }
+    }
+
     // 最后一手
     if let Some(Move::Play(p)) = app.display_game().position().last_move {
         let (x, y) = center(&m, p);
@@ -364,6 +377,8 @@ fn render_board(app: &App, side: u32) -> RgbaImage {
 
     canvas.img
 }
+
+const DEAD_MARK: [u8; 4] = [200, 40, 40, 255];
 
 fn draw_stone(c: &mut Canvas, x: i32, y: i32, r: i32, black: bool) {
     c.circle(x + 2, y + 3, r, [0, 0, 0, 70]);
@@ -555,6 +570,16 @@ mod tests {
     fn centered_rect_puts_the_board_in_the_middle() {
         let r = centered_rect(Rect::new(0, 0, 80, 40), 50, 20);
         assert_eq!((r.x, r.y, r.width, r.height), (15, 10, 50, 20));
+    }
+
+    #[test]
+    fn fingerprint_tracks_dead_marks() {
+        let mut app = demo(9, ";B[cc];W[gg];B[];W[]");
+        let before = fingerprint(&app);
+        app.toggle_dead(Point::new(2, 2)).unwrap();
+        assert_ne!(before, fingerprint(&app), "标死后必须重编码图片");
+        app.toggle_dead(Point::new(2, 2)).unwrap();
+        assert_eq!(before, fingerprint(&app));
     }
 
     #[test]

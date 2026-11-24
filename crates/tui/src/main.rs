@@ -6,7 +6,7 @@ mod ui;
 use std::time::Duration;
 
 use app::i18n::{fill, strings};
-use app::{App, AppConfig, Controller, VISITS_MAX, VISITS_MIN};
+use app::{App, AppConfig, Controller, GamePhase, VISITS_MAX, VISITS_MIN};
 use image_board::{ImageBoard, Mode};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -283,13 +283,24 @@ fn event_loop(
                             KeyCode::Up | KeyCode::Char('k') => ctrl.app.move_cursor(0, -1),
                             KeyCode::Down | KeyCode::Char('j') => ctrl.app.move_cursor(0, 1),
                             KeyCode::Enter => {
-                                let _ = ctrl.play_at_cursor();
+                                if ctrl.app.phase() == GamePhase::Scoring {
+                                    let _ = ctrl.toggle_dead();
+                                } else {
+                                    let _ = ctrl.play_at_cursor();
+                                }
                             }
                             KeyCode::Char('P') => {
                                 let _ = ctrl.play_pass();
                             }
                             KeyCode::Char('R') => {
                                 let _ = ctrl.resume_study();
+                            }
+                            KeyCode::Char('d') => {
+                                let _ = ctrl.toggle_dead();
+                            }
+                            KeyCode::Char('X') => ctrl.clear_dead(),
+                            KeyCode::Char('Y') => {
+                                let _ = ctrl.confirm_result();
                             }
                             KeyCode::Char('t') => ctrl.start_play(),
                             KeyCode::Char('T') => {

@@ -144,6 +144,20 @@ pub fn draw_board(cr: &cairo::Context, w: f64, h: f64, app: &App, hover: Option<
         draw_stone(cr, x, y, g.cell * 0.46, c == goban::Color::Black);
     }
 
+    // 死子：红叉
+    for p in app.dead_stones() {
+        let x = g.ox + p.x as f64 * g.cell;
+        let y = g.oy + p.y as f64 * g.cell;
+        let r = g.cell * 0.3;
+        cr.set_source_rgba(0.78, 0.16, 0.16, 0.95);
+        cr.set_line_width((g.cell * 0.08).max(2.0));
+        cr.move_to(x - r, y - r);
+        cr.line_to(x + r, y + r);
+        cr.move_to(x - r, y + r);
+        cr.line_to(x + r, y - r);
+        cr.stroke().ok();
+    }
+
     // 最后一手
     if let Some(goban::Move::Play(p)) = app.display_game().position().last_move {
         let x = g.ox + p.x as f64 * g.cell;
